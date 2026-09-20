@@ -100,8 +100,7 @@ void Aggregator::AnalyzeCandle(Bar &bar) {
   bar.poc_price = poc_price;
 }
 
-bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade,
-                              std::vector<Bar> &history) {
+bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
   // 1. Setup beim allerersten Tick des gesamten Backtests
   if (next_close_time == 0) {
     int64_t start_time = trade.timestamp - (trade.timestamp % interval_ms);
@@ -134,26 +133,11 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade,
   return candle_closed;
 }
 
-/* bool Aggregator::ProcessTrade(Bar& bar, TradeEvent& trade, int64_t
-interval_ns) { if (bar.timestamp_start == 0) {
-        // Exakt auf den Intervall-Anfang runden (z.B. glatte Minute)
-        bar.timestamp_start = (trade.timestamp / interval_ns) * interval_ns;
-    }
-
-    // Prüfen, ob der Trade in die nächste Kerze fällt
-    if (trade.timestamp >= (bar.timestamp_start + interval_ns)) {
-        AnalyzeCandle(bar);
-
-        std::cout << " | O: " << bar.open
-                  << " | C: " << bar.close
-                  << " | Vol: " << bar.total_volume
-                  << " | POC: " << bar.poc_price << std::endl;
-
-        return true; // Kerze ist fertig!
-    }
-
-    // Gehört zur aktuellen Kerze -> Daten aktualisieren
-    UpdateBarData(bar, trade);
-    return false;
+void Aggregator::FlushLastCandle(Bar &live_bar) {
+  // Nur wegspeichern, wenn in der letzten Kerze überhaupt Trades gelaufen sind
+  if (live_bar.total_volume > 0.0) {
+    AnalyzeCandle(live_bar);
+    history.push_back(live_bar);
+  }
 }
-*/
+

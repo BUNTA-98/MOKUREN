@@ -1,0 +1,10 @@
+
+c1
+- initial push
+
+c2
+- working prototype
+
+c3
+- papertrader: added realism (slippage & fees)
+- integrate build system

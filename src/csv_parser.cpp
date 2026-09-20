@@ -36,13 +36,14 @@ CSVLoader::ProcessBinanceCSV(const std::string &filepath,
     TradeEvent trade;
     trade.price = std::stod(col[1]);
     trade.quantity = std::stod(col[2]);
-    trade.timestamp = std::stoll(col[5]);
+
+    // Umrechnung von Mikrosekunden (16 Stellen) in Millisekunden
+    trade.timestamp = std::stoll(col[5]) / 1000;
+
     trade.is_buyer_maker =
         (col[6] == "true" || col[6] == "True" || col[6] == "1");
 
-    // Trade ist fertig gelesen -> Sofort ans Callback (die main) übergeben
     on_trade(trade);
-
     processed_ticks++;
   }
 

@@ -62,15 +62,20 @@ public:
 
   PriceLevel *GetOrAddLevel(Bar &bar, double price);
 
-  bool ProcessTrade(Bar &live_bar, const TradeEvent &trade,
-                    std::vector<Bar> &history);
+  bool ProcessTrade(Bar &live_bar, const TradeEvent &trade);
 
   void UpdateBarData(Bar &bar, const TradeEvent &trade);
 
   void AnalyzeCandle(Bar &bar); // kann raus??
 
+  const std::vector<Bar> &GetHistory() const { return history; }
+
+  void FlushLastCandle(Bar& live_bar);
+
 private:
   int64_t interval_ms;
   double tick_size;
   int64_t next_close_time;
+
+  std::vector<Bar> history;
 };
