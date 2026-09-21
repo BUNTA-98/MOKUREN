@@ -8,3 +8,4 @@ c2
 c3
 - papertrader: added realism (slippage & fees)
 - integrate build system
+- fix time logic 
