@@ -34,12 +34,16 @@ PriceLevel *Aggregator::GetOrAddLevel(Bar &bar, double price) {
 
     return &bar.vap_grid[index];
   }
+  
+
+  /*
   std::cout << "\n[CRITICAL] Price level out of range!"
             << "\n -> Aktueller Preis: " << price
             << "\n -> Base Price: " << bar.base_price
             << "\n -> Berechneter Index: " << index
             << "\n -> Tick Size: " << bar.tick_size << std::endl;
-  return nullptr;
+  */
+
   return nullptr;
 }
 
@@ -74,7 +78,8 @@ void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
 
   } else {
 
-    std::cout << "ERROR: updateBarData() level_ptr.price !=0" << std::endl;
+    //std::cout << "ERROR: updateBarData() level_ptr.price !=0" << std::endl;
+    
     return;
   }
 }
@@ -140,4 +145,3 @@ void Aggregator::FlushLastCandle(Bar &live_bar) {
     history.push_back(live_bar);
   }
 }
-

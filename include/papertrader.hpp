@@ -1,6 +1,10 @@
+// TODO
+// trader should calc winrate usw himself
+
 #pragma once
 #include "aggregator.hpp"
 #include <iostream>
+#include <vector>
 #include <string>
 
 class PaperTrader {
@@ -10,6 +14,9 @@ private:
   double entry_price = 0.0;
   int trades_won = 0;
   int trades_lost = 0;
+  
+  std::vector<std::string> trade_log_;
+
 
   // Risikomanagement & Realismus
   double stop_loss_pct;
@@ -37,14 +44,19 @@ private:
 
       if (net_profit > 0) {
         trades_won++;
+        
+        /*
         std::cout << "[TRADER] Position GESCHLOSSEN (" << reason
                   << " - GEWINN): +" << net_profit << " USDT @ "
                   << actual_exit_price << std::endl;
+        */
       } else {
         trades_lost++;
+        /*
         std::cout << "[TRADER] Position GESCHLOSSEN (" << reason
                   << " - VERLUST): " << net_profit << " USDT @ "
                   << actual_exit_price << std::endl;
+        */
       }
 
       position_size = 0.0;
@@ -55,6 +67,32 @@ private:
 public:
   PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01)
       : stop_loss_pct(sl_pct), take_profit_pct(tp_pct) {}
+
+  // getter für ui
+  double GetBalance() const { return balance; }
+
+  int GetTradesWon() const { return trades_won; }
+
+  int GetTradesLost() const { return trades_lost; }
+
+  double GetTotalFeesPaid() const { return total_fees_paid; }
+
+  int GetTotalTrades() const { return trades_won + trades_lost; }
+
+  const std::vector<std::string>& GetTradeLog() const { return trade_log_; }
+
+  double GetNetProfit() const {
+    return balance - 10000.0;
+  } // 10000.0 ist das Startkapital
+
+  double GetWinrate() const {
+    double total_trades = GetTotalTrades();
+    double winrate = 0.0;
+    if (total_trades > 0) {
+      winrate = (static_cast<double>(trades_won / total_trades) * 100.0);
+    }
+    return winrate;
+  }
 
   void CheckRisk(double current_price) {
     if (position_size == 0.0)
@@ -82,8 +120,9 @@ public:
         balance -= entry_fee;
         total_fees_paid += entry_fee;
 
-        std::cout << "[TRADER] Position GEÖFFNET (BUY) zu " << entry_price
+        /*std::cout << "[TRADER] Position GEÖFFNET (BUY) zu " << entry_price
                   << " | Fee: " << entry_fee << std::endl;
+        */
       }
     } else if (signal == eSignal::SELL) {
       ClosePosition(current_price, "SELL SIGNAL");

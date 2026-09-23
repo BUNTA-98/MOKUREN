@@ -77,9 +77,11 @@ public:
     }
 
     // Debug-Druck bei Kerzenschluss
-    std::cout << "[STRATEGY DEBUG] Active Levels: " << bar.active_levels
+    /*
+      std::cout << "[STRATEGY DEBUG] Active Levels: " << bar.active_levels
               << " | Buy Stacked: " << max_buy_stacked
               << " | Sell Stacked: " << max_sell_stacked << std::endl;
+    */
 
     if (max_buy_stacked >= min_stacked_count &&
         max_buy_stacked > max_sell_stacked) {

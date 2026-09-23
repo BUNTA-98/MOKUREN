@@ -5,7 +5,13 @@
 #include "papertrader.hpp"
 #include "strategy.hpp"
 #include "ui.hpp"
+
 #include <iostream>
+#include <mutex>
+#include <thread>
+#include <chrono>
+
+
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
@@ -31,9 +37,17 @@ int main(int argc, char *argv[]) {
 
   std::cout << "Starte Backtest..." << std::endl;
 
-  // --- 3. DER FESTE DATEN-FLOW ---
-  size_t processed_ticks =
-      CSVLoader::ProcessBinanceCSV(argv[1], [&](const TradeEvent &trade) {
+  // --- NEU: Mutex und Threading ---
+  std::mutex data_mutex;
+  size_t processed_ticks = 0; // Nach oben ziehen, für die spätere Ausgabe
+
+  // --- 3. DER ASYNCHRONE DATEN-FLOW (Hintergrund-Thread) ---
+  std::thread backend_thread([&]() {
+    processed_ticks = CSVLoader::ProcessBinanceCSV(argv[1], [&](const TradeEvent &trade) {
+      
+      { // <-- START MUTEX SCOPE
+        std::lock_guard<std::mutex> lock(data_mutex); // Schlüssel holen
+
         if (first_timestamp == 0) {
           first_timestamp = trade.timestamp;
         }
@@ -55,31 +69,42 @@ int main(int argc, char *argv[]) {
             ptrader.ProcessSignal(tick_signal, trade.price);
           }
         }
-      });
+      } // <-- ENDE MUTEX SCOPE (Schlüssel ist wieder frei für die UI)
 
-  aggregator.FlushLastCandle(live_bar);
+      // Künstliche Verzögerung, damit die UI flüssig im Takt rendert
+      // std::this_thread::sleep_for(std::chrono::microseconds(100));
+    });
 
-  // --- 4. DIAGNOSE AUSGABE ---
+    // Letzte Kerze sichern (ebenfalls mit Mutex absichern!)
+    {
+      std::lock_guard<std::mutex> lock(data_mutex);
+      aggregator.FlushLastCandle(live_bar);
+      ptrader.CloseOpenPositionAtEnd(live_bar.close);
+    }
+  });
+
+  // --- 4. UI IM MAIN-THREAD ---
+  // Wichtig: Der Mutex wird jetzt an den UIManager übergeben
+  UIManager ui(aggregator.GetHistory(), ptrader, data_mutex);
+  ui.Run(); // Blockiert den Main-Thread und zeichnet das Terminal, bis 'q' gedrückt wird
+
+  // --- 5. AUFRÄUMEN & DIAGNOSE ---
+  // Wird erst ausgeführt, wenn du das Terminal mit 'q' schließt
+  if (backend_thread.joinable()) {
+    backend_thread.join();
+  }
+
   int64_t total_duration_sec = (last_timestamp - first_timestamp) / 1000;
   std::cout << "[DIAGNOSE] CSV Zeitspanne: " << total_duration_sec
             << " Sekunden (" << (total_duration_sec / 60) << " Minuten)"
             << std::endl;
 
-  ptrader.CloseOpenPositionAtEnd(live_bar.close);
   ptrader.PrintResults();
 
   std::cout << "Verarbeitete Ticks: " << processed_ticks << std::endl;
   std::cout << "[DEBUG] Backtest fertig." << std::endl;
   std::cout << "[DEBUG] Anzahl historischer Kerzen: "
             << aggregator.GetHistory().size() << std::endl;
-
-  if (aggregator.GetHistory().empty()) {
-    std::cerr << "[FEHLER] Keine Kerzen generiert!" << std::endl;
-    return 1;
-  }
-
-  UIManager ui(aggregator.GetHistory(), ptrader);
-  ui.Run();
 
   return 0;
 }

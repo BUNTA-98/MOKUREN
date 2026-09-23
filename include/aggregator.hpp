@@ -70,7 +70,7 @@ public:
 
   const std::vector<Bar> &GetHistory() const { return history; }
 
-  void FlushLastCandle(Bar& live_bar);
+  void FlushLastCandle(Bar &live_bar);
 
 private:
   int64_t interval_ms;
