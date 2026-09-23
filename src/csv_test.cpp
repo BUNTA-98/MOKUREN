@@ -31,24 +31,24 @@ int main(int argc, char *argv[]) {
 
   // strategy building
 
-  //trigger
-  //StackedImbalanceTrigger imb_trigger(config.imbalance_threshold, 3);
+  // trigger
+  // StackedImbalanceTrigger imb_trigger(config.imbalance_threshold, 3);
   DeltaAbsorptionTrigger delta_trigger(10.0);
- 
+
   /*
   AND_Trigger multi_trigger;
   multi_trigger.AddTrigger(&imb_trigger);
   multi_trigger.AddTrigger(&delta_trigger);
   */
 
-  //filter
+  // filter
   MinVolumeFilter my_volume_filter(10.0);
   POCTrendFilter poc_filter;
 
-  //build pipeline
+  // build pipeline
   PipelineStrategy pipeline(&delta_trigger);
   pipeline.AddFilter(&my_volume_filter);
-  //pipeline.AddFilter(&poc_filter);
+  // pipeline.AddFilter(&poc_filter);
 
   AlphaEngine alpha(pipeline);
 
@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
               ptrader.ProcessSignal(final_signal, trade.price);
             }
 
-          } // ENDE MUTEX 
+          } // ENDE MUTEX
 
           // Künstliche Verzögerung, damit die UI flüssig im Takt rendert
           // std::this_thread::sleep_for(std::chrono::microseconds(100));

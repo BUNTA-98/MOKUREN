@@ -4,8 +4,8 @@
 #pragma once
 #include "aggregator.hpp"
 #include <iostream>
-#include <vector>
 #include <string>
+#include <vector>
 
 class PaperTrader {
 private:
@@ -14,9 +14,8 @@ private:
   double entry_price = 0.0;
   int trades_won = 0;
   int trades_lost = 0;
-  
-  std::vector<std::string> trade_log_;
 
+  std::vector<std::string> trade_log_;
 
   // Risikomanagement & Realismus
   double stop_loss_pct;
@@ -44,7 +43,7 @@ private:
 
       if (net_profit > 0) {
         trades_won++;
-        
+
         /*
         std::cout << "[TRADER] Position GESCHLOSSEN (" << reason
                   << " - GEWINN): +" << net_profit << " USDT @ "
@@ -79,7 +78,7 @@ public:
 
   int GetTotalTrades() const { return trades_won + trades_lost; }
 
-  const std::vector<std::string>& GetTradeLog() const { return trade_log_; }
+  const std::vector<std::string> &GetTradeLog() const { return trade_log_; }
 
   double GetNetProfit() const {
     return balance - 10000.0;

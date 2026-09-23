@@ -215,16 +215,18 @@ Element UIManager::RenderFootprint() {
 
   // --- NEU: Manueller Scroll-Offset ---
   // check bounds
-  footprint_scroll_ = std::max(0, std::min(footprint_scroll_, (int)rows.size() - 1));
+  footprint_scroll_ =
+      std::max(0, std::min(footprint_scroll_, (int)rows.size() - 1));
 
-  //cut top levels on scroll down
+  // cut top levels on scroll down
   Elements visible_rows;
   for (size_t i = footprint_scroll_; i < rows.size(); ++i) {
-      visible_rows.push_back(rows[i]);
+    visible_rows.push_back(rows[i]);
   }
 
   // 3. Ausgeben (ohne vscroll_indicator, da wir manuell abschneiden)
-  return vbox(visible_rows) | yframe | color(Color::White) | border | color(Color::Red) | flex;
+  return vbox(visible_rows) | yframe | color(Color::White) | border |
+         color(Color::Red) | flex;
 }
 
 void UIManager::Run() {
@@ -287,28 +289,29 @@ void UIManager::Run() {
       return true;
     }
 
-// --- NEU: Trackpad / Maus-Rad ---
+    // --- NEU: Trackpad / Maus-Rad ---
     if (event.is_mouse()) {
-        if (event.mouse().button == Mouse::WheelDown) {
-            footprint_scroll_++;
-            return true; // true = UI neu zeichnen
-        }
-        if (event.mouse().button == Mouse::WheelUp) {
-            if (footprint_scroll_ > 0) footprint_scroll_--;
-            return true;
-        }
+      if (event.mouse().button == Mouse::WheelDown) {
+        footprint_scroll_++;
+        return true; // true = UI neu zeichnen
+      }
+      if (event.mouse().button == Mouse::WheelUp) {
+        if (footprint_scroll_ > 0)
+          footprint_scroll_--;
+        return true;
+      }
     }
 
-// --- NEU: Pfeiltasten zum Scrollen ---
+    // --- NEU: Pfeiltasten zum Scrollen ---
     if (event == Event::ArrowUp) {
-        if (footprint_scroll_ > 0) footprint_scroll_--;
-        return true;
+      if (footprint_scroll_ > 0)
+        footprint_scroll_--;
+      return true;
     }
     if (event == Event::ArrowDown) {
-        footprint_scroll_++;
-        return true;
+      footprint_scroll_++;
+      return true;
     }
-
 
     if (event == Event::ArrowLeft) {
       if (selected_bar_index_ > 0)
