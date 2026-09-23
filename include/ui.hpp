@@ -23,6 +23,8 @@ private:
   bool is_input_mode_ = false;
   std::string jump_input_ = "";
 
+  int footprint_scroll_ = 0;
+
 
   // Zeiger auf die aktuell ausgewählte Kerze für die Historien-Navigation
   size_t selected_bar_index_ = 0;

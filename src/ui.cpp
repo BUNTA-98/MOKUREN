@@ -213,7 +213,7 @@ Element UIManager::RenderFootprint() {
     rows.push_back(text("Noch keine Ticks...") | dim | center);
   }
 
-  return vbox(rows) | vscroll_indicator | yframe | border | flex;
+  return vbox(rows) | focusPosition(0, footprint_scroll_) | vscroll_indicator | yframe | border | flex;
 }
 
 void UIManager::Run() {
@@ -276,9 +276,33 @@ void UIManager::Run() {
       return true;
     }
 
+// --- NEU: Trackpad / Maus-Rad ---
+    if (event.is_mouse()) {
+        if (event.mouse().button == Mouse::WheelDown) {
+            footprint_scroll_++;
+            return true; // true = UI neu zeichnen
+        }
+        if (event.mouse().button == Mouse::WheelUp) {
+            if (footprint_scroll_ > 0) footprint_scroll_--;
+            return true;
+        }
+    }
+
+// --- NEU: Pfeiltasten zum Scrollen ---
+    if (event == Event::ArrowUp) {
+        if (footprint_scroll_ > 0) footprint_scroll_--;
+        return true;
+    }
+    if (event == Event::ArrowDown) {
+        footprint_scroll_++;
+        return true;
+    }
+
+
     if (event == Event::ArrowLeft) {
       if (selected_bar_index_ > 0)
         selected_bar_index_--;
+      footprint_scroll_ = 0;
       return true;
     }
 
@@ -286,6 +310,7 @@ void UIManager::Run() {
       std::lock_guard<std::mutex> lock(data_mtx);
       if (selected_bar_index_ + 1 < history_.size())
         selected_bar_index_++;
+      footprint_scroll_ = 0;
       return true;
     }
 
