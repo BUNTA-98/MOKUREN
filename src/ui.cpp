@@ -213,7 +213,18 @@ Element UIManager::RenderFootprint() {
     rows.push_back(text("Noch keine Ticks...") | dim | center);
   }
 
-  return vbox(rows) | focusPosition(0, footprint_scroll_) | vscroll_indicator | yframe | border | flex;
+  // --- NEU: Manueller Scroll-Offset ---
+  // check bounds
+  footprint_scroll_ = std::max(0, std::min(footprint_scroll_, (int)rows.size() - 1));
+
+  //cut top levels on scroll down
+  Elements visible_rows;
+  for (size_t i = footprint_scroll_; i < rows.size(); ++i) {
+      visible_rows.push_back(rows[i]);
+  }
+
+  // 3. Ausgeben (ohne vscroll_indicator, da wir manuell abschneiden)
+  return vbox(visible_rows) | yframe | color(Color::White) | border | color(Color::Red) | flex;
 }
 
 void UIManager::Run() {

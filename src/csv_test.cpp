@@ -1,4 +1,5 @@
 #include "aggregator.hpp"
+#include "alpha_engine.hpp"
 #include "csv_parser.hpp"
 #include "engine_config.hpp"
 #include "market_context.hpp"
@@ -27,7 +28,30 @@ int main(int argc, char *argv[]) {
   // --- 2. KOMPONENTEN INITIALISIEREN ---
   Aggregator aggregator(config.interval_ms, config.tick_size);
   PaperTrader ptrader(config.stop_loss_pct, config.take_profit_pct);
-  ImbalanceStrategy strategy(config.imbalance_threshold, 3);
+
+  // strategy building
+
+  //trigger
+  //StackedImbalanceTrigger imb_trigger(config.imbalance_threshold, 3);
+  DeltaAbsorptionTrigger delta_trigger(10.0);
+ 
+  /*
+  AND_Trigger multi_trigger;
+  multi_trigger.AddTrigger(&imb_trigger);
+  multi_trigger.AddTrigger(&delta_trigger);
+  */
+
+  //filter
+  MinVolumeFilter my_volume_filter(10.0);
+  POCTrendFilter poc_filter;
+
+  //build pipeline
+  PipelineStrategy pipeline(&delta_trigger);
+  pipeline.AddFilter(&my_volume_filter);
+  //pipeline.AddFilter(&poc_filter);
+
+  AlphaEngine alpha(pipeline);
+
   Bar live_bar;
 
   int64_t first_timestamp = 0;
@@ -35,11 +59,11 @@ int main(int argc, char *argv[]) {
 
   std::cout << "Starte Backtest..." << std::endl;
 
-  // --- NEU: Mutex und Threading ---
+  // multithreading
   std::mutex data_mutex;
   size_t processed_ticks = 0; // Nach oben ziehen, für die spätere Ausgabe
 
-  // --- 3. DER ASYNCHRONE DATEN-FLOW (Hintergrund-Thread) ---
+  // background thread
   std::thread backend_thread([&]() {
     processed_ticks =
         CSVLoader::ProcessBinanceCSV(argv[1], [&](const TradeEvent &trade) {
@@ -56,18 +80,16 @@ int main(int argc, char *argv[]) {
 
             MarketContext context{aggregator.GetHistory(), live_bar};
 
-            if (candle_finished) {
-              eSignal signal = strategy.OnCandleClose(context);
-              if (signal != eSignal::NONE) {
-                ptrader.ProcessSignal(signal, live_bar.close);
-              }
-            } else {
-              eSignal tick_signal = strategy.OnTickUpdate(context);
-              if (tick_signal != eSignal::NONE) {
-                ptrader.ProcessSignal(tick_signal, trade.price);
-              }
+            // alpha
+            eSignal final_signal = alpha.Evaluate(context, candle_finished);
+
+            // 5. EXECUTION ENGINE (Später schalten wir hier die RiskEngine
+            // dazwischen!)
+            if (final_signal != eSignal::NONE) {
+              ptrader.ProcessSignal(final_signal, trade.price);
             }
-          } // <-- ENDE MUTEX SCOPE (Schlüssel ist wieder frei für die UI)
+
+          } // ENDE MUTEX 
 
           // Künstliche Verzögerung, damit die UI flüssig im Takt rendert
           // std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -84,11 +106,9 @@ int main(int argc, char *argv[]) {
   // --- 4. UI IM MAIN-THREAD ---
   // Wichtig: Der Mutex wird jetzt an den UIManager übergeben
   UIManager ui(aggregator.GetHistory(), ptrader, data_mutex);
-  ui.Run(); // Blockiert den Main-Thread und zeichnet das Terminal, bis 'q'
-            // gedrückt wird
+  ui.Run();
 
-  // --- 5. AUFRÄUMEN & DIAGNOSE ---
-  // Wird erst ausgeführt, wenn du das Terminal mit 'q' schließt
+  // after close
   if (backend_thread.joinable()) {
     backend_thread.join();
   }
