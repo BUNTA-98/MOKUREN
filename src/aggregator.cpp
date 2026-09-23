@@ -34,7 +34,6 @@ PriceLevel *Aggregator::GetOrAddLevel(Bar &bar, double price) {
 
     return &bar.vap_grid[index];
   }
-  
 
   /*
   std::cout << "\n[CRITICAL] Price level out of range!"
@@ -78,8 +77,8 @@ void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
 
   } else {
 
-    //std::cout << "ERROR: updateBarData() level_ptr.price !=0" << std::endl;
-    
+    // std::cout << "ERROR: updateBarData() level_ptr.price !=0" << std::endl;
+
     return;
   }
 }
