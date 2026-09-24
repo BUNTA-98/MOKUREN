@@ -2,7 +2,16 @@
 #include "trade_event.hpp"
 #include <vector>
 
-enum class eSignal { NONE, BUY, SELL };
+enum class SignalDirection { NONE, BUY, SELL };
+
+struct TradeSignal {
+
+  SignalDirection direction = SignalDirection::NONE;
+  double entry_price = 0.0;
+  double stop_loss = 0.0;
+  double take_profit = 0.0;
+  double volume = 0.0;
+};
 
 constexpr int MAX_GRID_LEVELS = 5000;
 
@@ -31,7 +40,6 @@ struct Bar {
 
   PriceLevel vap_grid[MAX_GRID_LEVELS];
 
-  // Löscht die Kerze, behält aber die tick_size bei
   void ResetBar(int64_t new_timestamp) {
     open = 0.0;
     high = 0.0;

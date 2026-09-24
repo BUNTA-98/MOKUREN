@@ -10,7 +10,7 @@ public:
   AlphaEngine(IStrategy &strategy) : strategy_(strategy) {}
 
   // data in - signal out
-  eSignal Evaluate(const MarketContext &context, bool candle_finished) {
+  TradeSignal Evaluate(const MarketContext &context, bool candle_finished) {
     if (candle_finished) {
       return strategy_.OnCandleClose(context);
     } else {

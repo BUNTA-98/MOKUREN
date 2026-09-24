@@ -4,126 +4,166 @@
 #include "engine_config.hpp"
 #include "market_context.hpp"
 #include "papertrader.hpp"
+#include "position_sizer.hpp"
+#include "risk_engine.hpp"
 #include "strategy.hpp"
-#include "ui.hpp"
 
-#include <chrono>
+#include <algorithm>
+#include <cstdio>
+#include <filesystem>
 #include <iostream>
-#include <mutex>
-#include <thread>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+// speicherstruktur für ergebnisse
+struct TestResult {
+  double delta;
+  double sl_pct;
+  double tp_pct;
+  double net_profit;
+  int trades;
+  double winrate;
+};
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
-    std::cerr << "Bitte CSV-Datei angeben!" << std::endl;
+    std::cerr << "csv required" << std::endl; //[cite: 5]
     return 1;
   }
 
-  // --- 1. ZENTRALE KONFIGURATION ---
-  EngineConfig config;
-  config.interval_ms = 60000; // 1 Minute in ms
-  config.tick_size = 1.0;
-  config.stop_loss_pct = 0.005;
-  config.take_profit_pct = 0.01;
+  // basis config
+  EngineConfig base_config;
+  base_config.interval_ms = 60000; //[cite: 5]
+  base_config.tick_size = 1.0;     //[cite: 5]
 
-  // --- 2. KOMPONENTEN INITIALISIEREN ---
-  Aggregator aggregator(config.interval_ms, config.tick_size);
-  PaperTrader ptrader(config.stop_loss_pct, config.take_profit_pct);
+  // 1. dateien sammeln und sortieren
+  std::vector<std::string> csv_files;
+  fs::path input_path = argv[1];
 
-  // strategy building
-
-  // trigger
-  // StackedImbalanceTrigger imb_trigger(config.imbalance_threshold, 3);
-  DeltaAbsorptionTrigger delta_trigger(10.0);
-
-  /*
-  AND_Trigger multi_trigger;
-  multi_trigger.AddTrigger(&imb_trigger);
-  multi_trigger.AddTrigger(&delta_trigger);
-  */
-
-  // filter
-  MinVolumeFilter my_volume_filter(10.0);
-  POCTrendFilter poc_filter;
-
-  // build pipeline
-  PipelineStrategy pipeline(&delta_trigger);
-  pipeline.AddFilter(&my_volume_filter);
-  // pipeline.AddFilter(&poc_filter);
-
-  AlphaEngine alpha(pipeline);
-
-  Bar live_bar;
-
-  int64_t first_timestamp = 0;
-  int64_t last_timestamp = 0;
-
-  std::cout << "Starte Backtest..." << std::endl;
-
-  // multithreading
-  std::mutex data_mutex;
-  size_t processed_ticks = 0; // Nach oben ziehen, für die spätere Ausgabe
-
-  // background thread
-  std::thread backend_thread([&]() {
-    processed_ticks =
-        CSVLoader::ProcessBinanceCSV(argv[1], [&](const TradeEvent &trade) {
-          { // <-- START MUTEX SCOPE
-            std::lock_guard<std::mutex> lock(data_mutex); // Schlüssel holen
-
-            if (first_timestamp == 0) {
-              first_timestamp = trade.timestamp;
-            }
-            last_timestamp = trade.timestamp;
-
-            ptrader.CheckRisk(trade.price);
-            bool candle_finished = aggregator.ProcessTrade(live_bar, trade);
-
-            MarketContext context{aggregator.GetHistory(), live_bar};
-
-            // alpha
-            eSignal final_signal = alpha.Evaluate(context, candle_finished);
-
-            // 5. EXECUTION ENGINE (Später schalten wir hier die RiskEngine
-            // dazwischen!)
-            if (final_signal != eSignal::NONE) {
-              ptrader.ProcessSignal(final_signal, trade.price);
-            }
-
-          } // ENDE MUTEX
-
-          // Künstliche Verzögerung, damit die UI flüssig im Takt rendert
-          // std::this_thread::sleep_for(std::chrono::microseconds(100));
-        });
-
-    // Letzte Kerze sichern (ebenfalls mit Mutex absichern!)
-    {
-      std::lock_guard<std::mutex> lock(data_mutex);
-      aggregator.FlushLastCandle(live_bar);
-      ptrader.CloseOpenPositionAtEnd(live_bar.close);
+  if (fs::is_directory(input_path)) {
+    for (const auto &entry : fs::directory_iterator(input_path)) {
+      if (entry.path().extension() == ".csv") {
+        csv_files.push_back(entry.path().string());
+      }
     }
-  });
-
-  // --- 4. UI IM MAIN-THREAD ---
-  // Wichtig: Der Mutex wird jetzt an den UIManager übergeben
-  UIManager ui(aggregator.GetHistory(), ptrader, data_mutex);
-  ui.Run();
-
-  // after close
-  if (backend_thread.joinable()) {
-    backend_thread.join();
+    std::sort(csv_files.begin(), csv_files.end()); //[cite: 5]
+  } else if (fs::is_regular_file(input_path)) {
+    csv_files.push_back(input_path.string()); //[cite: 5]
+  } else {
+    std::cerr << "ungültiger pfad!" << std::endl; //[cite: 5]
+    return 1;
   }
 
-  int64_t total_duration_sec = (last_timestamp - first_timestamp) / 1000;
-  std::cout << "[DIAGNOSE] CSV Zeitspanne: " << total_duration_sec
-            << " Sekunden (" << (total_duration_sec / 60) << " Minuten)"
-            << std::endl;
+  // 2. alle daten in den ram laden (für highspeed loops)
+  std::cout << "lade ticks in arbeitsspeicher..." << std::endl;
+  std::vector<TradeEvent> all_trades;
+  for (const auto &file : csv_files) {
+    CSVLoader::ProcessBinanceCSV(
+        file, [&](const TradeEvent &trade) { all_trades.push_back(trade); });
+  }
+  std::cout << "ticks geladen: " << all_trades.size() << "\n\n";
 
-  ptrader.PrintResults();
+  // 3. grid search vorbereiten
+  std::vector<TestResult> results;
+  std::cout << "starte parameter-scan...\n";
 
-  std::cout << "Verarbeitete Ticks: " << processed_ticks << std::endl;
-  std::cout << "[DEBUG] Backtest fertig." << std::endl;
-  std::cout << "[DEBUG] Anzahl historischer Kerzen: "
-            << aggregator.GetHistory().size() << std::endl;
+  // loops für delta, stop-loss und take-profit
+  for (double delta = 4.0; delta <= 25.0; delta += 1.0) {
+    for (double sl_pct = 0.002; sl_pct <= 0.010; sl_pct += 0.002) {
+      for (double tp_pct = 0.005; tp_pct <= 0.020; tp_pct += 0.005) {
 
-  return 0;
+        // module für jeden lauf frisch instanziieren[cite: 5]
+        Aggregator aggregator(base_config.interval_ms,
+                              base_config.tick_size); //[cite: 5]
+        PaperTrader ptrader(sl_pct, tp_pct);          //[cite: 5]
+
+        DeltaAbsorptionTrigger delta_trigger(delta);
+        MinVolumeFilter vol_filter(1.0); //[cite: 5]
+
+        PipelineStrategy pipeline(&delta_trigger); //[cite: 5]
+        pipeline.AddFilter(&vol_filter);           //[cite: 5]
+        AlphaEngine alpha(pipeline);               //[cite: 5]
+
+        PositionSizer sizer(ptrader, 0.01,
+                            10.0); // 1% risk, min 10$ distance[cite: 5]
+
+        SinglePositionLock pos_lock(ptrader);    //[cite: 5]
+        MaxDrawdownLock dd_lock(ptrader, 100.0); // max 100$ loss[cite: 5]
+        MaxLeverageLock lev_lock(ptrader, 10.0); // max 3x hebel[cite: 5]
+
+        RiskManager risk_manager;
+        risk_manager.AddModule(&pos_lock); //[cite: 5]
+        risk_manager.AddModule(&dd_lock);  //[cite: 5]
+        risk_manager.AddModule(&lev_lock); //[cite: 5]
+
+        Bar live_bar; //[cite: 5]
+
+        // hochgeschwindigkeits-simulation aus dem ram
+        for (const auto &trade : all_trades) {
+          ptrader.CheckRisk(trade.price); //[cite: 5]
+          bool candle_finished =
+              aggregator.ProcessTrade(live_bar, trade);             //[cite: 5]
+          MarketContext context{aggregator.GetHistory(), live_bar}; //[cite: 5]
+
+          TradeSignal raw_signal =
+              alpha.Evaluate(context, candle_finished); //[cite: 5]
+
+          // ticket mit preisen füllen[cite: 5]
+          if (raw_signal.direction != SignalDirection::NONE) {
+            raw_signal.entry_price = trade.price; //[cite: 5]
+
+            if (raw_signal.direction == SignalDirection::BUY) {      //[cite: 5]
+              raw_signal.stop_loss = trade.price * (1.0 - sl_pct);   //[cite: 5]
+              raw_signal.take_profit = trade.price * (1.0 + tp_pct); //[cite: 5]
+            } else {
+              raw_signal.stop_loss = trade.price * (1.0 + sl_pct);   //[cite: 5]
+              raw_signal.take_profit = trade.price * (1.0 - tp_pct); //[cite: 5]
+            }
+          }
+
+          TradeSignal sized_signal =
+              sizer.CalculateSize(raw_signal); //[cite: 5]
+          TradeSignal final_signal =
+              risk_manager.Evaluate(sized_signal); //[cite: 5]
+
+          if (final_signal.direction != SignalDirection::NONE) { //[cite: 5]
+            ptrader.ProcessSignal(final_signal, trade.price);    //[cite: 5]
+          }
+        }
+
+        // abschluss dieses durchlaufs
+        aggregator.FlushLastCandle(live_bar);           //[cite: 5]
+        ptrader.CloseOpenPositionAtEnd(live_bar.close); //[cite: 5]
+
+        // ergebnis speichern (ignoriert läufe ohne trades)
+        if (ptrader.GetTotalTrades() > 0) {
+          results.push_back({delta, sl_pct, tp_pct, ptrader.GetNetProfit(),
+                             ptrader.GetTotalTrades(), ptrader.GetWinrate()});
+        }
+      }
+    }
+  }
+
+  // 4. sortieren nach höchstem netto-profit
+  std::sort(results.begin(), results.end(),
+            [](const TestResult &a, const TestResult &b) {
+              return a.net_profit > b.net_profit;
+            });
+
+  // 5. top 10 tabelle ausgeben
+  std::cout << "\n=== top 10 parameter-kombinationen ===\n";
+  std::cout << "delta\tsl(%)\ttp(%)\ttrades\twinrate\tprofit(usdt)\n";
+  std::cout << "--------------------------------------------------------\n";
+
+  int limit = std::min(static_cast<int>(results.size()), 10);
+  for (int i = 0; i < limit; i++) {
+    const auto &r = results[i];
+    std::printf("%.1f\t%.1f%%\t%.1f%%\t%d\t%.1f%%\t%.2f\n", r.delta,
+                (r.sl_pct * 100.0), (r.tp_pct * 100.0), r.trades, r.winrate,
+                r.net_profit);
+  }
+
+  return 0; //[cite: 5]
 }
