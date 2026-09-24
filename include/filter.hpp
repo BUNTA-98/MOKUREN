@@ -84,3 +84,25 @@ public:
     return false;
   }
 };
+
+
+class MacroTrendFilter : public IFilter {
+
+public:
+
+  bool AllowTrade(const MarketContext &context, TradeSignal signal) override {
+    if (context.htf_bar.open == 0.0) return true;
+
+    bool macro_is_bullish = context.htf_bar.close >= context.htf_bar.open;
+
+    if (signal.direction == SignalDirection::BUY && !macro_is_bullish) {
+      return false;
+    }
+    
+    if (signal.direction == SignalDirection::SELL && macro_is_bullish) {
+      return false;
+    }
+
+    return true;
+  }
+};

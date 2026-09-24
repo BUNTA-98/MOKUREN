@@ -1,17 +1,20 @@
-#include "trade_event.hpp"
+#include "mokuren.hpp"
 #include <iostream>
 #include <string>
 
-std::string banner = "KAITO v0.1";
-std::string separator = "\n---------\n";
+int main(int argc, char *argv[]) {
+  // Terminal Argumente abfangen (genau wie vorher)[cite: 3]
+  if (argc < 2) {
+    std::cerr << "fehler: zielpfad (csv oder ordner) fehlt.\n"
+              << "nutzung: " << argv[0] << " <pfad>\n";
+    return 1;
+  }
 
-int main() {
-  std::cout << separator << banner << separator << std::endl;
+  std::string target_path = argv[1];
 
-  TradeEvent event;
-
-  std::cout << "EVENT SIZE: " << sizeof(event) << " BYTE" << std::endl;
-  std::cout << "EVENT ALIGNMENT: " << alignof(event) << " BYTE" << std::endl;
+  // Engine hochfahren und Zielpfad übergeben
+  Mokuren engine;
+  engine.RunGridSearch(target_path);
 
   return 0;
 }

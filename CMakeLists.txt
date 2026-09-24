@@ -17,18 +17,24 @@ FetchContent_MakeAvailable(ftxui)
 # Header-Verzeichnis angeben
 include_directories(include)
 
+# Sucht die Thread-Bibliothek deines Betriebssystems
+find_package(Threads REQUIRED)
+
 # Executable definieren und Quelldateien auflisten
 add_executable(
-  kaito
-  src/csv_test.cpp
+  mokuren
+  src/main.cpp
   src/aggregator.cpp
   src/ui.cpp
   src/csv_parser.cpp
 )
 
+# Verbindet dein Programm fest mit den CPU-Threads (Füge Threads::Threads hinzu!)
+target_link_libraries(mokuren PRIVATE Threads::Threads)
+
 # FTXUI-Module mit unserem Programm verknüpfen
 target_link_libraries(
-  kaito
+  mokuren
   PRIVATE ftxui::screen
           ftxui::dom
           ftxui::component
