@@ -3,7 +3,7 @@
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "tick_size": 1.0,
-    "max_cores": 2 
+    "max_cores": 6 
   },
   "strategy": {
     "trigger": "DeltaAbsorption",

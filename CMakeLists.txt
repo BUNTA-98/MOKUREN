@@ -33,7 +33,7 @@ FetchContent_Declare(ftxui
 FetchContent_MakeAvailable(ftxui)
 
 # 4. executable mit all deinen source-dateien
-add_executable(mokuren src/main.cpp src/aggregator.cpp src/csv_parser.cpp src/ui.cpp)
+add_executable(mokuren src/main.cpp src/aggregator.cpp src/csv_parser.cpp)
 
 # 5. include ordner bekanntmachen
 target_include_directories(mokuren PRIVATE include)

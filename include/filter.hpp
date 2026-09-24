@@ -90,21 +90,33 @@ public:
   }
 };
 
-
 class MacroTrendFilter : public IFilter {
+private:
+  int period_;
 
 public:
+  // Standardmäßig prüfen wir den 200-Perioden-Trend (200 SMA)
+  MacroTrendFilter(int period = 200) : period_(period) {}
 
   bool AllowTrade(const MarketContext &context, TradeSignal signal) override {
-    if (context.htf_bar.open == 0.0) return true;
+    // Wenn wir noch nicht genug Kerzen für den SMA haben, handeln wir nicht
+    if (context.history.size() < period_) return false;
 
-    bool macro_is_bullish = context.htf_bar.close >= context.htf_bar.open;
+    double sum = 0.0;
+    // Berechne den Durchschnitt der letzten N Kerzen
+    for (size_t i = context.history.size() - period_; i < context.history.size(); ++i) {
+      sum += context.history[i].close;
+    }
+    double sma = sum / period_;
+    double current_price = context.history.back().close;
 
-    if (signal.direction == SignalDirection::BUY && !macro_is_bullish) {
+    // Nur LONG, wenn der Preis über dem SMA liegt
+    if (signal.direction == SignalDirection::BUY && current_price < sma) {
       return false;
     }
     
-    if (signal.direction == SignalDirection::SELL && macro_is_bullish) {
+    // Nur SHORT, wenn der Preis unter dem SMA liegt
+    if (signal.direction == SignalDirection::SELL && current_price > sma) {
       return false;
     }
 

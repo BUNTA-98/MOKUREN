@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <ctime>
 #include <vector>
+#include <cmath>
 
 class ITrigger {
 public:
@@ -31,9 +32,10 @@ public:
     int current_buy_stacked = 0, max_buy_stacked = 0;
     int current_sell_stacked = 0, max_sell_stacked = 0;
 
-    for (int i = 1; i < MAX_GRID_LEVELS; i++) {
-      const auto &upper = bar.vap_grid[i];
-      const auto &lower = bar.vap_grid[i - 1];
+    // Iteriere durch den neuen, komprimierten Vektor
+    for (size_t i = 1; i < bar.footprint.size(); i++) {
+      const auto &upper = bar.footprint[i];
+      const auto &lower = bar.footprint[i - 1];
 
       if (upper.price == 0.0 || lower.price == 0.0) {
         current_buy_stacked = 0;
@@ -85,11 +87,12 @@ public:
     const Bar &bar = context.history.back();
 
     double total_delta = 0.0;
-    for (int i = 0; i < MAX_GRID_LEVELS; i++) {
-      if (bar.vap_grid[i].price > 0.0) {
+    
+    // Range-based for loop über den neuen Vektor
+    for (const auto &level : bar.footprint) {
+      if (level.price > 0.0) {
         // Delta = Aggressive Käufer (Ask) - Aggressive Verkäufer (Bid)
-        total_delta +=
-            (bar.vap_grid[i].ask_volume - bar.vap_grid[i].bid_volume);
+        total_delta += (level.ask_volume - level.bid_volume);
       }
     }
 
@@ -112,8 +115,6 @@ public:
     // SELL-Signal: Extremes positives Delta (Kaufdruck), aber Kerze schließt
     // rot
     if (total_delta >= min_delta_threshold_ && bar.close < bar.open) {
-      // Du kannst diesen SELL-Block später analog zum BUY-Block ausbauen
-      // und hier ebenfalls SL und TP definieren!
       return TradeSignal{SignalDirection::SELL};
     }
 

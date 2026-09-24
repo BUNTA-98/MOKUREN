@@ -5,58 +5,36 @@
 #include <iostream>
 #include <vector>
 
-PriceLevel *Aggregator::GetOrAddLevel(Bar &bar, double price) {
+PriceLevel *Aggregator::GetOrAddLevel(double price) {
+  double normalized_price = std::floor(price / tick_size) * tick_size;
 
-  double normalized_price = std::floor(price / bar.tick_size) * bar.tick_size;
-
-  // bei leerer bar
-  if (bar.active_levels == 0) {
-    bar.base_price = normalized_price - (MAX_GRID_LEVELS / 2) * bar.tick_size;
-    bar.lowest_price = normalized_price;
+  if (active_levels == 0) {
+    base_price = normalized_price - (MAX_GRID_LEVELS / 2) * tick_size;
+    lowest_price = normalized_price;
   }
 
-  // wenn bereits level besteht
-  // calc index
-  int index = std::round((normalized_price - bar.base_price) / bar.tick_size);
+  int index = std::round((normalized_price - base_price) / tick_size);
 
-  // check bounds
   if (index >= 0 && index < MAX_GRID_LEVELS) {
-
-    // initialize price level
-    if (bar.vap_grid[index].price == 0.0) {
-
-      bar.vap_grid[index].price = normalized_price;
-      bar.vap_grid[index].bid_volume = 0.0;
-      bar.vap_grid[index].ask_volume = 0.0;
-
-      bar.active_levels++;
+    if (live_workspace[index].price == 0.0) {
+      live_workspace[index].price = normalized_price;
+      live_workspace[index].bid_volume = 0.0;
+      live_workspace[index].ask_volume = 0.0;
+      active_levels++;
     }
-
-    return &bar.vap_grid[index];
+    return &live_workspace[index];
   }
-
-  /*
-  std::cout << "\n[CRITICAL] Price level out of range!"
-            << "\n -> Aktueller Preis: " << price
-            << "\n -> Base Price: " << bar.base_price
-            << "\n -> Berechneter Index: " << index
-            << "\n -> Tick Size: " << bar.tick_size << std::endl;
-  */
 
   return nullptr;
 }
 
 void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
-
   if (bar.open == 0.0) {
-
     bar.open = trade.price;
     bar.close = trade.price;
     bar.high = trade.price;
     bar.low = trade.price;
-
   } else {
-
     bar.high = std::max(bar.high, trade.price);
     bar.low = std::min(bar.low, trade.price);
     bar.close = trade.price;
@@ -64,9 +42,8 @@ void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
 
   bar.total_volume += trade.quantity;
 
-  PriceLevel *level_ptr = GetOrAddLevel(bar, trade.price);
-  if (level_ptr) { // potential BUG
-
+  PriceLevel *level_ptr = GetOrAddLevel(trade.price);
+  if (level_ptr) { 
     if (trade.is_buyer_maker) {
       level_ptr->bid_volume += trade.quantity;
       bar.cumulative_delta -= trade.quantity;
@@ -74,30 +51,18 @@ void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
       level_ptr->ask_volume += trade.quantity;
       bar.cumulative_delta += trade.quantity;
     }
-
-  } else {
-
-    // std::cout << "ERROR: updateBarData() level_ptr.price !=0" << std::endl;
-
-    return;
   }
 }
 
 void Aggregator::AnalyzeCandle(Bar &bar) {
-
-  // std::cout << "[DEBUG] Kerze fertig! Aktive Level: " << bar.active_levels
-  //           << " | Total Vol: " << bar.total_volume << std::endl;
-
-  double max_vol = -1.0; // frag nich
+  double max_vol = -1.0; 
   double poc_price = 0.0;
 
-  // calc POC
   for (int i = 0; i < MAX_GRID_LEVELS; i++) {
-
-    double total_vol = bar.vap_grid[i].bid_volume + bar.vap_grid[i].ask_volume;
-    if (total_vol > max_vol && bar.vap_grid[i].price > 0.0) {
+    double total_vol = live_workspace[i].bid_volume + live_workspace[i].ask_volume;
+    if (total_vol > max_vol && live_workspace[i].price > 0.0) {
       max_vol = total_vol;
-      poc_price = bar.vap_grid[i].price;
+      poc_price = live_workspace[i].price;
     }
   }
 
@@ -105,42 +70,37 @@ void Aggregator::AnalyzeCandle(Bar &bar) {
 }
 
 bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
-  // 1. Setup beim allerersten Tick des gesamten Backtests
   if (next_close_time == 0) {
     int64_t start_time = trade.timestamp - (trade.timestamp % interval_ms);
     next_close_time = start_time + interval_ms;
     live_bar.ResetBar(start_time);
-    live_bar.tick_size = tick_size;
+    ResetWorkspace(); 
   }
 
   bool candle_closed = false;
 
-  // 2. Zeit-Check: Liegt der Tick außerhalb unserer aktuellen Kerze?
   while (trade.timestamp >= next_close_time) {
     AnalyzeCandle(live_bar);
-
-    // Aggregator archiviert die Kerze selbst!
+    PackFootprint(live_bar); 
     history.push_back(live_bar);
     candle_closed = true;
 
-    // Timer hochzählen und leere neue Kerze starten
     int64_t new_start = next_close_time;
     next_close_time += interval_ms;
+    
     live_bar.ResetBar(new_start);
-    live_bar.tick_size = tick_size;
+    ResetWorkspace(); 
   }
 
-  // 3. Den aktuellen Tick in die korrekte (laufende oder frisch erstellte)
-  // Kerze buchen
   UpdateBarData(live_bar, trade);
 
   return candle_closed;
 }
 
 void Aggregator::FlushLastCandle(Bar &live_bar) {
-  // Nur wegspeichern, wenn in der letzten Kerze überhaupt Trades gelaufen sind
   if (live_bar.total_volume > 0.0) {
     AnalyzeCandle(live_bar);
+    PackFootprint(live_bar); 
     history.push_back(live_bar);
   }
 }
