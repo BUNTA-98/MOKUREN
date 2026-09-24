@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <fstream>
 
 namespace fs = std::filesystem;
 
@@ -25,6 +26,7 @@ struct TestResult {
   double net_profit;
   int trades;
   double winrate;
+  std::vector<TradeRecord> trade_log;
 };
 
 class Mokuren {
@@ -125,7 +127,9 @@ public:
             // tick loop
             for (const auto &trade : all_trades) {
               eng.pos_manager->Update(trade.price);
-              eng.ptrader->CheckRisk(trade.price);
+              
+              // pass timestamp to risk check
+              eng.ptrader->CheckRisk(trade.price, trade.timestamp);
 
               bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
               eng.htf_aggregator->ProcessTrade(htf_bar, trade);
@@ -148,20 +152,24 @@ public:
               TradeSignal final_signal = eng.risk_manager->Evaluate(sized_signal);
 
               if (final_signal.direction != SignalDirection::NONE) {
-                eng.ptrader->ProcessSignal(final_signal, trade.price);
+                // pass timestamp to signal processing
+                eng.ptrader->ProcessSignal(final_signal, trade.price, trade.timestamp);
               }
             }
 
             eng.aggregator->FlushLastCandle(live_bar);
-            eng.ptrader->CloseOpenPositionAtEnd(live_bar.close);
+            
+            // pass end time
+            eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
 
             // save results thread-safe
             if (eng.ptrader->GetTotalTrades() > 0) {
               std::lock_guard<std::mutex> lock(results_mutex);
               results.push_back({delta, sl, tp, eng.ptrader->GetNetProfit(),
-                                 eng.ptrader->GetTotalTrades(), eng.ptrader->GetWinrate()});
+                                 eng.ptrader->GetTotalTrades(), eng.ptrader->GetWinrate(),
+                                 eng.ptrader->GetTradeHistory()});
             }
-
+            
             // draw red progress bar thread-safe
             int done = ++current_iteration;
             {
@@ -208,6 +216,32 @@ public:
       std::printf("%.2f\t%.1f%%\t%.1f%%\t%d\t%.1f%%\t%.2f\n", r.delta,
                   (r.sl_pct * 100.0), (r.tp_pct * 100.0), r.trades, r.winrate,
                   r.net_profit);
+    }
+
+    // export top 10 runs with timestamps
+    if (!results.empty()) {
+      std::ofstream file("top_10_runs_trades.csv");
+      file << "Rank,Delta,SL_Pct,TP_Pct,EntryTime,ExitTime,Type,EntryPrice,ExitPrice,NetProfit,Reason\n";
+      
+      int log_limit = std::min(static_cast<int>(results.size()), 10);
+      for (int i = 0; i < log_limit; i++) {
+        const auto &run = results[i];
+        
+        for (const auto& t : run.trade_log) {
+          file << (i + 1) << ","                    
+               << run.delta << ","                  
+               << (run.sl_pct * 100.0) << ","       
+               << (run.tp_pct * 100.0) << ","
+               << t.entry_time << ","
+               << t.exit_time << ","
+               << (t.direction == SignalDirection::BUY ? "LONG" : "SHORT") << ","
+               << t.entry_price << "," 
+               << t.exit_price << "," 
+               << t.net_profit << "," 
+               << t.exit_reason << "\n";
+        }
+      }
+      std::cout << "\n-> trade-logs exported to top_10_runs_trades.csv\n";
     }
   }
 };

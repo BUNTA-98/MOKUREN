@@ -111,3 +111,33 @@ public:
     return true;
   }
 };
+
+class VolatilityFilter : public IFilter {
+private:
+  double min_avg_range_;
+  int period_;
+
+public:
+  // benötigt durchschnittlich 50$ kerzen-bewegung (high bis low) über die letzten 5 kerzen
+  VolatilityFilter(double min_range = 50.0, int period = 5)
+      : min_avg_range_(min_range), period_(period) {}
+
+  bool AllowTrade(const MarketContext &context,
+                  TradeSignal intended_signal) override {
+    // wir brauchen genug kerzen für die berechnung
+    if (context.history.size() < period_)
+      return false;
+
+    double total_range = 0.0;
+    
+    // summiere die spanne der letzten kerzen auf
+    for (size_t i = context.history.size() - period_; i < context.history.size(); ++i) {
+      total_range += (context.history[i].high - context.history[i].low);
+    }
+
+    double avg_range = total_range / period_;
+    
+    // erlaube trade nur, wenn der markt sich durchschnittlich stark genug bewegt
+    return avg_range >= min_avg_range_;
+  }
+};

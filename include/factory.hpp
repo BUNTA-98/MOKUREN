@@ -52,6 +52,9 @@ public:
       } else if (fname == "MacroTrend") {
         inst.filters.push_back(std::make_unique<MacroTrendFilter>());
         inst.pipeline->AddFilter(inst.filters.back().get());
+      } else if (fname == "Volatility"){
+        inst.filters.push_back(std::make_unique<VolatilityFilter>());
+        inst.pipeline->AddFilter(inst.filters.back().get());
       }
     }
     

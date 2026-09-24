@@ -4,6 +4,9 @@
 #include <string>
 #include <vector>
 
+
+
+
 struct TradeRecord {
   int64_t entry_time;
   int64_t exit_time;
@@ -14,10 +17,14 @@ struct TradeRecord {
   std::string exit_reason;
 };
 
+
 class PaperTrader {
+
 public:
+
   PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01)
       : stop_loss_pct(sl_pct), take_profit_pct(tp_pct) {}
+
 
   double GetBalance() const { return balance; }
   int GetTradesWon() const { return trades_won; }
@@ -25,11 +32,11 @@ public:
   double GetTotalFeesPaid() const { return total_fees_paid; }
   int GetTotalTrades() const { return trades_won + trades_lost; }
   double GetPositionSize() const { return position_size; }
-  void UpdateStopLoss(double new_sl) { current_sl_ = new_sl; }
-  bool HasOpenPosition() const { return position_size > 0; }
-  const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
+  void UpdateStopLoss(double new_sl) {current_sl_ = new_sl; }
+  bool HasOpenPosition() const {return position_size > 0;}
   double GetNetProfit() const { return balance - 10000.0; }
-
+  const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
+  
   TradeSignal GetCurrentPosition() const {
     TradeSignal sig;
     sig.direction = position_direction_;
@@ -40,7 +47,8 @@ public:
     return sig;
   }
 
-  double GetWinrate() const {
+
+    double GetWinrate() const {
     double total_trades = GetTotalTrades();
     double winrate = 0.0;
     if (total_trades > 0) {
@@ -49,37 +57,28 @@ public:
     return winrate;
   }
 
+
   void CheckRisk(double current_price, int64_t current_time) {
     if (position_size == 0.0)
       return;
 
     if (position_direction_ == SignalDirection::BUY) {
-      // break-even trigger
-      if (!sl_moved_to_be_ && current_price >= entry_price * (1.0 + break_even_pct_)) {
-        current_sl_ = entry_price;
-        sl_moved_to_be_ = true;
-      }
-
+      // long: sl ist unten, tp ist oben
       if (current_price <= current_sl_)
-        ClosePosition(current_price, sl_moved_to_be_ ? "be" : "sl", current_time);
+        ClosePosition(current_price, "sl", current_time);
       else if (current_price >= current_tp_)
         ClosePosition(current_price, "tp", current_time);
-        
     } else if (position_direction_ == SignalDirection::SELL) {
-      // break-even trigger
-      if (!sl_moved_to_be_ && current_price <= entry_price * (1.0 - break_even_pct_)) {
-        current_sl_ = entry_price;
-        sl_moved_to_be_ = true;
-      }
-
+      // short: sl ist oben, tp ist unten
       if (current_price >= current_sl_)
-        ClosePosition(current_price, sl_moved_to_be_ ? "be" : "sl", current_time);
+        ClosePosition(current_price, "sl", current_time);
       else if (current_price <= current_tp_)
         ClosePosition(current_price, "tp", current_time);
     }
   }
 
-  void ProcessSignal(TradeSignal signal, double current_price, int64_t current_time) {
+  void ProcessSignal(TradeSignal signal, double current_price) {
+    // schutz vor doppel-ausführung
     if (position_size > 0.0)
       return;
 
@@ -90,12 +89,12 @@ public:
       current_sl_ = signal.stop_loss;
       current_tp_ = signal.take_profit;
       entry_time_ = current_time;
-      sl_moved_to_be_ = false; // reset flag for new trade
-
+ 
+      // slippage berechnen
       if (position_direction_ == SignalDirection::BUY) {
-        entry_price = current_price + slippage;
+        entry_price = current_price + slippage; // teurer kaufen
       } else {
-        entry_price = current_price - slippage;
+        entry_price = current_price - slippage; // billiger shorten
       }
 
       double entry_fee = (entry_price * position_size) * taker_fee_pct;
@@ -118,6 +117,9 @@ public:
               << "verlorene trades   : " << trades_lost << "\n"
               << "===============================\n";
   }
+  
+
+
 
 private:
   double balance = 10000.0;
@@ -126,34 +128,33 @@ private:
   int trades_won = 0;
   int trades_lost = 0;
 
+  // neu: trackt ticket limits und richtung
   SignalDirection position_direction_ = SignalDirection::NONE;
   double current_sl_ = 0.0;
   double current_tp_ = 0.0;
   int64_t entry_time_ = 0;
-  
-  // break even settings
-  bool sl_moved_to_be_ = false;
-  double break_even_pct_ = 0.003; // move to BE at +0.3% profit
-
   std::vector<TradeRecord> trade_history_;
 
+  // alte pct-werte behalten wir für fallback oder kompatibilität
   double stop_loss_pct;
   double take_profit_pct;
 
-  double taker_fee_pct = 0.0004;
-  double slippage = 5.0;         
-  double total_fees_paid = 0.0;  
 
-  void ClosePosition(double current_price, const std::string &reason, int64_t current_time) {
+  double taker_fee_pct = 0.0004; // 0.04% pro ausführung
+  double slippage = 5.0;         // 1$ preisrutsch
+  double total_fees_paid = 0.0;  // gebühren tracker
+
+  void ClosePosition(double current_price, const std::string &reason, int64_t time) {
     if (position_size > 0.0) {
       double actual_exit_price;
       double gross_profit;
 
+      // richtungsabhängige logik
       if (position_direction_ == SignalDirection::BUY) {
-        actual_exit_price = current_price - slippage;
+        actual_exit_price = current_price - slippage; // tiefer verkaufen
         gross_profit = (actual_exit_price - entry_price) * position_size;
       } else {
-        actual_exit_price = current_price + slippage;
+        actual_exit_price = current_price + slippage; // höher zurückkaufen
         gross_profit = (entry_price - actual_exit_price) * position_size;
       }
 
@@ -169,13 +170,12 @@ private:
         trades_lost++;
 
       trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});
-
+      
+      // reset
       position_size = 0.0;
       entry_price = 0.0;
       current_sl_ = 0.0;
       current_tp_ = 0.0;
-      entry_time_ = 0;
-      sl_moved_to_be_ = false;
       position_direction_ = SignalDirection::NONE;
     }
   }
