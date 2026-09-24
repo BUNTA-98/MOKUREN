@@ -70,7 +70,7 @@ int main(int argc, char *argv[]) {
   std::cout << "starte parameter-scan...\n";
 
   // loops für delta, stop-loss und take-profit
-  for (double delta = 4.0; delta <= 25.0; delta += 1.0) {
+  for (double delta = 0.5; delta <= 5.0; delta += 0.1) {
     for (double sl_pct = 0.002; sl_pct <= 0.010; sl_pct += 0.002) {
       for (double tp_pct = 0.005; tp_pct <= 0.020; tp_pct += 0.005) {
 
@@ -95,7 +95,7 @@ int main(int argc, char *argv[]) {
 
         RiskManager risk_manager;
         risk_manager.AddModule(&pos_lock); //[cite: 5]
-        risk_manager.AddModule(&dd_lock);  //[cite: 5]
+        //risk_manager.AddModule(&dd_lock);  //[cite: 5]
         risk_manager.AddModule(&lev_lock); //[cite: 5]
 
         Bar live_bar; //[cite: 5]
