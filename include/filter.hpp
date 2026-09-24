@@ -44,15 +44,20 @@ public:
                   TradeSignal intended_signal) override {
     if (context.history.empty())
       return false;
-
+    
     // Unix-Timestamp der Kerze in lokale Zeit umwandeln
     std::time_t time_val = context.history.back().timestamp_start / 1000;
-    std::tm *time_info = std::localtime(&time_val);
+    
+    // Eigene, thread-sichere Struktur anlegen
+    struct tm time_info; 
+    
+    // localtime_r schreibt das Ergebnis direkt in unsere Variable
+    localtime_r(&time_val, &time_info); 
 
-    int current_mins_of_day = time_info->tm_hour * 60 + time_info->tm_min;
+    int current_mins_of_day = time_info.tm_hour * 60 + time_info.tm_min;
     int start_mins_of_day = start_hour_ * 60 + start_min_;
     int end_mins_of_day = end_hour_ * 60 + end_min_;
-
+    
     // Prüfen, ob die aktuelle Zeit im Zeitfenster liegt
     return (current_mins_of_day >= start_mins_of_day &&
             current_mins_of_day <= end_mins_of_day);

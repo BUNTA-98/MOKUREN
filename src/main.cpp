@@ -3,18 +3,18 @@
 #include <string>
 
 int main(int argc, char *argv[]) {
-  // Terminal Argumente abfangen (genau wie vorher)[cite: 3]
-  if (argc < 2) {
-    std::cerr << "fehler: zielpfad (csv oder ordner) fehlt.\n"
-              << "nutzung: " << argv[0] << " <pfad>\n";
+  // verlangt jetzt 2 pfade aus dem terminal
+  if (argc < 3) {
+    std::cerr << "fehler: pfade fehlen.\n"
+              << "nutzung: " << argv[0] << " <daten_pfad> <config_pfad>\n";
     return 1;
   }
 
   std::string target_path = argv[1];
+  std::string config_path = argv[2]; // pfad zur config.json
 
-  // Engine hochfahren und Zielpfad übergeben
   Mokuren engine;
-  engine.RunGridSearch(target_path);
+  engine.RunGridSearch(target_path, config_path);
 
   return 0;
 }
