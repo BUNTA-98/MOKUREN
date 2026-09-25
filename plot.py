@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # Lade die CSV aus deinem Projekt-Ordner
-file_path = "top_10_runs_trades.csv"
+file_path = "runs.csv"
 
 # Lese die Daten ein
 try:

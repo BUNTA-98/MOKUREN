@@ -83,7 +83,9 @@ public:
   }
 
   void ProcessSignal(TradeSignal signal, double current_price, int64_t current_time) {
+    
     UpdateDay(current_time);
+    
     if (current_daily_pnl_ <= -max_daily_loss_) return;
     if (position_size > 0.0) return;
 
@@ -179,7 +181,7 @@ private:
       } else if (reason == "be") {
         trades_be++;
       } else {
-        trades_lost++; // Alle SLs und Prop-Firm-Kills fallen hier rein
+        trades_lost++; // SL und drawdown kill zählen als loss
       }
 
       trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});

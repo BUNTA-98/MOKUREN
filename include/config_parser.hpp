@@ -1,6 +1,7 @@
 #pragma once
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -8,43 +9,109 @@
 
 using json = nlohmann::json;
 
+// Speichert eine berechnete Parameter-Kombination
+struct RunConfig {
+  json full_json;
+  std::map<std::string, double> grid_values;
+};
+
+// Hilfsstruktur für gefundene min/max/step Blöcke
+struct GridParam {
+  json::json_pointer ptr;
+  std::string name;
+  double min;
+  double max;
+  double step;
+};
+
+// N-Dimensionaler Parameter-Generator
+class GridScanner {
+private:
+  static void FindParams(const json& j, const std::string& current_path, std::vector<GridParam>& params) {
+    if (j.is_object()) {
+      if (j.contains("min") && j.contains("max") && j.contains("step")) {
+        std::string param_name = current_path.substr(current_path.find_last_of('/') + 1);
+        params.push_back({json::json_pointer(current_path), param_name, 
+                          j["min"].get<double>(), j["max"].get<double>(), j["step"].get<double>()});
+      } else {
+        for (auto it = j.begin(); it != j.end(); ++it) {
+          FindParams(it.value(), current_path + "/" + it.key(), params);
+        }
+      }
+    } else if (j.is_array()) {
+      for (size_t i = 0; i < j.size(); ++i) {
+        FindParams(j[i], current_path + "/" + std::to_string(i), params);
+      }
+    }
+  }
+
+  static void Generate(const json& base_json, const std::vector<GridParam>& params, size_t index, 
+                       std::map<std::string, double>& current_vals, std::vector<RunConfig>& results) {
+    if (index >= params.size()) {
+      results.push_back({base_json, current_vals});
+      return;
+    }
+
+    const auto& p = params[index];
+    double step = (p.step == 0.0) ? 1.0 : p.step; // Endlosschleifen-Schutz
+    for (double val = p.min; val <= p.max + 1e-9; val += step) {
+      json next_json = base_json;
+      next_json[p.ptr] = val; // Überschreibt {min,max,step} mit dem konkreten Wert
+      
+      std::map<std::string, double> next_vals = current_vals;
+      next_vals[p.name] = val;
+      
+      Generate(next_json, params, index + 1, next_vals, results);
+    }
+  }
+
+public:
+  static std::vector<RunConfig> GenerateGrid(const json& root) {
+    std::vector<GridParam> params;
+    FindParams(root, "", params);
+    
+    std::vector<RunConfig> results;
+    std::map<std::string, double> initial_vals;
+    
+    if (params.empty()) {
+      results.push_back({root, initial_vals}); // Kein Grid-Search, nur 1 Run
+      return results;
+    }
+    
+    Generate(root, params, 0, initial_vals, results);
+    return results;
+  }
+};
+
+struct ComponentConfig {
+  std::string name;
+  json params;
+};
+
 struct AppConfig {
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
   double tick_size = 1.0;
-
   unsigned int max_cores = 0;
 
-  // NEU: Vektor für beliebig viele Trigger statt einzelnem String
-  std::vector<std::string> trigger_names;
-  
-  // NEU: Parameter für den StackedImbalance Trigger (mit sinnvollen Defaults)
-  double imbalance_ratio = 1.5;
-  int imbalance_levels = 2;
+  std::vector<ComponentConfig> triggers;
+  std::vector<ComponentConfig> filters;
+  std::vector<ComponentConfig> risk_modules;
 
-  std::vector<std::string> filter_names;
-
+  double sl_pct = 0.002;
+  double tp_pct = 0.01;
   double risk_per_trade_pct = 0.01;
   double min_distance_dollars = 10.0;
+  double max_daily_loss = 400.0;
 
-  double d_min, d_max, d_step;
-  double sl_min, sl_max, sl_step;
-  double tp_min, tp_max, tp_step;
-
-  static AppConfig Load(const std::string &path) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-      std::cerr << "fehler: config.json nicht gefunden!\n";
-      exit(1);
-    }
-    
-    json j = json::parse(file);
+  // Lade direkt aus dem bereiten JSON
+  static AppConfig Load(const json& j) {
     AppConfig cfg;
 
-    cfg.interval_ms = j["environment"]["interval_ms"];
-    cfg.macro_interval_ms = j["environment"]["macro_interval_ms"];
-    cfg.tick_size = j["environment"]["tick_size"];
-
+    cfg.interval_ms = j["environment"].value("interval_ms", 60000);
+    cfg.macro_interval_ms = j["environment"].value("macro_interval_ms", 900000);
+    cfg.tick_size = j["environment"].value("tick_size", 1.0);
+    
     if (j["environment"].contains("max_cores") && j["environment"]["max_cores"] > 0) {
       cfg.max_cores = j["environment"]["max_cores"];
     } else {
@@ -52,41 +119,29 @@ struct AppConfig {
       if (cfg.max_cores == 0) cfg.max_cores = 4;
     }
 
-    // NEU: Mehrere Trigger einlesen (oder abwärtskompatibel bleiben)
     if (j["strategy"].contains("triggers")) {
-      for (const auto &t : j["strategy"]["triggers"]) {
-        cfg.trigger_names.push_back(t);
+      for (const auto &item : j["strategy"]["triggers"]) {
+        cfg.triggers.push_back({item["name"], item});
       }
-    } else if (j["strategy"].contains("trigger")) {
-      cfg.trigger_names.push_back(j["strategy"]["trigger"]); // Fallback für alte Configs
     }
 
-    // NEU: Imbalance-Parameter einlesen (falls vorhanden)
-    if (j["strategy"].contains("imbalance_ratio")) {
-      cfg.imbalance_ratio = j["strategy"]["imbalance_ratio"];
-    }
-    if (j["strategy"].contains("imbalance_levels")) {
-      cfg.imbalance_levels = j["strategy"]["imbalance_levels"];
+    if (j["strategy"].contains("filters")) {
+      for (const auto &item : j["strategy"]["filters"]) {
+        cfg.filters.push_back({item["name"], item});
+      }
     }
 
-    for (const auto &f : j["strategy"]["filters"]) {
-      cfg.filter_names.push_back(f);
+    cfg.sl_pct = j["risk"].value("sl_pct", 0.002);
+    cfg.tp_pct = j["risk"].value("tp_pct", 0.01);
+    cfg.risk_per_trade_pct = j["risk"].value("risk_per_trade_pct", 0.01);
+    cfg.min_distance_dollars = j["risk"].value("min_distance_dollars", 10.0);
+    cfg.max_daily_loss = j["risk"].value("max_daily_loss", 400.0);
+
+    if (j["risk"].contains("modules")) {
+      for (const auto &item : j["risk"]["modules"]) {
+        cfg.risk_modules.push_back({item["name"], item});
+      }
     }
-
-    cfg.risk_per_trade_pct = j["risk"]["risk_per_trade_pct"];
-    cfg.min_distance_dollars = j["risk"]["min_distance_dollars"];
-
-    cfg.d_min = j["grid_search"]["delta"]["min"];
-    cfg.d_max = j["grid_search"]["delta"]["max"];
-    cfg.d_step = j["grid_search"]["delta"]["step"];
-
-    cfg.sl_min = j["grid_search"]["sl_pct"]["min"];
-    cfg.sl_max = j["grid_search"]["sl_pct"]["max"];
-    cfg.sl_step = j["grid_search"]["sl_pct"]["step"];
-
-    cfg.tp_min = j["grid_search"]["tp_pct"]["min"];
-    cfg.tp_max = j["grid_search"]["tp_pct"]["max"];
-    cfg.tp_step = j["grid_search"]["tp_pct"]["step"];
 
     return cfg;
   }
