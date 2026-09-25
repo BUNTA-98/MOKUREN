@@ -16,16 +16,18 @@ struct TradeRecord {
 
 class PaperTrader {
 public:
-  // NEU: max_dl = 400.0 (Prop Firm Not-Aus Grenze pro Tag)
   PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01, double max_dl = 400.0)
       : stop_loss_pct(sl_pct), take_profit_pct(tp_pct), max_daily_loss_(max_dl) {}
 
   double GetBalance() const { return balance; }
   int GetTradesWon() const { return trades_won; }
   int GetTradesLost() const { return trades_lost; }
+  int GetTradesBE() const { return trades_be; } // NEU: Zählt nur Break-Evens
+  
   double GetTotalFeesPaid() const { return total_fees_paid; }
-  int GetTotalTrades() const { return trades_won + trades_lost; }
+  int GetTotalTrades() const { return trades_won + trades_lost + trades_be; }
   double GetPositionSize() const { return position_size; }
+  
   void UpdateStopLoss(double new_sl) { current_sl_ = new_sl; }
   bool HasOpenPosition() const { return position_size > 0; }
   const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
@@ -43,29 +45,25 @@ public:
 
   double GetWinrate() const {
     double total_trades = GetTotalTrades();
+    // NEU: Die Winrate berechnet sich jetzt AUSSCHLIESSLICH aus echten Take-Profits!
     if (total_trades > 0) return (static_cast<double>(trades_won) / total_trades) * 100.0;
     return 0.0;
   }
 
   void CheckRisk(double current_price, int64_t current_time) {
-    // 1. Tagessprung prüfen
     UpdateDay(current_time);
-
     if (position_size == 0.0) return;
 
-    // 2. Prop Firm Floating PnL Überwachung
     double actual_exit_price = (position_direction_ == SignalDirection::BUY) ? (current_price - slippage) : (current_price + slippage);
     double gross_profit = (position_direction_ == SignalDirection::BUY) ? (actual_exit_price - entry_price) * position_size : (entry_price - actual_exit_price) * position_size;
     double exit_fee = (actual_exit_price * position_size) * taker_fee_pct;
     double floating_net_profit = gross_profit - exit_fee; 
 
-    // Wenn offener + bereits geschlossener Verlust das Limit reißen -> Not-Aus!
     if (current_daily_pnl_ + floating_net_profit <= -max_daily_loss_) {
       ClosePosition(current_price, "daily_loss_limit", current_time);
       return;
     }
 
-    // 3. Break-Even und Standard Risk Management
     if (position_direction_ == SignalDirection::BUY) {
       if (!sl_moved_to_be_ && current_price >= entry_price * (1.0 + be_trigger_pct_)) {
         current_sl_ = entry_price * (1.0 + be_target_pct_);
@@ -86,10 +84,7 @@ public:
 
   void ProcessSignal(TradeSignal signal, double current_price, int64_t current_time) {
     UpdateDay(current_time);
-
-    // Prop-Firm Lock: Hat der Bot heute schon 400$ verloren, verbieten wir neue Trades komplett
     if (current_daily_pnl_ <= -max_daily_loss_) return;
-
     if (position_size > 0.0) return;
 
     if (signal.volume > 0.0 && (signal.direction == SignalDirection::BUY ||
@@ -107,8 +102,6 @@ public:
       double entry_fee = (entry_price * position_size) * taker_fee_pct;
       balance -= entry_fee;
       total_fees_paid += entry_fee;
-      
-      // Die Einstiegsgebühr drückt den Tages-PnL sofort ins Minus
       current_daily_pnl_ -= entry_fee; 
     }
   }
@@ -121,8 +114,11 @@ private:
   double balance = 10000.0;
   double position_size = 0.0;
   double entry_price = 0.0;
+  
+  // Getrennte Zähler
   int trades_won = 0;
   int trades_lost = 0;
+  int trades_be = 0; 
 
   SignalDirection position_direction_ = SignalDirection::NONE;
   double current_sl_ = 0.0;
@@ -133,7 +129,6 @@ private:
   double be_trigger_pct_ = 0.005; 
   double be_target_pct_  = 0.001; 
 
-  // NEU: Prop Firm Variablen
   double max_daily_loss_ = 400.0;
   double current_daily_pnl_ = 0.0;
   int64_t current_day_start_ = 0;
@@ -146,9 +141,8 @@ private:
   double slippage = 5.0;         
   double total_fees_paid = 0.0;  
 
-  // Hilfsfunktion: Setzt den Tages-PnL um 00:00 UTC auf 0 zurück
   void UpdateDay(int64_t current_time) {
-    int64_t day_ms = 86400000; // 24 Stunden in Millisekunden
+    int64_t day_ms = 86400000; 
     int64_t new_day = current_time - (current_time % day_ms);
     
     if (current_day_start_ == 0) {
@@ -177,12 +171,16 @@ private:
       double net_profit = gross_profit - exit_fee;
       
       balance += net_profit;
-      
-      // Das finale Trade-Ergebnis wird auf den heutigen Tag gebucht
       current_daily_pnl_ += net_profit; 
 
-      if (net_profit > 0) trades_won++;
-      else trades_lost++;
+      // NEU: Ehrliche Auswertung!
+      if (reason == "tp") {
+        trades_won++;
+      } else if (reason == "be") {
+        trades_be++;
+      } else {
+        trades_lost++; // Alle SLs und Prop-Firm-Kills fallen hier rein
+      }
 
       trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});
 

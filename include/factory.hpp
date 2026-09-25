@@ -11,7 +11,6 @@
 #include <memory>
 #include <vector>
 
-// container für eine komplette engine instanz
 struct EngineInstance {
   std::unique_ptr<Aggregator> aggregator;
   std::unique_ptr<Aggregator> htf_aggregator;
@@ -20,6 +19,9 @@ struct EngineInstance {
   std::unique_ptr<PositionSizer> sizer;
 
   std::unique_ptr<ITrigger> trigger;
+  // Hält die einzelnen Trigger am Leben, wenn wir sie verknüpfen
+  std::vector<std::unique_ptr<ITrigger>> sub_triggers; 
+  
   std::vector<std::unique_ptr<IFilter>> filters;
   std::unique_ptr<PipelineStrategy> pipeline;
   std::unique_ptr<AlphaEngine> alpha;
@@ -30,27 +32,48 @@ struct EngineInstance {
 
 class StrategyFactory {
 public:
-  // bausatz dynamisch zusammensetzen
   static EngineInstance Build(const AppConfig &cfg, double delta, double sl, double tp) {
     EngineInstance inst;
 
     inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size);
     inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size);
-    inst.ptrader = std::make_unique<PaperTrader>(sl, tp);
+    inst.ptrader = std::make_unique<PaperTrader>(sl, tp, 400.0);
     inst.pos_manager = std::make_unique<PositionManager>(inst.ptrader.get());
 
-    if (cfg.trigger_name == "DeltaAbsorption") {
-      inst.trigger = std::make_unique<DeltaAbsorptionTrigger>(delta);
+    // --- DYNAMISCHE TRIGGER AUSWAHL ---
+    // 1. Wenn in der Config nur ein einziger Trigger steht
+    if (cfg.trigger_names.size() == 1) {
+      if (cfg.trigger_names[0] == "DeltaAbsorption") {
+        inst.trigger = std::make_unique<DeltaAbsorptionTrigger>(delta);
+      } else if (cfg.trigger_names[0] == "StackedImbalance") {
+        inst.trigger = std::make_unique<StackedImbalanceTrigger>(cfg.imbalance_ratio, cfg.imbalance_levels);
+      }
+    } 
+    // 2. Wenn mehrere Trigger definiert sind, packen wir sie in den OR_Trigger
+    else if (cfg.trigger_names.size() > 1) {
+      auto or_trigger = std::make_unique<OR_Trigger>();
+      
+      for (const auto& t_name : cfg.trigger_names) {
+        if (t_name == "DeltaAbsorption") {
+          inst.sub_triggers.push_back(std::make_unique<DeltaAbsorptionTrigger>(delta));
+          or_trigger->AddTrigger(inst.sub_triggers.back().get());
+        } else if (t_name == "StackedImbalance") {
+          inst.sub_triggers.push_back(std::make_unique<StackedImbalanceTrigger>(cfg.imbalance_ratio, cfg.imbalance_levels));
+          or_trigger->AddTrigger(inst.sub_triggers.back().get());
+        }
+      }
+      inst.trigger = std::move(or_trigger);
     }
 
     inst.pipeline = std::make_unique<PipelineStrategy>(inst.trigger.get());
 
+    // --- DYNAMISCHE FILTER AUSWAHL ---
     for (const auto &fname : cfg.filter_names) {
       if (fname == "MinVolume") {
         inst.filters.push_back(std::make_unique<MinVolumeFilter>(1.0));
         inst.pipeline->AddFilter(inst.filters.back().get());
       } else if (fname == "MacroTrend") {
-        inst.filters.push_back(std::make_unique<MacroTrendFilter>());
+        inst.filters.push_back(std::make_unique<MacroTrendFilter>(1440)); //24h sma
         inst.pipeline->AddFilter(inst.filters.back().get());
       } else if (fname == "Volatility"){
         inst.filters.push_back(std::make_unique<VolatilityFilter>());
