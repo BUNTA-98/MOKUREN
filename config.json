@@ -1,5 +1,6 @@
 {
   "environment": {
+    "filepath": "binance/monthly/august.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 6,
@@ -26,8 +27,8 @@
     ],
     "risk_per_trade_pct": 0.01,
     "sl_pct": {
-      "max": 0.005,
-      "min": 0.001,
+      "max": 0.09,
+      "min": 0.005,
       "step": 0.001
     },
     "tp_pct": 0.01
