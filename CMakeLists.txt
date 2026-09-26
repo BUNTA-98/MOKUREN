@@ -12,8 +12,9 @@ if(POLICY CMP0115)
   cmake_policy(SET CMP0115 NEW)
 endif()
 
-# 1. thread-bibliothek
+# 1. system-bibliotheken (threads & pkgconfig für notcurses)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
 
 include(FetchContent)
 
@@ -25,12 +26,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# 3. ftxui-bibliothek (wiederhergestellt)
-FetchContent_Declare(ftxui
-  GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
-  GIT_TAG main
-)
-FetchContent_MakeAvailable(ftxui)
+# 3. notcurses c++ binding finden
+pkg_check_modules(NOTCURSES REQUIRED IMPORTED_TARGET notcurses++)
 
 # 4. executable mit all deinen source-dateien
 add_executable(mokuren src/main.cpp src/aggregator.cpp src/csv_parser.cpp)
@@ -42,7 +39,5 @@ target_include_directories(mokuren PRIVATE include)
 target_link_libraries(mokuren PRIVATE 
   Threads::Threads 
   nlohmann_json::nlohmann_json
-  ftxui::component
-  ftxui::dom
-  ftxui::screen
+  PkgConfig::NOTCURSES
 )

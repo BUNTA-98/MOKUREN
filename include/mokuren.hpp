@@ -8,7 +8,7 @@
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
-#include <future>
+#include <functional> // wichtig für callbacks
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -19,7 +19,6 @@
 
 namespace fs = std::filesystem;
 
-// result storage
 struct TestResult {
   std::map<std::string, double> parameters;
   double net_profit;
@@ -30,11 +29,36 @@ struct TestResult {
 
 class Mokuren {
 private:
-  // load data into ram
   std::vector<TradeEvent> LoadAllTrades(const std::string &input_path_str) {
-    std::vector<std::string> csv_files;
     fs::path input_path = input_path_str;
+    
+    // 1. definiere den namen der cache-datei
+    fs::path cache_path = input_path;
+    if (fs::is_directory(input_path)) {
+      cache_path /= "ticks_cache.bin";
+    } else {
+      cache_path = input_path.parent_path() / "ticks_cache.bin";
+    }
 
+    // 2. versuch: lade direkt aus dem binären cache (millisekunden)
+    if (fs::exists(cache_path)) {
+      std::ifstream cache_file(cache_path, std::ios::binary);
+      if (cache_file) {
+        cache_file.seekg(0, std::ios::end);
+        std::streamsize size = cache_file.tellg();
+        cache_file.seekg(0, std::ios::beg);
+
+        size_t count = size / sizeof(TradeEvent);
+        std::vector<TradeEvent> all_trades(count);
+
+        if (cache_file.read(reinterpret_cast<char*>(all_trades.data()), size)) {
+          return all_trades;
+        }
+      }
+    }
+
+    // 3. fallback: lade die csvs, wenn kein cache da ist
+    std::vector<std::string> csv_files;
     if (fs::is_directory(input_path)) {
       for (const auto &entry : fs::directory_iterator(input_path)) {
         if (entry.path().extension() == ".csv") {
@@ -44,189 +68,140 @@ private:
       std::sort(csv_files.begin(), csv_files.end());
     } else if (fs::is_regular_file(input_path)) {
       csv_files.push_back(input_path.string());
-    } else {
-      std::cerr << "invalid path\n";
-      return {};
     }
 
     std::vector<TradeEvent> all_trades;
+    all_trades.reserve(5000000); 
+
     for (const auto &file : csv_files) {
       CSVLoader::ProcessBinanceCSV(
           file, [&](const TradeEvent &trade) { all_trades.push_back(trade); });
     }
+
+    // 4. cache für den nächsten run speichern
+    if (!all_trades.empty()) {
+      std::ofstream cache_file(cache_path, std::ios::binary);
+      if (cache_file) {
+        cache_file.write(reinterpret_cast<const char*>(all_trades.data()), 
+                         all_trades.size() * sizeof(TradeEvent));
+      }
+    }
+
     return all_trades;
   }
 
 public:
   Mokuren() = default;
 
-  // async grid search
-  void RunGridSearch(const std::string &filepath, const std::string &config_path) {
+  void RunGridSearch(const std::string &filepath, const std::string &config_path,
+                     std::function<void(const std::string&)> on_status,
+                     std::function<void(int, int)> on_progress,
+                     std::function<void(const TestResult&)> on_result) {
+                     
     std::ifstream file(config_path);
     if (!file.is_open()) {
-      std::cerr << "error: config.json not found!\n";
+      on_status("ERROR: CONFIG NOT FOUND");
       return;
     }
     
     json base_json = json::parse(file);
     std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
     
-    std::cout << "--- DYNAMIC GRID SEARCH ---\n";
-    std::cout << "generated " << runs.size() << " combinations to test.\n";
-    std::cout << "loading ticks into ram...\n";
+    on_status("LOADING SECURE TICK STREAM...");
     
     std::vector<TradeEvent> all_trades = LoadAllTrades(filepath);
     if (all_trades.empty()) {
-      std::cerr << "no data found. aborting.\n";
+      on_status("ERROR: NO TICK DATA FOUND");
       return;
     }
-    std::cout << "ticks loaded: " << all_trades.size() << "\n\n";
-
-    std::vector<TestResult> results;
-    std::mutex results_mutex;
-    std::mutex console_mutex;
-    std::vector<std::future<void>> futures;
 
     unsigned int max_cores = base_json["environment"].value("max_cores", 0);
     if (max_cores == 0) max_cores = std::thread::hardware_concurrency();
     
-    std::cout << "using " << max_cores << " parallel threads...\n";
-    std::cout << "start parameter scan (multithreaded)...\n";
+    on_status("GRID SCAN ACTIVE (" + std::to_string(max_cores) + " THREADS)");
 
     int total_iterations = runs.size();
+    
+    // diese beiden variablen steuern den kompletten pool thread-sicher
+    std::atomic<size_t> task_index{0};
     std::atomic<int> current_iteration{0};
 
-    // multithreading loop
-    for (const auto& run : runs) {
-      futures.push_back(std::async(std::launch::async, [=, &all_trades, &results, &results_mutex, &console_mutex, &current_iteration, this]() {
-        
-        AppConfig cfg = AppConfig::Load(run.full_json);
-        EngineInstance eng = StrategyFactory::Build(cfg);
+    // unsterbliche worker aufsetzen
+    std::vector<std::thread> workers;
+    for (unsigned int i = 0; i < max_cores; ++i) {
+      workers.emplace_back([&, this]() {
+        while (true) {
+          // ziehe die nächste aufgabe vom stapel
+          size_t idx = task_index.fetch_add(1);
+          
+          // wenn der stapel leer ist, beendet sich der worker
+          if (idx >= runs.size()) {
+            break; 
+          }
+          
+          const auto& run = runs[idx];
+          
+          // --- ENGINE LOGIK FÜR DIESEN RUN ---
+          AppConfig cfg = AppConfig::Load(run.full_json);
+          EngineInstance eng = StrategyFactory::Build(cfg);
 
-        Bar live_bar;
-        Bar htf_bar;
+          Bar live_bar;
+          Bar htf_bar;
 
-        // tick loop
-        for (const auto &trade : all_trades) {
-          eng.pos_manager->Update(trade.price);
-          eng.ptrader->CheckRisk(trade.price, trade.timestamp);
+          for (const auto &trade : all_trades) {
+            eng.pos_manager->Update(trade.price);
+            eng.ptrader->CheckRisk(trade.price, trade.timestamp);
 
-          bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
-          eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-          MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar};
+            bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
+            eng.htf_aggregator->ProcessTrade(htf_bar, trade);
+            MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar};
 
-          TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
+            TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
 
-          if (raw_signal.direction != SignalDirection::NONE) {
-            raw_signal.entry_price = trade.price;
-            if (raw_signal.direction == SignalDirection::BUY) {
-              raw_signal.stop_loss = trade.price * (1.0 - cfg.sl_pct);
-              raw_signal.take_profit = trade.price * (1.0 + cfg.tp_pct);
-            } else {
-              raw_signal.stop_loss = trade.price * (1.0 + cfg.sl_pct);
-              raw_signal.take_profit = trade.price * (1.0 - cfg.tp_pct);
+            if (raw_signal.direction != SignalDirection::NONE) {
+              raw_signal.entry_price = trade.price;
+              if (raw_signal.direction == SignalDirection::BUY) {
+                raw_signal.stop_loss = trade.price * (1.0 - cfg.sl_pct);
+                raw_signal.take_profit = trade.price * (1.0 + cfg.tp_pct);
+              } else {
+                raw_signal.stop_loss = trade.price * (1.0 + cfg.sl_pct);
+                raw_signal.take_profit = trade.price * (1.0 - cfg.tp_pct);
+              }
+            }
+
+            TradeSignal sized_signal = eng.sizer->CalculateSize(raw_signal);
+            TradeSignal final_signal = eng.risk_manager->Evaluate(sized_signal, trade.timestamp);
+
+            if (final_signal.direction != SignalDirection::NONE) {
+              eng.ptrader->ProcessSignal(final_signal, trade.price, trade.timestamp);
             }
           }
 
-          TradeSignal sized_signal = eng.sizer->CalculateSize(raw_signal);
-          TradeSignal final_signal = eng.risk_manager->Evaluate(sized_signal, trade.timestamp);
+          eng.aggregator->FlushLastCandle(live_bar);
+          eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
 
-          if (final_signal.direction != SignalDirection::NONE) {
-            eng.ptrader->ProcessSignal(final_signal, trade.price, trade.timestamp);
+          // ergebnis an ui senden
+          if (eng.ptrader->GetTotalTrades() > 0) {
+            TestResult res{run.grid_values, eng.ptrader->GetNetProfit(),
+                           eng.ptrader->GetTotalTrades(), eng.ptrader->GetWinrate(),
+                           eng.ptrader->GetTradeHistory()};
+            on_result(res);
           }
+          
+          // fortschrittsbalken updaten
+          int done = ++current_iteration;
+          on_progress(done, total_iterations);
         }
-
-        eng.aggregator->FlushLastCandle(live_bar);
-        eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
-
-        // save results thread-safe
-        if (eng.ptrader->GetTotalTrades() > 0) {
-          std::lock_guard<std::mutex> lock(results_mutex);
-          results.push_back({run.grid_values, eng.ptrader->GetNetProfit(),
-                             eng.ptrader->GetTotalTrades(), eng.ptrader->GetWinrate(),
-                             eng.ptrader->GetTradeHistory()});
-        }
-        
-        // draw progress bar
-        int done = ++current_iteration;
-        {
-          std::lock_guard<std::mutex> lock(console_mutex);
-          int bar_width = 50;
-          float progress = static_cast<float>(done) / total_iterations;
-          int pos = static_cast<int>(bar_width * progress);
-
-          std::cout << "\r"; 
-          for (int i = 0; i < bar_width; ++i) {
-            if (i < pos) std::cout << "\033[38;2;255;0;0m█";
-            else std::cout << "\033[38;2;40;40;40m█";
-          }
-          std::cout << "\033[0m " << static_cast<int>(progress * 100.0) << " %" << std::flush;
-        }
-      }));
-
-      // throttle threads to prevent oom
-      if (futures.size() >= max_cores) {
-        for (auto &f : futures) f.get();
-        futures.clear();
-      }
+      });
     }
 
-    // wait for remaining threads
-    for (auto &f : futures) f.get();
-    std::cout << "\n\n";
-
-    // sort by profit
-    std::sort(results.begin(), results.end(), [](const TestResult &a, const TestResult &b) {
-      return a.net_profit > b.net_profit;
-    });
-
-    // print top 10 to terminal
-    std::cout << "=== top 10 parameter combinations ===\n";
+    // warte, bis alle worker ihre arbeit niederlegen (stapel ist leer)
+    for (auto& w : workers) {
+      if (w.joinable()) {
+        w.join();
+      }
+    }
     
-    int limit = std::min(static_cast<int>(results.size()), 10);
-    for (int i = 0; i < limit; i++) {
-      const auto &r = results[i];
-      
-      std::string param_str;
-      for (const auto& [k, v] : r.parameters) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%g", v); // trim trailing zeros
-        param_str += k + "=" + std::string(buf) + " ";
-      }
-      
-      std::printf("profit: %8.2f | winrate: %4.1f%% | trades: %3d | params: %s\n", 
-                  r.net_profit, r.winrate, r.trades, param_str.c_str());
-    }
-
-    // export top 10 to csv
-    if (!results.empty()) {
-      std::ofstream file("runs.csv");
-      file << "Rank,Parameters,EntryTime,ExitTime,Type,EntryPrice,ExitPrice,NetProfit,Reason\n";
-      
-      int log_limit = std::min(static_cast<int>(results.size()), 10);
-      for (int i = 0; i < log_limit; i++) {
-        const auto &run = results[i];
-        
-        std::string param_str;
-        for (const auto& [k, v] : run.parameters) {
-          char buf[32];
-          snprintf(buf, sizeof(buf), "%g", v); // trim trailing zeros
-          param_str += k + "=" + std::string(buf) + ";"; // use semicolon for csv
-        }
-
-        for (const auto& t : run.trade_log) {
-          file << (i + 1) << ","                    
-               << param_str << ","                  
-               << t.entry_time << ","
-               << t.exit_time << ","
-               << (t.direction == SignalDirection::BUY ? "LONG" : "SHORT") << ","
-               << t.entry_price << "," 
-               << t.exit_price << "," 
-               << t.net_profit << "," 
-               << t.exit_reason << "\n";
-        }
-      }
-      std::cout << "\n-> trade-logs exported to runs.csv\n";
-    }
+    on_status("SCAN COMPLETE");
   }
 };

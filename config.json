@@ -2,29 +2,79 @@
   "environment": {
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
-    "tick_size": 1.0,
-    "max_cores": 6 
-  },
-  "strategy": {
-    "triggers": [
-      { "name": "DeltaAbsorption", "delta": { "min": 0.8, "max": 1.2, "step": 0.1 } }
-    ],
-    "filters": [
-      { "name": "MinVolume", "min_volume": 1.0 },
-      { "name": "Volatility", "min_dollar": 150.0, "lookback": 5 },
-      { "name": "MacroTrend", "lookback": 1440 }
-    ]
+    "max_cores": 6,
+    "tick_size": 1.0
   },
   "risk": {
-    "sl_pct": { "min": 0.002, "max": 0.003, "step": 0.001 },
-    "tp_pct": { "min": 0.01, "max": 0.02, "step": 0.005 },
-    "risk_per_trade_pct": 0.01,
-    "min_distance_dollars": 10.0,
     "max_daily_loss": 400.0,
+    "min_distance_dollars": 10.0,
     "modules": [
-      { "name": "SinglePositionLock" },
-      { "name": "MaxLeverageLock", "max_leverage": 10.0 },
-      { "name": "AntiRevengeLock", "cooldown_ms": 1800000 }
+      {
+        "active": true,
+        "name": "SinglePositionLock"
+      },
+      {
+        "active": true,
+        "max_leverage": 10.0,
+        "name": "MaxLeverageLock"
+      },
+      {
+        "active": true,
+        "cooldown_ms": 1800000,
+        "name": "AntiRevengeLock"
+      }
+    ],
+    "risk_per_trade_pct": 0.01,
+    "sl_pct": {
+      "max": 0.005,
+      "min": 0.001,
+      "step": 0.001
+    },
+    "tp_pct": 0.01
+  },
+  "strategy": {
+    "filters": [
+      {
+        "active": true,
+        "min_volume": 1.0,
+        "name": "MinVolume"
+      },
+      {
+        "active": true,
+        "lookback": 1440,
+        "name": "MacroTrend"
+      },
+      {
+        "active": true,
+        "lookback": 5,
+        "min_dollar": 150.0,
+        "name": "Volatility"
+      },
+      {
+        "active": false,
+        "end_h": 17,
+        "end_m": 0,
+        "name": "TimeOfDay",
+        "start_h": 8,
+        "start_m": 0
+      },
+      {
+        "active": false,
+        "name": "POCTrend"
+      }
+    ],
+    "triggers": [
+      {
+        "active": true,
+        "delta": 1.0,
+        "name": "DeltaAbsorption"
+      },
+      {
+        "active": false,
+        "levels": 2,
+        "name": "StackedImbalance",
+        "ratio": 1.5
+      }
     ]
   }
 }

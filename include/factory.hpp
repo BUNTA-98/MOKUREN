@@ -39,18 +39,25 @@ public:
     inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss);
     inst.pos_manager = std::make_unique<PositionManager>(inst.ptrader.get());
 
-    if (cfg.triggers.size() == 1) {
-      if (cfg.triggers[0].name == "DeltaAbsorption") {
-        double delta = cfg.triggers[0].params.value("delta", 1.0);
+    // 1. TRIGGERS BAUEN (mit active-check)
+    std::vector<ComponentConfig> active_triggers;
+    for (const auto& t : cfg.triggers) {
+      if (t.params.contains("active") && t.params["active"].get<bool>() == false) continue;
+      active_triggers.push_back(t);
+    }
+
+    if (active_triggers.size() == 1) {
+      if (active_triggers[0].name == "DeltaAbsorption") {
+        double delta = active_triggers[0].params.value("delta", 1.0);
         inst.trigger = std::make_unique<DeltaAbsorptionTrigger>(delta);
-      } else if (cfg.triggers[0].name == "StackedImbalance") {
-        double ratio = cfg.triggers[0].params.value("ratio", 1.5);
-        int levels = cfg.triggers[0].params.value("levels", 2);
+      } else if (active_triggers[0].name == "StackedImbalance") {
+        double ratio = active_triggers[0].params.value("ratio", 1.5);
+        int levels = active_triggers[0].params.value("levels", 2);
         inst.trigger = std::make_unique<StackedImbalanceTrigger>(ratio, levels);
       }
-    } else if (cfg.triggers.size() > 1) {
+    } else if (active_triggers.size() > 1) {
       auto or_trigger = std::make_unique<OR_Trigger>();
-      for (const auto& t : cfg.triggers) {
+      for (const auto& t : active_triggers) {
         if (t.name == "DeltaAbsorption") {
           double delta = t.params.value("delta", 1.0);
           inst.sub_triggers.push_back(std::make_unique<DeltaAbsorptionTrigger>(delta));
@@ -67,19 +74,37 @@ public:
 
     inst.pipeline = std::make_unique<PipelineStrategy>(inst.trigger.get());
 
+    // 2. FILTER BAUEN (mit active-check)
     for (const auto &f : cfg.filters) {
-      if (f.name == "MinVolume") {
+      if (f.params.contains("active") && f.params["active"].get<bool>() == false) continue;
+
+      
+    if (f.name == "MinVolume") {
         double min_vol = f.params.value("min_volume", 1.0);
         inst.filters.push_back(std::make_unique<MinVolumeFilter>(min_vol));
         inst.pipeline->AddFilter(inst.filters.back().get());
-      } else if (f.name == "MacroTrend") {
+      
+    } else if (f.name == "MacroTrend") {
         int lookback = f.params.value("lookback", 1440);
         inst.filters.push_back(std::make_unique<MacroTrendFilter>(lookback));
         inst.pipeline->AddFilter(inst.filters.back().get());
-      } else if (f.name == "Volatility") {
+      
+    } else if (f.name == "Volatility") {
         double min_dl = f.params.value("min_dollar", 150.0);
         int lookback = f.params.value("lookback", 5);
         inst.filters.push_back(std::make_unique<VolatilityFilter>(min_dl, lookback));
+        inst.pipeline->AddFilter(inst.filters.back().get());
+      
+    }  else if (f.name == "TimeOfDay") {
+        int start_h = f.params.value("start_h", 8);
+        int start_m = f.params.value("start_m", 0);
+        int end_h = f.params.value("end_h", 17);
+        int end_m = f.params.value("end_m", 0);
+        inst.filters.push_back(std::make_unique<TimeOfDayFilter>(start_h, start_m, end_h, end_m));
+        inst.pipeline->AddFilter(inst.filters.back().get());
+
+      } else if (f.name == "POCTrend") {
+        inst.filters.push_back(std::make_unique<POCTrendFilter>());
         inst.pipeline->AddFilter(inst.filters.back().get());
       }
     }
@@ -88,7 +113,10 @@ public:
     inst.sizer = std::make_unique<PositionSizer>(*inst.ptrader, cfg.risk_per_trade_pct, cfg.min_distance_dollars);
     inst.risk_manager = std::make_unique<RiskManager>();
 
+    // 3. RISK MODULE BAUEN (mit active-check)
     for (const auto &r : cfg.risk_modules) {
+      if (r.params.contains("active") && r.params["active"].get<bool>() == false) continue;
+
       if (r.name == "SinglePositionLock") {
         inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(*inst.ptrader));
       } else if (r.name == "MaxLeverageLock") {
