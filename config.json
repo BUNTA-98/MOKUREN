@@ -8,7 +8,7 @@
   },
   "risk": {
     "max_daily_loss": 400.0,
-    "min_distance_dollars": 10.0,
+    "min_distance_dollars": 15.0,
     "modules": [
       {
         "active": true,
@@ -16,7 +16,7 @@
       },
       {
         "active": true,
-        "max_leverage": 10.0,
+        "max_leverage": 5.0,
         "name": "MaxLeverageLock"
       },
       {
@@ -27,11 +27,19 @@
     ],
     "risk_per_trade_pct": 0.01,
     "sl_pct": {
-      "max": 0.09,
-      "min": 0.005,
-      "step": 0.001
+      "max": 0.1,
+      "min": 0.01,
+      "mode": "range",
+      "step": 0.1,
+      "val": 0.01
     },
-    "tp_pct": 0.01
+    "tp_pct": {
+      "max": 0.1,
+      "min": 0.02,
+      "mode": "range",
+      "step": 0.01,
+      "val": 0.02
+    }
   },
   "strategy": {
     "filters": [
@@ -42,7 +50,7 @@
       },
       {
         "active": true,
-        "lookback": 1440,
+        "lookback": 100.0,
         "name": "MacroTrend"
       },
       {
@@ -72,7 +80,7 @@
       },
       {
         "active": false,
-        "levels": 2,
+        "levels": 3.0,
         "name": "StackedImbalance",
         "ratio": 1.5
       }

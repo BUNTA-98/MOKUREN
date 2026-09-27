@@ -19,10 +19,13 @@ private:
     EngineState* state;
     Mokuren* engine;
     std::string config_path = "config.json";
+    
+    int selected_run = 0; 
+    std::function<void(const json&)> on_inspect; 
 
 public:
-    // init scanner with main engine refs
-    UIScanner(EngineState* s, Mokuren* e) : state(s), engine(e) {}
+    UIScanner(EngineState* s, Mokuren* e, std::function<void(const json&)> inspect_cb) 
+        : state(s), engine(e), on_inspect(inspect_cb) {}
 
     void Render(struct ncplane* stdplane) override {
         std::string current_status = state->GetStatus();
@@ -79,7 +82,7 @@ public:
         ncplane_putstr_yx(stdplane, 17, 3, "[ LIVE LEADERBOARD : TOP 5 ]");
         
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 19, 3, "RANK  PROFIT       WINRATE   TRADES   PARAMETERS");
+        ncplane_putstr_yx(stdplane, 19, 3, "   RANK  PROFIT       WINRATE   TRADES   PARAMETERS");
         ncplane_putstr_yx(stdplane, 20, 3, "--------------------------------------------------------------------------------");
 
         std::vector<UIResult> top_runs;
@@ -93,22 +96,36 @@ public:
         });
 
         int limit = std::min(static_cast<int>(top_runs.size()), 5);
+        if (selected_run >= limit) selected_run = std::max(0, limit - 1);
+
         for(int i = 0; i < limit; i++) {
+            bool is_active = (i == selected_run);
+            
+            if (is_active) {
+                UITheme::StyleCursorActive(stdplane);
+                ncplane_putstr_yx(stdplane, 21 + i, 1, ">");
+                UITheme::StyleDataValue(stdplane); 
+            } else {
+                UITheme::StyleTextMuted(stdplane);
+                ncplane_putstr_yx(stdplane, 21 + i, 1, " ");
+                UITheme::StyleTextDefault(stdplane);
+            }
+
             char buf[256];
             snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-7.1f%% %-8d %s", 
                      i + 1, top_runs[i].net_profit, top_runs[i].winrate, 
                      top_runs[i].trades, top_runs[i].params_str.c_str());
                      
-            if (i == 0) UITheme::StyleDataValue(stdplane); else UITheme::StyleTextDefault(stdplane);
-            ncplane_putstr_yx(stdplane, 21 + i, 3, buf);
+            ncplane_putstr_yx(stdplane, 21 + i, 4, buf);
         }
 
-        if (!is_running) UITheme::StyleAlert(stdplane); else UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 27, 3, "[S] INITIATE OVERRIDE");
+        if (!is_running) {
+            UITheme::StyleAlert(stdplane); 
+            ncplane_putstr_yx(stdplane, 28, 3, "[S] START SCAN   [UP/DOWN] SELECT RUN   [ENTER] REPLAY & INSPECT");
+        }
     }
 
     void HandleInput(uint32_t key) override {
-        // start grid search backtest on [s]
         if ((key == 's' || key == 'S') && !state->is_running.load()) {
             state->is_running = true;
             state->current_permutation = 0;
@@ -118,12 +135,15 @@ public:
                 state->top_results.clear();
             }
 
-            std::thread([this]() {
-                std::string data_path = "binance/monthly/DEFAULT.csv"; // fallback path
+            EngineState* bg_state = state;
+            Mokuren* bg_engine = engine;
+            std::string bg_config = config_path;
+
+            std::thread([bg_state, bg_engine, bg_config]() {
+                std::string data_path = "binance/monthly/DEFAULT.csv"; 
                 
-                // deep search for filepath or data_path inside json
                 try {
-                    std::ifstream file(config_path);
+                    std::ifstream file(bg_config);
                     if (file.is_open()) {
                         json j = json::parse(file);
                         
@@ -142,15 +162,15 @@ public:
                     }
                 } catch (...) {}
 
-                // feed engine with resolved path
-                engine->RunGridSearch(data_path, config_path, 
-                    [this](const std::string& status) { state->SetStatus(status); },
-                    [this](int current, int total) { state->current_permutation = current; state->total_permutations = total; },
-                    [this](const TestResult& res) {
+                bg_engine->RunGridSearch(data_path, bg_config, 
+                    [bg_state](const std::string& status) { bg_state->SetStatus(status); },
+                    [bg_state](int current, int total) { bg_state->current_permutation = current; bg_state->total_permutations = total; },
+                    [bg_state](const TestResult& res) {
                         UIResult ur;
                         ur.net_profit = res.net_profit;
                         ur.winrate = res.winrate;
                         ur.trades = res.trades;
+                        ur.full_config = res.full_config; // <--- HIER übergeben
                         
                         std::string p_str;
                         for (const auto& [k, v] : res.parameters) {
@@ -160,14 +180,31 @@ public:
                         }
                         ur.params_str = p_str;
                         
-                        std::lock_guard<std::mutex> lock(state->ui_mutex);
-                        state->top_results.push_back(ur);
+                        std::lock_guard<std::mutex> lock(bg_state->ui_mutex);
+                        bg_state->top_results.push_back(ur);
                     }
                 );
                 
-                state->is_running = false;
-                state->SetStatus("IDLE");
+                bg_state->is_running = false;
+                bg_state->SetStatus("IDLE");
             }).detach();
+        }
+
+        if (key == NCKEY_UP && selected_run > 0) selected_run--;
+        if (key == NCKEY_DOWN && selected_run < 4) selected_run++;
+
+        if (key == NCKEY_ENTER && !state->is_running.load()) {
+            json cached_config;
+            {
+                std::lock_guard<std::mutex> lock(state->ui_mutex);
+                if (selected_run < state->top_results.size()) {
+                    cached_config = state->top_results[selected_run].full_config; 
+                }
+            }
+            if (!cached_config.empty()) {
+                on_inspect(cached_config); 
+                return; 
+            }
         }
     }
 };

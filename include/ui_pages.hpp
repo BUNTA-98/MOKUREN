@@ -13,5 +13,8 @@ public:
     virtual void HandleInput(uint32_t key) = 0;
     
     // Optional: Wird aufgerufen, wenn auf diese Seite gewechselt wird
-    virtual void OnEnter() {} 
+    virtual void OnEnter() {}
+
+  // NEU: Teilt dem Manager mit, ob globale Hotkeys blockiert werden sollen
+    virtual bool BlocksGlobalHotkeys() const { return false; }
 };

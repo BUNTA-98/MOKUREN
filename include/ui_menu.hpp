@@ -89,7 +89,8 @@ private:
     void FlattenJson(const json& j, const std::string& current_path, const std::string& current_category) {
         if (j.is_object()) {
             // NEU: Erkennt unser Grid-Range Objekt
-            if (j.contains("mode") && j["mode"] == "range") {
+            if (j.contains("mode") && j["mode"] == "range" || 
+                (j.contains("min") && j.contains("max") && j.contains("step"))) {
                 MenuRow row;
                 std::string display = current_path.empty() ? "ROOT" : current_path.substr(current_category.length() + 2);
                 std::replace(display.begin(), display.end(), '/', '.');
@@ -170,6 +171,10 @@ private:
 
 public:
     PageConfig() { LoadConfigSmart(); }
+    
+  bool BlocksGlobalHotkeys() const override {
+        return menu_state == MenuState::INLINE_EDIT || menu_state == MenuState::SUBMENU_EDIT;
+    }
 
     void OnEnter() override { LoadConfigSmart(); }
 

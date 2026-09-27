@@ -3,10 +3,13 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <map>
+#include <nlohmann/json.hpp>
 
 // single result for the terminal leaderboard
 struct UIResult {
   std::string params_str;
+  nlohmann::json full_config; // <--- HIER: Die perfekte, fertige Config
   double net_profit;
   double winrate;
   int trades;
@@ -24,13 +27,11 @@ struct EngineState {
   std::string status_text = "IDLE";
   std::vector<UIResult> top_results;
 
-  // thread-safe setter for status string
   void SetStatus(const std::string& status) {
     std::lock_guard<std::mutex> lock(ui_mutex);
     status_text = status;
   }
 
-  // thread-safe getter for status string
   std::string GetStatus() {
     std::lock_guard<std::mutex> lock(ui_mutex);
     return status_text;

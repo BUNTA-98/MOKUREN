@@ -3,12 +3,13 @@
 #include "csv_parser.hpp"
 #include "factory.hpp"
 #include "market_context.hpp"
+#include "ui_footprint.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
-#include <functional> // wichtig für callbacks
+#include <functional>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -16,23 +17,30 @@
 #include <thread>
 #include <vector>
 #include <fstream>
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
+// TestResult um die fertige JSON erweitert
 struct TestResult {
   std::map<std::string, double> parameters;
+  nlohmann::json full_config; // <--- HIER
   double net_profit;
   int trades;
   double winrate;
   std::vector<TradeRecord> trade_log;
 };
 
+struct ReplayResult {
+    std::vector<Bar> history_1m;
+    std::vector<Bar> history_15m;
+    std::vector<TradeInfo> trades; 
+};
+
 class Mokuren {
 private:
   std::vector<TradeEvent> LoadAllTrades(const std::string &input_path_str) {
     fs::path input_path = input_path_str;
-    
-    // 1. definiere den namen der cache-datei
     fs::path cache_path = input_path;
     if (fs::is_directory(input_path)) {
       cache_path /= "ticks_cache.bin";
@@ -40,7 +48,6 @@ private:
       cache_path = input_path.parent_path() / "ticks_cache.bin";
     }
 
-    // 2. versuch: lade direkt aus dem binären cache (millisekunden)
     if (fs::exists(cache_path)) {
       std::ifstream cache_file(cache_path, std::ios::binary);
       if (cache_file) {
@@ -57,7 +64,6 @@ private:
       }
     }
 
-    // 3. fallback: lade die csvs, wenn kein cache da ist
     std::vector<std::string> csv_files;
     if (fs::is_directory(input_path)) {
       for (const auto &entry : fs::directory_iterator(input_path)) {
@@ -78,7 +84,6 @@ private:
           file, [&](const TradeEvent &trade) { all_trades.push_back(trade); });
     }
 
-    // 4. cache für den nächsten run speichern
     if (!all_trades.empty()) {
       std::ofstream cache_file(cache_path, std::ios::binary);
       if (cache_file) {
@@ -86,7 +91,6 @@ private:
                          all_trades.size() * sizeof(TradeEvent));
       }
     }
-
     return all_trades;
   }
 
@@ -104,7 +108,7 @@ public:
       return;
     }
     
-    json base_json = json::parse(file);
+    nlohmann::json base_json = nlohmann::json::parse(file);
     std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
     
     on_status("LOADING SECURE TICK STREAM...");
@@ -121,27 +125,17 @@ public:
     on_status("GRID SCAN ACTIVE (" + std::to_string(max_cores) + " THREADS)");
 
     int total_iterations = runs.size();
-    
-    // diese beiden variablen steuern den kompletten pool thread-sicher
     std::atomic<size_t> task_index{0};
     std::atomic<int> current_iteration{0};
 
-    // unsterbliche worker aufsetzen
     std::vector<std::thread> workers;
     for (unsigned int i = 0; i < max_cores; ++i) {
       workers.emplace_back([&, this]() {
         while (true) {
-          // ziehe die nächste aufgabe vom stapel
           size_t idx = task_index.fetch_add(1);
-          
-          // wenn der stapel leer ist, beendet sich der worker
-          if (idx >= runs.size()) {
-            break; 
-          }
+          if (idx >= runs.size()) break; 
           
           const auto& run = runs[idx];
-          
-          // --- ENGINE LOGIK FÜR DIESEN RUN ---
           AppConfig cfg = AppConfig::Load(run.full_json);
           EngineInstance eng = StrategyFactory::Build(cfg);
 
@@ -180,28 +174,97 @@ public:
           eng.aggregator->FlushLastCandle(live_bar);
           eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
 
-          // ergebnis an ui senden
           if (eng.ptrader->GetTotalTrades() > 0) {
-            TestResult res{run.grid_values, eng.ptrader->GetNetProfit(),
-                           eng.ptrader->GetTotalTrades(), eng.ptrader->GetWinrate(),
-                           eng.ptrader->GetTradeHistory()};
+            TestResult res;
+            res.parameters = run.grid_values;
+            res.full_config = run.full_json; // <--- HIER: Saubere Config direkt übernehmen!
+            res.net_profit = eng.ptrader->GetNetProfit();
+            res.trades = eng.ptrader->GetTotalTrades();
+            res.winrate = eng.ptrader->GetWinrate();
+            res.trade_log = eng.ptrader->GetTradeHistory();
             on_result(res);
           }
           
-          // fortschrittsbalken updaten
           int done = ++current_iteration;
           on_progress(done, total_iterations);
         }
       });
     }
 
-    // warte, bis alle worker ihre arbeit niederlegen (stapel ist leer)
     for (auto& w : workers) {
-      if (w.joinable()) {
-        w.join();
-      }
+      if (w.joinable()) w.join();
     }
     
     on_status("SCAN COMPLETE");
+  }
+
+  // HIER: Nimmt nun direkt die fertige Config entgegen, ohne rumzubasteln.
+  ReplayResult ReplaySingleRun(const std::string &filepath, const nlohmann::json& winning_config) {
+      ReplayResult result;
+
+      std::vector<TradeEvent> all_trades = LoadAllTrades(filepath);
+      if (all_trades.empty()) return result;
+
+      // Genial einfach:
+      AppConfig cfg = AppConfig::Load(winning_config);
+      EngineInstance eng = StrategyFactory::Build(cfg);
+
+      Bar live_bar;
+      Bar htf_bar;
+
+      for (const auto &trade : all_trades) {
+          eng.pos_manager->Update(trade.price);
+          eng.ptrader->CheckRisk(trade.price, trade.timestamp);
+
+          bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
+          eng.htf_aggregator->ProcessTrade(htf_bar, trade);
+          MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar};
+
+          TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
+          if (raw_signal.direction != SignalDirection::NONE) {
+              raw_signal.entry_price = trade.price;
+              if (raw_signal.direction == SignalDirection::BUY) {
+                  raw_signal.stop_loss = trade.price * (1.0 - cfg.sl_pct);
+                  raw_signal.take_profit = trade.price * (1.0 + cfg.tp_pct);
+              } else {
+                  raw_signal.stop_loss = trade.price * (1.0 + cfg.sl_pct);
+                  raw_signal.take_profit = trade.price * (1.0 - cfg.tp_pct);
+              }
+          }
+
+          TradeSignal sized_signal = eng.sizer->CalculateSize(raw_signal);
+          TradeSignal final_signal = eng.risk_manager->Evaluate(sized_signal, trade.timestamp);
+
+          if (final_signal.direction != SignalDirection::NONE) {
+              eng.ptrader->ProcessSignal(final_signal, trade.price, trade.timestamp);
+          }
+      }
+
+      eng.aggregator->FlushLastCandle(live_bar);
+      eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
+
+      result.history_1m = eng.aggregator->GetHistory();
+      result.history_15m = eng.htf_aggregator->GetHistory();
+      
+      const auto& trade_log = eng.ptrader->GetTradeHistory();
+      for (const auto& t : trade_log) {
+          TradeInfo ti;
+          ti.is_long = (t.direction == SignalDirection::BUY); 
+          ti.entry_price = t.entry_price;
+          ti.pnl = t.net_profit;
+          
+          auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
+              [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
+              
+          if (it != result.history_1m.end()) {
+              ti.candle_idx = std::distance(result.history_1m.begin(), it);
+              if (ti.candle_idx > 0 && it->timestamp_start > t.entry_time) ti.candle_idx--; 
+          } else {
+              ti.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
+          }
+          result.trades.push_back(ti);
+      }
+      
+      return result;
   }
 };

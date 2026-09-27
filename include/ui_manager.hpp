@@ -8,8 +8,8 @@
 #include "ui_theme.hpp"
 #include "ui_pages.hpp"
 #include "ui_menu.hpp"
-#include "ui_scanner.hpp"   // Deine Scanner Logik kommt hier rein
-#include "ui_footprint.hpp" // Deine Inspector Logik kommt hier rein
+#include "ui_scanner.hpp"   
+#include "ui_footprint.hpp" 
 
 enum class PageID { INSPECTOR, SCANNER, CONFIG };
 
@@ -57,13 +57,43 @@ private:
     void SwitchPage(PageID new_page) {
         current_page_id = new_page;
         
-        // Router Logik: Zerstört die alte Seite und lädt die neue dynamisch
         if (new_page == PageID::CONFIG) {
-            current_page = std::make_unique<PageConfig>(); // bzw. MenuConfig, falls du die Klasse auch umbenannt hast!
+            current_page = std::make_unique<PageConfig>(); 
         } 
         else if (new_page == PageID::SCANNER) { 
-            // Scanner bekommt die Pointer auf State und Engine
-            current_page = std::make_unique<UIScanner>(&state, &engine); 
+            current_page = std::make_unique<UIScanner>(&state, &engine, 
+                [this](const nlohmann::json& winning_config) {
+                    
+                    std::string data_path = "binance/monthly/DEFAULT.csv"; 
+                    try {
+                        std::ifstream f("config.json");
+                        if (f.is_open()) {
+                            nlohmann::json j = nlohmann::json::parse(f);
+                            std::function<void(const nlohmann::json&)> find_path = [&](const nlohmann::json& node) {
+                                if (node.is_object()) {
+                                    for (auto& [k, v] : node.items()) {
+                                        if (v.is_string() && (k == "filepath" || k == "data_path")) {
+                                            data_path = v.get<std::string>(); 
+                                        } else {
+                                            find_path(v); 
+                                        }
+                                    }
+                                }
+                            };
+                            find_path(j);
+                        }
+                    } catch (...) {}
+
+                    ReplayResult rep = this->engine.ReplaySingleRun(data_path, winning_config);
+
+                    auto inspector = std::make_unique<UIInspector>();
+                    inspector->SetReplayData(rep.history_1m, rep.history_15m, rep.trades);
+                    
+                    this->current_page = std::move(inspector);
+                    this->current_page_id = PageID::INSPECTOR;
+                    if (this->current_page) this->current_page->OnEnter();
+                }
+            ); 
         }
         else if (new_page == PageID::INSPECTOR) { 
             current_page = std::make_unique<UIInspector>(); 
@@ -80,7 +110,7 @@ public:
         if (!nc) throw std::runtime_error("fatal error: arasaka core init failed.");
         stdplane = notcurses_stdplane(nc);
         
-        SwitchPage(PageID::CONFIG); // Startseite
+        SwitchPage(PageID::CONFIG);
     }
 
     ~UIManager() {
@@ -104,13 +134,15 @@ public:
             
             if (key == (uint32_t)-1 || ni.evtype == NCTYPE_RELEASE) continue; 
 
-            // Globale Hotkeys
-            if (key == 'q' || key == 'Q') running = false;
-            else if (key == '1') SwitchPage(PageID::INSPECTOR);
-            else if (key == '2') SwitchPage(PageID::SCANNER);
-            else if (key == '3') SwitchPage(PageID::CONFIG);
+            // HIER IST DER FIX: Wir checken, ob die aktuelle Seite blockiert
+            bool is_editing = current_page && current_page->BlocksGlobalHotkeys();
+
+            if (!is_editing && (key == 'q' || key == 'Q')) running = false;
+            else if (!is_editing && key == '1') SwitchPage(PageID::INSPECTOR);
+            else if (!is_editing && key == '2') SwitchPage(PageID::SCANNER);
+            else if (!is_editing && key == '3') SwitchPage(PageID::CONFIG);
             else {
-                // Lokale Eingaben an die aktive Seite weiterleiten
+                // Wenn wir tippen (is_editing == true), landet ALLES hier (auch die '1' und das 'Q')
                 if (current_page) current_page->HandleInput(key);
             }
         }
