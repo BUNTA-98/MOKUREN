@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cmath>
 
 struct TradeRecord {
   int64_t entry_time;
@@ -16,13 +17,13 @@ struct TradeRecord {
 
 class PaperTrader {
 public:
-  PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01, double max_dl = 400.0)
-      : stop_loss_pct(sl_pct), take_profit_pct(tp_pct), max_daily_loss_(max_dl) {}
+  PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01, double max_dl = 400.0, double slip = 0.0002)
+      : stop_loss_pct(sl_pct), take_profit_pct(tp_pct), max_daily_loss_(max_dl), slippage(slip) {}
 
   double GetBalance() const { return balance; }
   int GetTradesWon() const { return trades_won; }
   int GetTradesLost() const { return trades_lost; }
-  int GetTradesBE() const { return trades_be; } // NEU: Zählt nur Break-Evens
+  int GetTradesBE() const { return trades_be; } 
   
   double GetTotalFeesPaid() const { return total_fees_paid; }
   int GetTotalTrades() const { return trades_won + trades_lost + trades_be; }
@@ -32,6 +33,9 @@ public:
   bool HasOpenPosition() const { return position_size > 0; }
   const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
   double GetNetProfit() const { return balance - 10000.0; }
+  
+  // NEU: Drawdown Getter
+  double GetMaxDrawdown() const { return max_drawdown_pct_; }
 
   TradeSignal GetCurrentPosition() const {
     TradeSignal sig;
@@ -45,7 +49,6 @@ public:
 
   double GetWinrate() const {
     double total_trades = GetTotalTrades();
-    // NEU: Die Winrate berechnet sich jetzt AUSSCHLIESSLICH aus echten Take-Profits!
     if (total_trades > 0) return (static_cast<double>(trades_won) / total_trades) * 100.0;
     return 0.0;
   }
@@ -54,10 +57,13 @@ public:
     UpdateDay(current_time);
     if (position_size == 0.0) return;
 
-    double actual_exit_price = (position_direction_ == SignalDirection::BUY) ? (current_price - slippage) : (current_price + slippage);
+    double actual_exit_price = (position_direction_ == SignalDirection::BUY) ? (current_price * (1.0 - slippage)) : (current_price * (1.0 + slippage));
     double gross_profit = (position_direction_ == SignalDirection::BUY) ? (actual_exit_price - entry_price) * position_size : (entry_price - actual_exit_price) * position_size;
     double exit_fee = (actual_exit_price * position_size) * taker_fee_pct;
     double floating_net_profit = gross_profit - exit_fee; 
+
+    // NEU: Drawdown live tracken
+    UpdateDrawdown(balance + floating_net_profit);
 
     if (current_daily_pnl_ + floating_net_profit <= -max_daily_loss_) {
       ClosePosition(current_price, "daily_loss_limit", current_time);
@@ -83,7 +89,6 @@ public:
   }
 
   void ProcessSignal(TradeSignal signal, double current_price, int64_t current_time) {
-    
     UpdateDay(current_time);
     
     if (current_daily_pnl_ <= -max_daily_loss_) return;
@@ -93,18 +98,30 @@ public:
                                 signal.direction == SignalDirection::SELL)) {
       position_size = signal.volume;
       position_direction_ = signal.direction;
-      current_sl_ = signal.stop_loss;
-      current_tp_ = signal.take_profit;
       entry_time_ = current_time;
       sl_moved_to_be_ = false;
 
-      if (position_direction_ == SignalDirection::BUY) entry_price = current_price + slippage;
-      else entry_price = current_price - slippage;
+      if (position_direction_ == SignalDirection::BUY) {
+        entry_price = current_price * (1.0 + slippage);
+        double sl_dist_pct = (signal.entry_price - signal.stop_loss) / signal.entry_price;
+        double tp_dist_pct = (signal.take_profit - signal.entry_price) / signal.entry_price;
+        current_sl_ = entry_price * (1.0 - sl_dist_pct);
+        current_tp_ = entry_price * (1.0 + tp_dist_pct);
+      } else {
+        entry_price = current_price * (1.0 - slippage);
+        double sl_dist_pct = (signal.stop_loss - signal.entry_price) / signal.entry_price;
+        double tp_dist_pct = (signal.entry_price - signal.take_profit) / signal.entry_price;
+        current_sl_ = entry_price * (1.0 + sl_dist_pct);
+        current_tp_ = entry_price * (1.0 - tp_dist_pct);
+      }
 
       double entry_fee = (entry_price * position_size) * taker_fee_pct;
       balance -= entry_fee;
       total_fees_paid += entry_fee;
       current_daily_pnl_ -= entry_fee; 
+      
+      // Drawdown nach Gebühren updaten
+      UpdateDrawdown(balance);
     }
   }
 
@@ -117,7 +134,10 @@ private:
   double position_size = 0.0;
   double entry_price = 0.0;
   
-  // Getrennte Zähler
+  // NEU: Drawdown-Tracking Variablen
+  double peak_balance_ = 10000.0;
+  double max_drawdown_pct_ = 0.0;
+  
   int trades_won = 0;
   int trades_lost = 0;
   int trades_be = 0; 
@@ -140,8 +160,15 @@ private:
   double stop_loss_pct;
   double take_profit_pct;
   double taker_fee_pct = 0.0004;
-  double slippage = 5.0;         
+  double slippage;         
   double total_fees_paid = 0.0;  
+
+  // NEU: Drawdown Hilfsfunktion
+  void UpdateDrawdown(double current_equity) {
+    if (current_equity > peak_balance_) peak_balance_ = current_equity;
+    double current_dd = (peak_balance_ - current_equity) / peak_balance_ * 100.0;
+    if (current_dd > max_drawdown_pct_) max_drawdown_pct_ = current_dd;
+  }
 
   void UpdateDay(int64_t current_time) {
     int64_t day_ms = 86400000; 
@@ -161,10 +188,10 @@ private:
       double gross_profit;
 
       if (position_direction_ == SignalDirection::BUY) {
-        actual_exit_price = current_price - slippage;
+        actual_exit_price = current_price * (1.0 - slippage);
         gross_profit = (actual_exit_price - entry_price) * position_size;
       } else {
-        actual_exit_price = current_price + slippage;
+        actual_exit_price = current_price * (1.0 + slippage);
         gross_profit = (entry_price - actual_exit_price) * position_size;
       }
 
@@ -174,14 +201,16 @@ private:
       
       balance += net_profit;
       current_daily_pnl_ += net_profit; 
+      
+      // NEU: Drawdown nach Trade-Close updaten
+      UpdateDrawdown(balance);
 
-      // NEU: Ehrliche Auswertung!
       if (reason == "tp") {
         trades_won++;
       } else if (reason == "be") {
         trades_be++;
       } else {
-        trades_lost++; // SL und drawdown kill zählen als loss
+        trades_lost++;
       }
 
       trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});

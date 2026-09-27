@@ -1,9 +1,10 @@
 {
   "environment": {
-    "filepath": "binance/monthly/august.csv",
+    "filepath": "binance/monthly/august26.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 6,
+    "slippage_pct": 0.0005,
     "tick_size": 1.0
   },
   "risk": {
@@ -26,20 +27,8 @@
       }
     ],
     "risk_per_trade_pct": 0.01,
-    "sl_pct": {
-      "max": 0.1,
-      "min": 0.01,
-      "mode": "range",
-      "step": 0.1,
-      "val": 0.01
-    },
-    "tp_pct": {
-      "max": 0.1,
-      "min": 0.02,
-      "mode": "range",
-      "step": 0.01,
-      "val": 0.02
-    }
+    "sl_pct": 0.01,
+    "tp_pct": 0.1
   },
   "strategy": {
     "filters": [

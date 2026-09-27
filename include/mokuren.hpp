@@ -21,11 +21,11 @@
 
 namespace fs = std::filesystem;
 
-// TestResult um die fertige JSON erweitert
 struct TestResult {
   std::map<std::string, double> parameters;
-  nlohmann::json full_config; // <--- HIER
+  nlohmann::json full_config; 
   double net_profit;
+  double max_drawdown; // <--- NEU
   int trades;
   double winrate;
   std::vector<TradeRecord> trade_log;
@@ -41,11 +41,15 @@ class Mokuren {
 private:
   std::vector<TradeEvent> LoadAllTrades(const std::string &input_path_str) {
     fs::path input_path = input_path_str;
-    fs::path cache_path = input_path;
+    fs::path cache_path;
+
     if (fs::is_directory(input_path)) {
-      cache_path /= "ticks_cache.bin";
+      std::string dir_name = input_path.filename().string();
+      if (dir_name.empty()) dir_name = "folder";
+      cache_path = input_path / (dir_name + "_cache.bin");
     } else {
-      cache_path = input_path.parent_path() / "ticks_cache.bin";
+      std::string file_stem = input_path.stem().string();
+      cache_path = input_path.parent_path() / (file_stem + "_cache.bin");
     }
 
     if (fs::exists(cache_path)) {
@@ -93,7 +97,6 @@ private:
     }
     return all_trades;
   }
-
 public:
   Mokuren() = default;
 
@@ -177,8 +180,9 @@ public:
           if (eng.ptrader->GetTotalTrades() > 0) {
             TestResult res;
             res.parameters = run.grid_values;
-            res.full_config = run.full_json; // <--- HIER: Saubere Config direkt übernehmen!
+            res.full_config = run.full_json; 
             res.net_profit = eng.ptrader->GetNetProfit();
+            res.max_drawdown = eng.ptrader->GetMaxDrawdown(); // <--- NEU
             res.trades = eng.ptrader->GetTotalTrades();
             res.winrate = eng.ptrader->GetWinrate();
             res.trade_log = eng.ptrader->GetTradeHistory();
@@ -198,14 +202,12 @@ public:
     on_status("SCAN COMPLETE");
   }
 
-  // HIER: Nimmt nun direkt die fertige Config entgegen, ohne rumzubasteln.
   ReplayResult ReplaySingleRun(const std::string &filepath, const nlohmann::json& winning_config) {
       ReplayResult result;
 
       std::vector<TradeEvent> all_trades = LoadAllTrades(filepath);
       if (all_trades.empty()) return result;
 
-      // Genial einfach:
       AppConfig cfg = AppConfig::Load(winning_config);
       EngineInstance eng = StrategyFactory::Build(cfg);
 

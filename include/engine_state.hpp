@@ -13,6 +13,7 @@ struct UIResult {
   double net_profit;
   double winrate;
   int trades;
+  double max_drawdown;
 };
 
 // shared memory bridge for notcurses dashboard

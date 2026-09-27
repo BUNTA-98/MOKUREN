@@ -82,8 +82,9 @@ public:
         ncplane_putstr_yx(stdplane, 17, 3, "[ LIVE LEADERBOARD : TOP 5 ]");
         
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 19, 3, "   RANK  PROFIT       WINRATE   TRADES   PARAMETERS");
-        ncplane_putstr_yx(stdplane, 20, 3, "--------------------------------------------------------------------------------");
+        // NEU: Drawdown-Spalte im Header hinzugefügt[cite: 8]
+        ncplane_putstr_yx(stdplane, 19, 3, "   RANK  PROFIT       WINRATE   DRAWDOWN  TRADES   PARAMETERS");
+        ncplane_putstr_yx(stdplane, 20, 3, "--------------------------------------------------------------------------------------");
 
         std::vector<UIResult> top_runs;
         {
@@ -112,9 +113,10 @@ public:
             }
 
             char buf[256];
-            snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-7.1f%% %-8d %s", 
+            // NEU: Drawdown-Wert in den String formatiert (z.B. -15.4%)[cite: 8]
+            snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-7.1f%% -%-8.2f%% %-8d %s", 
                      i + 1, top_runs[i].net_profit, top_runs[i].winrate, 
-                     top_runs[i].trades, top_runs[i].params_str.c_str());
+                     top_runs[i].max_drawdown, top_runs[i].trades, top_runs[i].params_str.c_str());
                      
             ncplane_putstr_yx(stdplane, 21 + i, 4, buf);
         }
@@ -169,8 +171,9 @@ public:
                         UIResult ur;
                         ur.net_profit = res.net_profit;
                         ur.winrate = res.winrate;
+                        ur.max_drawdown = res.max_drawdown; // <--- NEU: Drawdown aus dem Backend auslesen[cite: 8]
                         ur.trades = res.trades;
-                        ur.full_config = res.full_config; // <--- HIER übergeben
+                        ur.full_config = res.full_config; 
                         
                         std::string p_str;
                         for (const auto& [k, v] : res.parameters) {

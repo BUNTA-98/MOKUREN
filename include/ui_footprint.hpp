@@ -154,30 +154,30 @@ public:
             snprintf(buf, sizeof(buf), "%8.2f", price);
             ncplane_putstr_yx(stdplane, current_y, chart_x, buf);
 
-            // 2. BID VOLUME (Rechtsbündig)
+             // 2. BID VOLUME (Rechtsbündig)
             if (bid_imbalance) UITheme::StyleBidImbalance(stdplane);
             else UITheme::StyleBid(stdplane);
-            snprintf(buf, sizeof(buf), "%6.0f", bid);
-            ncplane_putstr_yx(stdplane, current_y, chart_x + 10, buf);
+            snprintf(buf, sizeof(buf), "%8.3f", bid);
+            ncplane_putstr_yx(stdplane, current_y, chart_x + 9, buf);
 
-            // Trenner
+            // Trenner 
+            UITheme::StyleBackground(stdplane); 
             UITheme::StyleTextMuted(stdplane);
             ncplane_putstr_yx(stdplane, current_y, chart_x + 17, " | ");
 
-            // 3. ASK VOLUME (Linksbündig)
+            // 3. ASK VOLUME 
             if (ask_imbalance) UITheme::StyleAskImbalance(stdplane);
             else UITheme::StyleAsk(stdplane);
-            snprintf(buf, sizeof(buf), "%-6.0f", ask);
+            snprintf(buf, sizeof(buf), "%-8.3f", ask);
             ncplane_putstr_yx(stdplane, current_y, chart_x + 20, buf);
 
-            // 4. DELTA
+            // 4. DELTA 
+            UITheme::StyleBackground(stdplane);
             if (delta > 0) UITheme::StyleDataValue(stdplane);
             else if (delta < 0) UITheme::StyleAlert(stdplane);
             else UITheme::StyleTextMuted(stdplane);
-            snprintf(buf, sizeof(buf), "[%+6.0f]", delta);
-            ncplane_putstr_yx(stdplane, current_y, chart_x + 28, buf);
-
-            // 5. VOLUME HISTOGRAM
+            snprintf(buf, sizeof(buf), "[%+8.3f]", delta);
+            ncplane_putstr_yx(stdplane, current_y, chart_x + 29, buf);           // 5. VOLUME HISTOGRAM
             UITheme::StyleVolumeBar(stdplane);
             int bar_len = (max_lvl_vol > 0) ? std::round(((bid + ask) / max_lvl_vol) * 12) : 0;
             std::string vol_bar = "";

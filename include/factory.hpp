@@ -36,7 +36,7 @@ public:
 
     inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size);
     inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size);
-    inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss);
+    inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss, cfg.slippage_pct);
     inst.pos_manager = std::make_unique<PositionManager>(inst.ptrader.get());
 
     // 1. TRIGGERS BAUEN (mit active-check)

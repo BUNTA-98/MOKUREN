@@ -103,6 +103,7 @@ struct AppConfig {
   double risk_per_trade_pct = 0.01;
   double min_distance_dollars = 10.0;
   double max_daily_loss = 400.0;
+  double slippage_pct = 0.0002;
 
   // Lade direkt aus dem bereiten JSON
   static AppConfig Load(const json& j) {
@@ -111,7 +112,8 @@ struct AppConfig {
     cfg.interval_ms = j["environment"].value("interval_ms", 60000);
     cfg.macro_interval_ms = j["environment"].value("macro_interval_ms", 900000);
     cfg.tick_size = j["environment"].value("tick_size", 1.0);
-    
+    cfg.slippage_pct = j["environment"].value("slippage_pct", 0.0002);
+
     if (j["environment"].contains("max_cores") && j["environment"]["max_cores"] > 0) {
       cfg.max_cores = j["environment"]["max_cores"];
     } else {
