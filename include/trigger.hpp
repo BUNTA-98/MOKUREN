@@ -15,6 +15,8 @@ public:
   }
 };
 
+
+
 class StackedImbalanceTrigger : public ITrigger {
 private:
   double ratio_threshold;
@@ -25,54 +27,73 @@ public:
       : ratio_threshold(ratio), min_stacked_count(min_stacked) {}
 
   TradeSignal EvaluateCandle(const MarketContext &context) override {
-    if (context.history.empty())
-      return TradeSignal{};
+    if (context.history.empty()) return TradeSignal{};
     const Bar &bar = context.history.back();
+
+    if (bar.footprint.size() < 2) return TradeSignal{};
+
+    // 1. AUTO-DETECT TICK SIZE 
+    // Wir ignorieren bar.tick_size komplett, da es oft 0.0 ist. 
+    // Wir ermitteln den Abstand direkt aus den echten Footprint-Daten!
+    double real_tick = 999999.0;
+    for (size_t i = 1; i < bar.footprint.size(); i++) {
+        double diff = bar.footprint[i].price - bar.footprint[i-1].price;
+        if (diff > 1e-5 && diff < real_tick) {
+            real_tick = diff;
+        }
+    }
+    if (real_tick == 999999.0) real_tick = 1.0; // Fallback, falls alles kaputt ist
 
     int current_buy_stacked = 0, max_buy_stacked = 0;
     int current_sell_stacked = 0, max_sell_stacked = 0;
 
-    // Iteriere durch den neuen, komprimierten Vektor
     for (size_t i = 1; i < bar.footprint.size(); i++) {
       const auto &upper = bar.footprint[i];
       const auto &lower = bar.footprint[i - 1];
 
-      if (upper.price == 0.0 || lower.price == 0.0) {
-        current_buy_stacked = 0;
-        current_sell_stacked = 0;
-        continue;
-      }
-      if (std::abs((upper.price - lower.price) - bar.tick_size) > 1e-5) {
+      // 2. DYNAMISCHER GAP-CHECK
+      // Wenn der Abstand größer ist als 1.5x die ermittelte Tick-Size, ist es eine Lücke.
+      if (upper.price == 0.0 || lower.price == 0.0 || 
+          (upper.price - lower.price) > (real_tick * 1.5)) {
         current_buy_stacked = 0;
         current_sell_stacked = 0;
         continue;
       }
 
-      if (lower.bid_volume > 0.0 &&
-          upper.ask_volume >= lower.bid_volume * ratio_threshold) {
+      // BUY IMBALANCE
+      bool is_buy_imb = (upper.ask_volume > 0.0001) && 
+                        (lower.bid_volume <= 0.0001 || upper.ask_volume >= lower.bid_volume * ratio_threshold);
+      
+      if (is_buy_imb) {
         current_buy_stacked++;
         max_buy_stacked = std::max(max_buy_stacked, current_buy_stacked);
-      } else
+      } else {
         current_buy_stacked = 0;
+      }
 
-      if (upper.ask_volume > 0.0 &&
-          lower.bid_volume >= upper.ask_volume * ratio_threshold) {
+      // SELL IMBALANCE
+      bool is_sell_imb = (upper.bid_volume > 0.0001) && 
+                         (lower.ask_volume <= 0.0001 || upper.bid_volume >= lower.ask_volume * ratio_threshold);
+
+      if (is_sell_imb) {
         current_sell_stacked++;
         max_sell_stacked = std::max(max_sell_stacked, current_sell_stacked);
-      } else
+      } else {
         current_sell_stacked = 0;
+      }
     }
 
-    if (max_buy_stacked >= min_stacked_count &&
-        max_buy_stacked > max_sell_stacked)
+    if (max_buy_stacked >= min_stacked_count && max_buy_stacked > max_sell_stacked)
       return TradeSignal{SignalDirection::BUY};
-    if (max_sell_stacked >= min_stacked_count &&
-        max_sell_stacked > max_buy_stacked)
+      
+    if (max_sell_stacked >= min_stacked_count && max_sell_stacked > max_buy_stacked)
       return TradeSignal{SignalDirection::SELL};
 
     return TradeSignal{};
   }
 };
+
+
 
 class DeltaAbsorptionTrigger : public ITrigger {
 private:

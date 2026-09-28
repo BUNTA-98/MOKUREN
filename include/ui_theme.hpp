@@ -25,9 +25,9 @@ namespace UITheme {
     inline void StyleTextMuted(struct ncplane* p)   { RawDarkRed(p); }   
     
     // UI-Elemente & Interaktion (Alles Aktive ist Cyan)
-    inline void StyleCursorActive(struct ncplane* p) { RawCyan(p); }     
+    inline void StyleCursorActive(struct ncplane* p) { RawOrange(p); }     
     inline void StyleDataValue(struct ncplane* p)    { RawCyan(p); }     
-    inline void StyleAlert(struct ncplane* p)        { RawRed(p); }      
+    inline void StyleAlert(struct ncplane* p)        { RawOrange(p); }      
     
     // Hintergründe
     inline void StyleBackground(struct ncplane* p) { 

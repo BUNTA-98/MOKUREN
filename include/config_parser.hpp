@@ -9,13 +9,11 @@
 
 using json = nlohmann::json;
 
-// Speichert eine berechnete Parameter-Kombination
 struct RunConfig {
   json full_json;
   std::map<std::string, double> grid_values;
 };
 
-// Hilfsstruktur für gefundene min/max/step Blöcke
 struct GridParam {
   json::json_pointer ptr;
   std::string name;
@@ -24,7 +22,6 @@ struct GridParam {
   double step;
 };
 
-// N-Dimensionaler Parameter-Generator
 class GridScanner {
 private:
   static void FindParams(const json& j, const std::string& current_path, std::vector<GridParam>& params) {
@@ -53,10 +50,10 @@ private:
     }
 
     const auto& p = params[index];
-    double step = (p.step == 0.0) ? 1.0 : p.step; // Endlosschleifen-Schutz
+    double step = (p.step == 0.0) ? 1.0 : p.step; 
     for (double val = p.min; val <= p.max + 1e-9; val += step) {
       json next_json = base_json;
-      next_json[p.ptr] = val; // Überschreibt {min,max,step} mit dem konkreten Wert
+      next_json[p.ptr] = val; 
       
       std::map<std::string, double> next_vals = current_vals;
       next_vals[p.name] = val;
@@ -74,7 +71,7 @@ public:
     std::map<std::string, double> initial_vals;
     
     if (params.empty()) {
-      results.push_back({root, initial_vals}); // Kein Grid-Search, nur 1 Run
+      results.push_back({root, initial_vals}); 
       return results;
     }
     
@@ -88,6 +85,18 @@ struct ComponentConfig {
   json params;
 };
 
+// struct for new pro-trade logic
+struct TradeManagementConfig {
+  double be_trigger_pct = 0.005;
+  double be_target_pct = 0.001;
+  bool enable_trailing = true;
+  double trailing_trigger_pct = 0.008;
+  double trailing_dist_pct = 0.004;
+  bool enable_scale_out = false;
+  double scale_out_trigger_pct = 0.006;
+  double scale_out_fraction = 0.5;
+};
+
 struct AppConfig {
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
@@ -97,6 +106,8 @@ struct AppConfig {
   std::vector<ComponentConfig> triggers;
   std::vector<ComponentConfig> filters;
   std::vector<ComponentConfig> risk_modules;
+  
+  TradeManagementConfig tm_config;
 
   double sl_pct = 0.002;
   double tp_pct = 0.01;
@@ -105,7 +116,6 @@ struct AppConfig {
   double max_daily_loss = 400.0;
   double slippage_pct = 0.0002;
 
-  // Lade direkt aus dem bereiten JSON
   static AppConfig Load(const json& j) {
     AppConfig cfg;
 
@@ -142,6 +152,25 @@ struct AppConfig {
     if (j["risk"].contains("modules")) {
       for (const auto &item : j["risk"]["modules"]) {
         cfg.risk_modules.push_back({item["name"], item});
+      }
+    }
+
+    // load trade management dynamic config
+    if (j.contains("trade_management")) {
+      const auto& tm = j["trade_management"];
+      if (tm.contains("break_even")) {
+        cfg.tm_config.be_trigger_pct = tm["break_even"].value("trigger_pct", 0.005);
+        cfg.tm_config.be_target_pct = tm["break_even"].value("target_pct", 0.001);
+      }
+      if (tm.contains("trailing")) {
+        cfg.tm_config.enable_trailing = tm["trailing"].value("enabled", true);
+        cfg.tm_config.trailing_trigger_pct = tm["trailing"].value("trigger_pct", 0.008);
+        cfg.tm_config.trailing_dist_pct = tm["trailing"].value("distance_pct", 0.004);
+      }
+      if (tm.contains("scale_out")) {
+        cfg.tm_config.enable_scale_out = tm["scale_out"].value("enabled", false);
+        cfg.tm_config.scale_out_trigger_pct = tm["scale_out"].value("trigger_pct", 0.006);
+        cfg.tm_config.scale_out_fraction = tm["scale_out"].value("fraction", 0.5);
       }
     }
 

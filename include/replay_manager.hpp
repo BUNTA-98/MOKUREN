@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 
-// Das struct zieht aus der mokuren.hpp hier um
 struct ReplayResult {
     std::vector<Bar> history_1m;
     std::vector<Bar> history_15m;
@@ -64,8 +63,10 @@ public:
             TradeInfo ti;
             ti.is_long = (t.direction == SignalDirection::BUY); 
             ti.entry_price = t.entry_price;
+            ti.exit_price = t.exit_price;
             ti.pnl = t.net_profit;
             
+            // Finde Entry Candle
             auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
                 [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
                 
@@ -75,6 +76,18 @@ public:
             } else {
                 ti.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
             }
+
+            // Finde Exit Candle
+            auto exit_it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.exit_time, 
+                [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
+                
+            if (exit_it != result.history_1m.end()) {
+                ti.exit_candle_idx = std::distance(result.history_1m.begin(), exit_it);
+                if (ti.exit_candle_idx > 0 && exit_it->timestamp_start > t.exit_time) ti.exit_candle_idx--; 
+            } else {
+                ti.exit_candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
+            }
+
             result.trades.push_back(ti);
         }
         

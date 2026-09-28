@@ -5,26 +5,15 @@
 #include <string>
 #include <vector>
 #include <cmath>
-
-struct TradeRecord {
-  int64_t entry_time;
-  int64_t exit_time;
-  SignalDirection direction;
-  double entry_price;
-  double exit_price;
-  double net_profit;
-  std::string exit_reason;
-};
+#include <algorithm>
 
 class PaperTrader : public IBroker {
 public:
   PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01, double max_dl = 400.0, double slip = 0.0002)
       : stop_loss_pct(sl_pct), take_profit_pct(tp_pct), max_daily_loss_(max_dl), slippage(slip) {}
 
-  //                override because interface
-  //                          v
   double GetBalance() const override { return balance; }
-  bool HasOpenPosition() const override{ return position_size > 0; }
+  bool HasOpenPosition() const override { return position_size > 0; }
   void UpdateStopLoss(double new_sl) override { current_sl_ = new_sl; }
   
   int GetTradesWon() const { return trades_won; }
@@ -36,9 +25,21 @@ public:
   
   const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
   double GetNetProfit() const { return balance - 10000.0; }
-  
-  // NEU: Drawdown Getter
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
+
+  // interface for config injection
+  void ApplyManagementConfig(double be_trig, double be_targ, 
+                             bool trail_en, double trail_trig, double trail_dist,
+                             bool scale_en, double scale_trig, double scale_frac) {
+    be_trigger_pct_ = be_trig;
+    be_target_pct_  = be_targ;
+    enable_trailing_ = trail_en;
+    trailing_trigger_pct_ = trail_trig;
+    trailing_dist_pct_ = trail_dist;
+    enable_scale_out_ = scale_en;
+    scale_out_trigger_pct_ = scale_trig;
+    scale_out_fraction_ = scale_frac;
+  }
 
   TradeSignal GetCurrentPosition() const override {
     TradeSignal sig;
@@ -60,12 +61,14 @@ public:
     UpdateDay(current_time);
     if (position_size == 0.0) return;
 
+    if (current_price > highest_seen_price_) highest_seen_price_ = current_price;
+    if (current_price < lowest_seen_price_ || lowest_seen_price_ == 0.0) lowest_seen_price_ = current_price;
+
     double actual_exit_price = (position_direction_ == SignalDirection::BUY) ? (current_price * (1.0 - slippage)) : (current_price * (1.0 + slippage));
     double gross_profit = (position_direction_ == SignalDirection::BUY) ? (actual_exit_price - entry_price) * position_size : (entry_price - actual_exit_price) * position_size;
     double exit_fee = (actual_exit_price * position_size) * taker_fee_pct;
     double floating_net_profit = gross_profit - exit_fee; 
 
-    // NEU: Drawdown live tracken
     UpdateDrawdown(balance + floating_net_profit);
 
     if (current_daily_pnl_ + floating_net_profit <= -max_daily_loss_) {
@@ -73,12 +76,30 @@ public:
       return;
     }
 
+    if (enable_scale_out_ && !has_scaled_out_) {
+        bool hit_scale_long = (position_direction_ == SignalDirection::BUY && current_price >= entry_price * (1.0 + scale_out_trigger_pct_));
+        bool hit_scale_short = (position_direction_ == SignalDirection::SELL && current_price <= entry_price * (1.0 - scale_out_trigger_pct_));
+        
+        if (hit_scale_long || hit_scale_short) {
+            ClosePartialPosition(current_price, scale_out_fraction_, "scale_out", current_time);
+            has_scaled_out_ = true;
+            current_sl_ = (position_direction_ == SignalDirection::BUY) ? entry_price * (1.0 + be_target_pct_) : entry_price * (1.0 - be_target_pct_);
+            sl_moved_to_be_ = true;
+        }
+    }
+
     if (position_direction_ == SignalDirection::BUY) {
       if (!sl_moved_to_be_ && current_price >= entry_price * (1.0 + be_trigger_pct_)) {
         current_sl_ = entry_price * (1.0 + be_target_pct_);
         sl_moved_to_be_ = true;
       }
-      if (current_price <= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "be" : "sl", current_time);
+      
+      if (enable_trailing_ && current_price >= entry_price * (1.0 + trailing_trigger_pct_)) {
+          double proposed_sl = highest_seen_price_ * (1.0 - trailing_dist_pct_);
+          if (proposed_sl > current_sl_) current_sl_ = proposed_sl; 
+      }
+
+      if (current_price <= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "trail/be" : "sl", current_time);
       else if (current_price >= current_tp_) ClosePosition(current_price, "tp", current_time);
         
     } else if (position_direction_ == SignalDirection::SELL) {
@@ -86,7 +107,13 @@ public:
         current_sl_ = entry_price * (1.0 - be_target_pct_);
         sl_moved_to_be_ = true;
       }
-      if (current_price >= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "be" : "sl", current_time);
+
+      if (enable_trailing_ && current_price <= entry_price * (1.0 - trailing_trigger_pct_)) {
+          double proposed_sl = lowest_seen_price_ * (1.0 + trailing_dist_pct_);
+          if (proposed_sl < current_sl_ || current_sl_ == 0.0) current_sl_ = proposed_sl; 
+      }
+
+      if (current_price >= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "trail/be" : "sl", current_time);
       else if (current_price <= current_tp_) ClosePosition(current_price, "tp", current_time);
     }
   }
@@ -102,7 +129,11 @@ public:
       position_size = signal.volume;
       position_direction_ = signal.direction;
       entry_time_ = current_time;
+      
       sl_moved_to_be_ = false;
+      has_scaled_out_ = false;
+      highest_seen_price_ = current_price;
+      lowest_seen_price_ = current_price;
 
       if (position_direction_ == SignalDirection::BUY) {
         entry_price = current_price * (1.0 + slippage);
@@ -123,7 +154,6 @@ public:
       total_fees_paid += entry_fee;
       current_daily_pnl_ -= entry_fee; 
       
-      // Drawdown nach Gebühren updaten
       UpdateDrawdown(balance);
     }
   }
@@ -137,7 +167,6 @@ private:
   double position_size = 0.0;
   double entry_price = 0.0;
   
-  // NEU: Drawdown-Tracking Variablen
   double peak_balance_ = 10000.0;
   double max_drawdown_pct_ = 0.0;
   
@@ -154,6 +183,17 @@ private:
   double be_trigger_pct_ = 0.005; 
   double be_target_pct_  = 0.001; 
 
+  bool enable_trailing_ = true;
+  double trailing_trigger_pct_ = 0.008; 
+  double trailing_dist_pct_ = 0.004;    
+  double highest_seen_price_ = 0.0;
+  double lowest_seen_price_ = 0.0;
+
+  bool enable_scale_out_ = false;       
+  bool has_scaled_out_ = false;
+  double scale_out_trigger_pct_ = 0.006;
+  double scale_out_fraction_ = 0.5;     
+
   double max_daily_loss_ = 400.0;
   double current_daily_pnl_ = 0.0;
   int64_t current_day_start_ = 0;
@@ -166,7 +206,6 @@ private:
   double slippage;         
   double total_fees_paid = 0.0;  
 
-  // NEU: Drawdown Hilfsfunktion
   void UpdateDrawdown(double current_equity) {
     if (current_equity > peak_balance_) peak_balance_ = current_equity;
     double current_dd = (peak_balance_ - current_equity) / peak_balance_ * 100.0;
@@ -183,6 +222,33 @@ private:
       current_day_start_ = new_day;
       current_daily_pnl_ = 0.0; 
     }
+  }
+
+  void ClosePartialPosition(double current_price, double fraction, const std::string &reason, int64_t current_time) {
+      if (position_size <= 0.0) return;
+      
+      double close_volume = position_size * fraction;
+      double actual_exit_price, gross_profit;
+
+      if (position_direction_ == SignalDirection::BUY) {
+        actual_exit_price = current_price * (1.0 - slippage);
+        gross_profit = (actual_exit_price - entry_price) * close_volume;
+      } else {
+        actual_exit_price = current_price * (1.0 + slippage);
+        gross_profit = (entry_price - actual_exit_price) * close_volume;
+      }
+
+      double exit_fee = (actual_exit_price * close_volume) * taker_fee_pct;
+      total_fees_paid += exit_fee;
+      double net_profit = gross_profit - exit_fee;
+      
+      balance += net_profit;
+      current_daily_pnl_ += net_profit; 
+      UpdateDrawdown(balance);
+
+      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});
+      
+      position_size -= close_volume; 
   }
 
   void ClosePosition(double current_price, const std::string &reason, int64_t current_time) {
@@ -205,16 +271,12 @@ private:
       balance += net_profit;
       current_daily_pnl_ += net_profit; 
       
-      // NEU: Drawdown nach Trade-Close updaten
       UpdateDrawdown(balance);
 
-      if (reason == "tp") {
-        trades_won++;
-      } else if (reason == "be") {
-        trades_be++;
-      } else {
-        trades_lost++;
-      }
+      if (reason == "tp") trades_won++;
+      else if (reason == "trail/be" || reason == "be") trades_be++;
+      else if (reason == "scale_out") trades_won++; 
+      else trades_lost++;
 
       trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});
 
@@ -224,6 +286,7 @@ private:
       current_tp_ = 0.0;
       entry_time_ = 0;
       sl_moved_to_be_ = false;
+      has_scaled_out_ = false;
       position_direction_ = SignalDirection::NONE;
     }
   }

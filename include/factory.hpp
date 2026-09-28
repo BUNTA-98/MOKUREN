@@ -118,13 +118,13 @@ public:
       if (r.params.contains("active") && r.params["active"].get<bool>() == false) continue;
 
       if (r.name == "SinglePositionLock") {
-        inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(*inst.ptrader));
+        inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(inst.ptrader.get()));
       } else if (r.name == "MaxLeverageLock") {
         double max_lev = r.params.value("max_leverage", 10.0);
-        inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(*inst.ptrader, max_lev));
+        inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(inst.ptrader.get(), max_lev));
       } else if (r.name == "AntiRevengeLock") {
         int64_t cooldown = r.params.value("cooldown_ms", 1800000);
-        inst.risk_modules.push_back(std::make_unique<AntiRevengeLock>(*inst.ptrader, cooldown));
+        inst.risk_modules.push_back(std::make_unique<AntiRevengeLock>(inst.ptrader.get(), cooldown));
       }
     }
 

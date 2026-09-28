@@ -28,70 +28,70 @@ public:
         : state(s), engine(e), on_inspect(inspect_cb) {}
 
     void Render(struct ncplane* stdplane) override {
+        unsigned int dimy, dimx;
+        ncplane_dim_yx(stdplane, &dimy, &dimx);
+
         std::string current_status = state->GetStatus();
         int current_perm = state->current_permutation.load();
         int total_perm = state->total_permutations.load();
         bool is_running = state->is_running.load();
 
+        // --- top block: compact diag & matrix ---
         UITheme::StyleTextDefault(stdplane);
-        ncplane_putstr_yx(stdplane, 7, 3, "[ SYSTEM DIAGNOSTICS ]");
+        ncplane_putstr_yx(stdplane, 10, 3, "[ SYSTEM DIAGNOSTICS ]");
+        ncplane_putstr_yx(stdplane, 10, 40, "[ HYPERPARAMETER MATRIX ]");
         
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 9, 3, "CORE_LINK     :");
+        ncplane_putstr_yx(stdplane, 11, 3, "LINK   :");
         UITheme::StyleDataValue(stdplane);
-        ncplane_putstr_yx(stdplane, 9, 19, "ESTABLISHED");
+        ncplane_putstr_yx(stdplane, 11, 12, "ESTABLISHED");
         
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 10, 3, "WORKER_THREAD :");
+        ncplane_putstr_yx(stdplane, 12, 3, "WORKER :");
         if (is_running) {
             UITheme::StyleCursorActive(stdplane);
-            ncplane_putstr_yx(stdplane, 10, 19, "ACTIVE");
+            ncplane_putstr_yx(stdplane, 12, 12, "ACTIVE");
         } else {
             UITheme::StyleTextMuted(stdplane);
-            ncplane_putstr_yx(stdplane, 10, 19, "SLEEPING");
+            ncplane_putstr_yx(stdplane, 12, 12, "SLEEPING");
         }
 
-        UITheme::StyleTextDefault(stdplane);
-        ncplane_putstr_yx(stdplane, 7, 40, "[ HYPERPARAMETER MATRIX ]");
-        
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 9, 40, "STATUS:");
+        ncplane_putstr_yx(stdplane, 11, 40, "STATUS:");
         UITheme::StyleAlert(stdplane);
-        ncplane_putstr_yx(stdplane, 9, 48, current_status.c_str());
+        ncplane_putstr_yx(stdplane, 11, 48, current_status.c_str());
 
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 11, 40, "PERMUTATIONS :");
+        ncplane_putstr_yx(stdplane, 12, 40, "PERMS :");
         UITheme::StyleTextDefault(stdplane);
         std::string perm_text = std::to_string(current_perm) + " / " + std::to_string(total_perm);
-        ncplane_putstr_yx(stdplane, 11, 55, perm_text.c_str());
+        ncplane_putstr_yx(stdplane, 12, 48, perm_text.c_str());
 
-        UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 13, 40, "PROGRESS:");
-        
-        int bar_width = 40;
+        // dynamic progress bar
+        int max_bar = std::max(10, (int)dimx - 48 - 5); 
+        int bar_width = std::min(40, max_bar);
         int filled = total_perm > 0 ? (current_perm * bar_width) / total_perm : 0;
         std::string bar = "[";
         for(int i = 0; i < bar_width; i++) bar += (i < filled) ? "#" : ".";
         bar += "]";
         
-        if (is_running) UITheme::StyleCursorActive(stdplane);
-        else UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 14, 40, bar.c_str());
+        (is_running) ? UITheme::StyleCursorActive(stdplane) : UITheme::StyleTextMuted(stdplane);
+        ncplane_putstr_yx(stdplane, 13, 40, bar.c_str());
 
+        // --- lower block: leaderboard (shifted up to fit 24y screens) ---
         UITheme::StyleTextDefault(stdplane);
-        ncplane_putstr_yx(stdplane, 17, 3, "[ LIVE LEADERBOARD : TOP 5 ]");
+        ncplane_putstr_yx(stdplane, 15, 3, "[ LIVE LEADERBOARD : TOP 5 ]");
         
         UITheme::StyleTextMuted(stdplane);
-        // NEU: Drawdown-Spalte im Header hinzugefügt[cite: 8]
-        ncplane_putstr_yx(stdplane, 19, 3, "   RANK  PROFIT       WINRATE   DRAWDOWN  TRADES   PARAMETERS");
-        ncplane_putstr_yx(stdplane, 20, 3, "--------------------------------------------------------------------------------------");
+        ncplane_putstr_yx(stdplane, 16, 3, "   RANK  PROFIT       WINRATE   DRAWDOWN  TRADES   PARAMETERS");
+        std::string l_hline = std::string(dimx > 6 ? dimx - 6 : 10, '-');
+        ncplane_putstr_yx(stdplane, 17, 3, l_hline.c_str());
 
         std::vector<UIResult> top_runs;
         {
             std::lock_guard<std::mutex> lock(state->ui_mutex);
             top_runs = state->top_results;
         }
-        
         std::sort(top_runs.begin(), top_runs.end(), [](const UIResult& a, const UIResult& b) {
             return a.net_profit > b.net_profit;
         });
@@ -100,30 +100,31 @@ public:
         if (selected_run >= limit) selected_run = std::max(0, limit - 1);
 
         for(int i = 0; i < limit; i++) {
+            // clip rendering if we hit the footer zone
+            if (18 + i >= (int)dimy - 1) break;
+
             bool is_active = (i == selected_run);
-            
             if (is_active) {
                 UITheme::StyleCursorActive(stdplane);
-                ncplane_putstr_yx(stdplane, 21 + i, 1, ">");
+                ncplane_putstr_yx(stdplane, 18 + i, 1, ">");
                 UITheme::StyleDataValue(stdplane); 
             } else {
                 UITheme::StyleTextMuted(stdplane);
-                ncplane_putstr_yx(stdplane, 21 + i, 1, " ");
+                ncplane_putstr_yx(stdplane, 18 + i, 1, " ");
                 UITheme::StyleTextDefault(stdplane);
             }
 
             char buf[256];
-            // NEU: Drawdown-Wert in den String formatiert (z.B. -15.4%)[cite: 8]
             snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-7.1f%% -%-8.2f%% %-8d %s", 
                      i + 1, top_runs[i].net_profit, top_runs[i].winrate, 
                      top_runs[i].max_drawdown, top_runs[i].trades, top_runs[i].params_str.c_str());
-                     
-            ncplane_putstr_yx(stdplane, 21 + i, 4, buf);
+            ncplane_putstr_yx(stdplane, 18 + i, 4, buf);
         }
 
+        // --- anchored footer ---
         if (!is_running) {
             UITheme::StyleAlert(stdplane); 
-            ncplane_putstr_yx(stdplane, 28, 3, "[S] START SCAN   [UP/DOWN] SELECT RUN   [ENTER] REPLAY & INSPECT");
+            ncplane_putstr_yx(stdplane, dimy - 1, 3, "[S] START SCAN   [UP/DOWN] SELECT RUN   [ENTER] REPLAY & INSPECT");
         }
     }
 
@@ -143,20 +144,16 @@ public:
 
             std::thread([bg_state, bg_engine, bg_config]() {
                 std::string data_path = "binance/monthly/DEFAULT.csv"; 
-                
                 try {
                     std::ifstream file(bg_config);
                     if (file.is_open()) {
                         json j = json::parse(file);
-                        
                         std::function<void(const json&)> find_path = [&](const json& node) {
                             if (node.is_object()) {
                                 for (auto& [k, v] : node.items()) {
                                     if (v.is_string() && (k == "filepath" || k == "data_path")) {
                                         data_path = v.get<std::string>(); 
-                                    } else {
-                                        find_path(v); 
-                                    }
+                                    } else { find_path(v); }
                                 }
                             }
                         };
@@ -171,14 +168,13 @@ public:
                         UIResult ur;
                         ur.net_profit = res.net_profit;
                         ur.winrate = res.winrate;
-                        ur.max_drawdown = res.max_drawdown; // <--- NEU: Drawdown aus dem Backend auslesen[cite: 8]
+                        ur.max_drawdown = res.max_drawdown; 
                         ur.trades = res.trades;
                         ur.full_config = res.full_config; 
                         
                         std::string p_str;
                         for (const auto& [k, v] : res.parameters) {
-                            char buf[32];
-                            snprintf(buf, sizeof(buf), "%g", v);
+                            char buf[32]; snprintf(buf, sizeof(buf), "%g", v);
                             p_str += k + "=" + std::string(buf) + " ";
                         }
                         ur.params_str = p_str;
@@ -187,7 +183,6 @@ public:
                         bg_state->top_results.push_back(ur);
                     }
                 );
-                
                 bg_state->is_running = false;
                 bg_state->SetStatus("IDLE");
             }).detach();
@@ -195,19 +190,13 @@ public:
 
         if (key == NCKEY_UP && selected_run > 0) selected_run--;
         if (key == NCKEY_DOWN && selected_run < 4) selected_run++;
-
         if (key == NCKEY_ENTER && !state->is_running.load()) {
             json cached_config;
             {
                 std::lock_guard<std::mutex> lock(state->ui_mutex);
-                if (selected_run < state->top_results.size()) {
-                    cached_config = state->top_results[selected_run].full_config; 
-                }
+                if (selected_run < state->top_results.size()) { cached_config = state->top_results[selected_run].full_config; }
             }
-            if (!cached_config.empty()) {
-                on_inspect(cached_config); 
-                return; 
-            }
+            if (!cached_config.empty()) { on_inspect(cached_config); return; }
         }
     }
 };
