@@ -1,19 +1,20 @@
 #pragma once
+#include "ibroker.hpp"
 #include "papertrader.hpp"
 #include "strategy.hpp"
 #include <cmath>
 
 class PositionSizer {
 private:
-  const PaperTrader &trader_;
+  IBroker* broker_;
   double risk_per_trade_pct_;
   double min_sl_distance_;
 
 public:
   // risk_pct: 0.01 bedeutet 1% vom konto
-  PositionSizer(const PaperTrader &trader, double risk_pct,
+  PositionSizer(IBroker* b, double risk_pct,
                 double min_sl_dist = 50)
-      : trader_(trader), risk_per_trade_pct_(risk_pct),
+      : broker_(b), risk_per_trade_pct_(risk_pct),
         min_sl_distance_(min_sl_dist) {}
 
   TradeSignal CalculateSize(TradeSignal signal) {
@@ -26,7 +27,7 @@ public:
       return TradeSignal{};
     }
 
-    double risk_amount_usd = trader_.GetBalance() * risk_per_trade_pct_;
+    double risk_amount_usd = broker_->GetBalance() * risk_per_trade_pct_;
     double risk_per_coin = std::abs(signal.entry_price - signal.stop_loss);
 
     if (risk_per_coin < min_sl_distance_) {

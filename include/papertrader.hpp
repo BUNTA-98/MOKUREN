@@ -1,5 +1,6 @@
 #pragma once
 #include "aggregator.hpp"
+#include "ibroker.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -15,29 +16,31 @@ struct TradeRecord {
   std::string exit_reason;
 };
 
-class PaperTrader {
+class PaperTrader : public IBroker {
 public:
   PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01, double max_dl = 400.0, double slip = 0.0002)
       : stop_loss_pct(sl_pct), take_profit_pct(tp_pct), max_daily_loss_(max_dl), slippage(slip) {}
 
-  double GetBalance() const { return balance; }
+  //                override because interface
+  //                          v
+  double GetBalance() const override { return balance; }
+  bool HasOpenPosition() const override{ return position_size > 0; }
+  void UpdateStopLoss(double new_sl) override { current_sl_ = new_sl; }
+  
   int GetTradesWon() const { return trades_won; }
   int GetTradesLost() const { return trades_lost; }
   int GetTradesBE() const { return trades_be; } 
-  
   double GetTotalFeesPaid() const { return total_fees_paid; }
   int GetTotalTrades() const { return trades_won + trades_lost + trades_be; }
   double GetPositionSize() const { return position_size; }
   
-  void UpdateStopLoss(double new_sl) { current_sl_ = new_sl; }
-  bool HasOpenPosition() const { return position_size > 0; }
   const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
   double GetNetProfit() const { return balance - 10000.0; }
   
   // NEU: Drawdown Getter
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
 
-  TradeSignal GetCurrentPosition() const {
+  TradeSignal GetCurrentPosition() const override {
     TradeSignal sig;
     sig.direction = position_direction_;
     sig.volume = position_size;

@@ -1,6 +1,6 @@
 {
   "environment": {
-    "filepath": "binance/monthly/august26.csv",
+    "filepath": "binance/monthly/08_26.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 6,

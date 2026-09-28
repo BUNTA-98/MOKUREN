@@ -71,20 +71,27 @@ private:
     }
 
     std::vector<std::string> ScanDirectory(const std::string& folder) {
-        std::vector<std::string> files;
-        try {
-            if (fs::exists(folder)) {
-                for (const auto& entry : fs::recursive_directory_iterator(folder)) {
-                    if (entry.is_regular_file() && entry.path().extension() == ".csv") {
-                        files.push_back(entry.path().string());
-                    }
+    std::vector<std::string> options;
+    
+    // Den Hauptordner selbst direkt als erste Option anbieten
+    options.push_back(folder);
+
+    try {
+        if (fs::exists(folder)) {
+            for (const auto& entry : fs::recursive_directory_iterator(folder)) {
+                // Ordner ODER .csv-Dateien zulassen
+                if (entry.is_directory()) {
+                    options.push_back(entry.path().string());
+                } else if (entry.is_regular_file() && entry.path().extension() == ".csv") {
+                    options.push_back(entry.path().string());
                 }
             }
-        } catch (...) {}
-        
-        if (files.empty()) files.push_back("NO_FILES_FOUND");
-        return files;
-    }
+        }
+    } catch (...) {}
+    
+    if (options.empty()) options.push_back("NO_FILES_FOUND");
+    return options;
+}
 
     void FlattenJson(const json& j, const std::string& current_path, const std::string& current_category) {
         if (j.is_object()) {

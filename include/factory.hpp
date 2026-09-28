@@ -110,7 +110,7 @@ public:
     }
     
     inst.alpha = std::make_unique<AlphaEngine>(*inst.pipeline);
-    inst.sizer = std::make_unique<PositionSizer>(*inst.ptrader, cfg.risk_per_trade_pct, cfg.min_distance_dollars);
+    inst.sizer = std::make_unique<PositionSizer>(inst.ptrader.get(), cfg.risk_per_trade_pct, cfg.min_distance_dollars);
     inst.risk_manager = std::make_unique<RiskManager>();
 
     // 3. RISK MODULE BAUEN (mit active-check)

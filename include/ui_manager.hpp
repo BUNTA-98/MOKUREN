@@ -10,8 +10,9 @@
 #include "ui_menu.hpp"
 #include "ui_scanner.hpp"   
 #include "ui_footprint.hpp" 
+#include "ui_equity.hpp"
 
-enum class PageID { INSPECTOR, SCANNER, CONFIG };
+enum class PageID { INSPECTOR, EQUITY, SCANNER, CONFIG };
 
 class UIManager {
 private:
@@ -20,6 +21,10 @@ private:
     
     EngineState state;
     Mokuren engine;
+    
+    // HIER IST DER FIX FÜR DIE DATEN: 
+    // Der Manager speichert das Replay dauerhaft, sodass es beim Tab-Wechsel erhalten bleibt.
+    ReplayResult last_replay; 
     
     PageID current_page_id = PageID::CONFIG; 
     std::unique_ptr<UIPage> current_page;
@@ -33,7 +38,8 @@ private:
         
         UITheme::StyleTextDefault(stdplane);
         std::string title = (current_page_id == PageID::CONFIG) ? "VIEW: SMART CONFIG MATRIX" : 
-                            (current_page_id == PageID::SCANNER) ? "VIEW: GRID SCANNER" : "VIEW: K-FOOTPRINT INSPECTOR";
+                            (current_page_id == PageID::SCANNER) ? "VIEW: GRID SCANNER" : 
+                            (current_page_id == PageID::EQUITY) ? "VIEW: EQUITY CURVE" : "VIEW: K-FOOTPRINT INSPECTOR";
         ncplane_putstr_yx(stdplane, 1, 60, title.c_str());
 
         UITheme::StyleTextMuted(stdplane);
@@ -42,16 +48,19 @@ private:
         (current_page_id == PageID::INSPECTOR) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 4, 3, "[1] INSPECTOR");
         
+        (current_page_id == PageID::EQUITY) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
+        ncplane_putstr_yx(stdplane, 4, 20, "[2] EQUITY");
+        
         (current_page_id == PageID::SCANNER) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 4, 20, "[2] GRID SCANNER");
+        ncplane_putstr_yx(stdplane, 4, 35, "[3] SCANNER");
         
         (current_page_id == PageID::CONFIG) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 4, 40, "[3] CONFIG MATRIX");
+        ncplane_putstr_yx(stdplane, 4, 50, "[4] CONFIG");
 
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 5, 3, "========================================================================================");
         
-        ncplane_putstr_yx(stdplane, 27, 50, "[Q] DISCONNECT");
+        ncplane_putstr_yx(stdplane, 27, 50, "[Q] DISCONNECT   [TAB] NEXT VIEW");
     }
 
     void SwitchPage(PageID new_page) {
@@ -84,19 +93,25 @@ private:
                         }
                     } catch (...) {}
 
-                    ReplayResult rep = this->engine.ReplaySingleRun(data_path, winning_config);
+                    // Das Replay in der globalen Variable sichern
+                    this->last_replay = this->engine.ReplaySingleRun(data_path, winning_config);
 
-                    auto inspector = std::make_unique<UIInspector>();
-                    inspector->SetReplayData(rep.history_1m, rep.history_15m, rep.trades);
-                    
-                    this->current_page = std::move(inspector);
-                    this->current_page_id = PageID::INSPECTOR;
-                    if (this->current_page) this->current_page->OnEnter();
+                    // Direkt auf Page 2 (Equity) wechseln
+                    this->SwitchPage(PageID::EQUITY);
                 }
             ); 
         }
+        else if (new_page == PageID::EQUITY) {
+            auto equity = std::make_unique<UIEquityCurve>();
+            // Zieht die Daten aus dem persistenten Speicher
+            equity->SetReplayData(last_replay.trades);
+            current_page = std::move(equity);
+        }
         else if (new_page == PageID::INSPECTOR) { 
-            current_page = std::make_unique<UIInspector>(); 
+            auto inspector = std::make_unique<UIInspector>();
+            // Zieht die Daten aus dem persistenten Speicher
+            inspector->SetReplayData(last_replay.history_1m, last_replay.history_15m, last_replay.trades);
+            current_page = std::move(inspector);
         }
         
         if (current_page) current_page->OnEnter();
@@ -134,15 +149,18 @@ public:
             
             if (key == (uint32_t)-1 || ni.evtype == NCTYPE_RELEASE) continue; 
 
-            // HIER IST DER FIX: Wir checken, ob die aktuelle Seite blockiert
             bool is_editing = current_page && current_page->BlocksGlobalHotkeys();
 
             if (!is_editing && (key == 'q' || key == 'Q')) running = false;
             else if (!is_editing && key == '1') SwitchPage(PageID::INSPECTOR);
-            else if (!is_editing && key == '2') SwitchPage(PageID::SCANNER);
-            else if (!is_editing && key == '3') SwitchPage(PageID::CONFIG);
+            else if (!is_editing && key == '2') SwitchPage(PageID::EQUITY);
+            else if (!is_editing && key == '3') SwitchPage(PageID::SCANNER);
+            else if (!is_editing && key == '4') SwitchPage(PageID::CONFIG);
+            else if (!is_editing && (key == NCKEY_TAB || key == '\t')) { // TAB CYCLING
+                int next_id = (static_cast<int>(current_page_id) + 1) % 4;
+                SwitchPage(static_cast<PageID>(next_id));
+            }
             else {
-                // Wenn wir tippen (is_editing == true), landet ALLES hier (auch die '1' und das 'Q')
                 if (current_page) current_page->HandleInput(key);
             }
         }

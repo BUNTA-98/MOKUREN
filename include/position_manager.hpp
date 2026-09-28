@@ -4,11 +4,11 @@
 
 class PositionManager {
 private:
-  PaperTrader* broker;
+  IBroker* broker;
   bool stop_moved_to_be = false;
 
 public:
-  PositionManager(PaperTrader* p) : broker(p) {}
+  PositionManager(IBroker* b) : broker(b) {}
 
   void Update(double current_price) {
     // Wenn kein Trade offen ist, Reset-Flag für den nächsten Trade setzen
