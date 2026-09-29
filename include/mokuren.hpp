@@ -32,6 +32,9 @@ struct TestResult {
   int trades;
   double winrate;
   std::vector<TradeRecord> trade_log;
+  double tp_pct = 0.0;
+  double be_pct = 0.0;
+  double sl_pct = 0.0;
 };
 
 
@@ -255,7 +258,16 @@ public:
             res.trades = eng.ptrader->GetTotalTrades();
             res.winrate = eng.ptrader->GetWinrate();
             res.trade_log = eng.ptrader->GetTradeHistory();
+            
+            double total = static_cast<double>(pt->GetTotalTrades());
+            res.tp_pct = total > 0 ? (pt->GetTradesWon() / total) * 100.0 : 0.0;
+            res.be_pct = total > 0 ? (pt->GetTradesBE() / total) * 100.0 : 0.0;
+            res.sl_pct = total > 0 ? (pt->GetTradesLost() / total) * 100.0 : 0.0;
+
+            
             on_result(res);
+            
+            
           }
           
           int done = ++current_iteration;
@@ -397,8 +409,83 @@ public:
     on_status("WFA COMPLETE");
   }
 
+
+
   ReplayResult ReplaySingleRun(const std::string &filepath, const nlohmann::json& winning_config) {
+      ReplayResult result;
+
       std::vector<TradeEvent> all_trades = LoadAllTrades(filepath);
-      return ReplayManager::Run(all_trades, winning_config);
+      if (all_trades.empty()) return result;
+
+      AppConfig cfg = AppConfig::Load(winning_config);
+      EngineInstance eng = StrategyFactory::Build(cfg);
+
+      // fix: trade management an ptrader übergeben, damit trailing/be funktioniert
+      auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
+      if (pt) {
+        pt->ApplyManagementConfig(
+            cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct,
+            cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct,
+            cfg.tm_config.enable_scale_out, cfg.tm_config.scale_out_trigger_pct, cfg.tm_config.scale_out_fraction
+        );
+      }
+
+      Bar live_bar;
+      Bar htf_bar;
+
+      for (const auto &trade : all_trades) {
+          eng.pos_manager->Update(trade.price);
+          eng.ptrader->CheckRisk(trade.price, trade.timestamp);
+
+          bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
+          eng.htf_aggregator->ProcessTrade(htf_bar, trade);
+          MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar};
+
+          TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
+          if (raw_signal.direction != SignalDirection::NONE) {
+              raw_signal.entry_price = trade.price;
+              if (raw_signal.direction == SignalDirection::BUY) {
+                  raw_signal.stop_loss = trade.price * (1.0 - cfg.sl_pct);
+                  raw_signal.take_profit = trade.price * (1.0 + cfg.tp_pct);
+              } else {
+                  raw_signal.stop_loss = trade.price * (1.0 + cfg.sl_pct);
+                  raw_signal.take_profit = trade.price * (1.0 - cfg.tp_pct);
+              }
+          }
+
+          TradeSignal sized_signal = eng.sizer->CalculateSize(raw_signal);
+          TradeSignal final_signal = eng.risk_manager->Evaluate(sized_signal, trade.timestamp);
+
+          if (final_signal.direction != SignalDirection::NONE) {
+              eng.ptrader->ProcessSignal(final_signal, trade.price, trade.timestamp);
+          }
+      }
+
+      eng.aggregator->FlushLastCandle(live_bar);
+      eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
+
+      result.history_1m = eng.aggregator->GetHistory();
+      result.history_15m = eng.htf_aggregator->GetHistory();
+      
+      const auto& trade_log = eng.ptrader->GetTradeHistory();
+      for (const auto& t : trade_log) {
+          TradeInfo ti;
+          ti.is_long = (t.direction == SignalDirection::BUY); 
+          ti.entry_price = t.entry_price;
+          ti.pnl = t.net_profit;
+          
+          auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
+              [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
+              
+          if (it != result.history_1m.end()) {
+              ti.candle_idx = std::distance(result.history_1m.begin(), it);
+              if (ti.candle_idx > 0 && it->timestamp_start > t.entry_time) ti.candle_idx--; 
+          } else {
+              ti.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
+          }
+          result.trades.push_back(ti);
+      }
+      
+      return result;
   }
 };

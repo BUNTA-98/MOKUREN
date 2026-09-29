@@ -62,46 +62,46 @@ private:
     
     ParamConfigState sub_state;
 
-    // --- AUTO-RECOVERY DEFAULT CONFIG ---
+    // --- AUTO-RECOVERY DEFAULT CONFIG WITH BTCUSDT M1 STRATEGY ---
     json CreateDefaultConfig() {
         return json::parse(R"({
           "environment": {
             "filepath": "binance/monthly",
             "interval_ms": 60000,
             "macro_interval_ms": 900000,
-            "max_cores": 6,
-            "slippage_pct": 0.0005,
-            "tick_size": 0.5
+            "max_cores": 0,
+            "slippage_pct": 0.0002,
+            "tick_size": 0.1
           },
           "risk": {
             "max_daily_loss": 400.0,
             "min_distance_dollars": 10.0,
             "modules": [
               { "active": true, "name": "SinglePositionLock" },
-              { "active": true, "max_leverage": 5.0, "name": "MaxLeverageLock" },
+              { "active": true, "max_leverage": 10.0, "name": "MaxLeverageLock" },
               { "active": true, "cooldown_ms": 1800000, "name": "AntiRevengeLock" }
             ],
             "risk_per_trade_pct": 0.01,
-            "sl_pct": 0.01,
-            "tp_pct": 0.1
+            "sl_pct": 0.004,
+            "tp_pct": 0.012
           },
-          "strategy": {
-            "filters": [
-              { "active": true, "min_volume": 1.0, "name": "MinVolume" },
-              { "active": true, "lookback": 1.0, "name": "MacroTrend" },
-              { "active": true, "lookback": 5, "min_dollar": { "max": 240.0, "min": 80.0, "mode": "range", "step": 20.0, "val": 80.0 }, "name": "Volatility" },
-              { "active": false, "end_h": 17, "end_m": 0, "name": "TimeOfDay", "start_h": 8, "start_m": 0 },
-              { "active": false, "name": "POCTrend" }
-            ],
-            "triggers": [
-              { "active": true, "delta": { "max": 2.0, "min": 0.5, "mode": "range", "step": 0.5, "val": 0.5 }, "name": "DeltaAbsorption" },
-              { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 }
-            ]
-          },
+          "filters": [
+            { "active": true, "lookback": 1440, "name": "MacroTrend" },
+            { "active": true, "min_volume": 50.0, "name": "MinVolume" },
+            { "active": true, "lookback": 20, "name": "RVOL", "threshold": 1.5 },
+            { "active": true, "lookback": 14, "min_atr": 25.0, "name": "ATRChop" },
+            { "active": false, "lookback": 5, "min_dollar": 150.0, "name": "Volatility" },
+            { "active": false, "end_h": 17, "end_m": 0, "name": "TimeOfDay", "start_h": 8, "start_m": 0 },
+            { "active": false, "name": "POCTrend" }
+          ],
+          "triggers": [
+            { "active": true, "delta": { "max": 2.0, "min": 0.8, "mode": "range", "step": 0.2, "val": 1.2 }, "name": "DeltaAbsorption" },
+            { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 }
+          ],
           "trade_management": {
-            "break_even": { "target_pct": 0.001, "trigger_pct": 0.005 },
-            "scale_out": { "enabled": false, "fraction": 0.5, "trigger_pct": 0.006 },
-            "trailing": { "distance_pct": 0.004, "enabled": true, "trigger_pct": 0.008 }
+            "break_even": { "target_pct": 0.001, "trigger_pct": 0.006 },
+            "scale_out": { "enabled": false, "fraction": 0.5, "trigger_pct": 0.008 },
+            "trailing": { "distance_pct": 0.003, "enabled": true, "trigger_pct": 0.01 }
           }
         })");
     }
@@ -121,8 +121,9 @@ private:
         try {
             if (fs::exists(folder)) {
                 for (const auto& entry : fs::recursive_directory_iterator(folder)) {
-                    if (entry.is_directory()) options.push_back(entry.path().string());
-                    else if (entry.is_regular_file() && entry.path().extension() == ".csv") {
+                    if (entry.is_directory()) {
+                        options.push_back(entry.path().string());
+                    } else if (entry.is_regular_file() && entry.path().extension() == ".csv") {
                         options.push_back(entry.path().string());
                     }
                 }
@@ -153,7 +154,7 @@ private:
                     if (level == 0) {
                         next_cat = key;
                         next_sub = "General"; 
-                    } else if (level == 1 && val.is_object() && !val.contains("mode")) {
+                    } else if (level == 1 && val.is_object() && !val.contains("mode") && !val.contains("min")) {
                         next_sub = key; 
                     }
                     
@@ -285,6 +286,9 @@ public:
 
         int visible_rows = std::max(5, (int)dimy - start_y - 4);
 
+        // --- BULLETPROOF BOUNDS CHECK FÜR RENDER ---
+        if (category_cursor >= categories.size()) category_cursor = 0;
+        
         // --- COL 1: CATEGORIES ---
         for (size_t i = 0; i < categories.size() && (int)i < visible_rows; ++i) {
             int y = start_y + i;
@@ -314,6 +318,8 @@ public:
         std::string current_cat = categories[category_cursor];
         auto& subcats = subcategories[current_cat];
         
+        if (subcat_cursor >= subcats.size()) subcat_cursor = 0; // Kugelsicherer Reset
+        
         int sub_max_scroll = std::max(0, static_cast<int>(subcats.size()) - visible_rows);
         int sub_start_idx = std::max(0, std::min(subcat_cursor - visible_rows / 2, sub_max_scroll));
 
@@ -323,7 +329,6 @@ public:
             bool is_active_sub = (row_idx == subcat_cursor);
             std::string sub_name = subcats[row_idx];
             
-            // --- FARB-LOGIK FÜR AKTIVE MODULE ---
             bool has_active_flag = false;
             bool is_module_active = false;
             for (const auto& row : grouped_rows[current_cat][sub_name]) {
@@ -347,13 +352,10 @@ public:
             if (is_active_sub) {
                 UITheme::StyleDataValue(stdplane);
             } else if (has_active_flag) {
-                if (is_module_active) {
-                    UITheme::StyleDataValue(stdplane); // Leuchtet auf, wenn aktiv
-                } else {
-                    UITheme::StyleTextMuted(stdplane); // Grau, wenn inaktiv
-                }
+                if (is_module_active) UITheme::StyleDataValue(stdplane);
+                else UITheme::StyleTextMuted(stdplane); 
             } else {
-                UITheme::StyleTextDefault(stdplane); // Standard für "General"
+                UITheme::StyleTextDefault(stdplane); 
             }
             
             ncplane_putstr_yx(stdplane, y, 25, sub_name.c_str());
@@ -367,6 +369,8 @@ public:
         if (!subcats.empty()) {
             std::string current_sub = subcats[subcat_cursor];
             auto& rows = grouped_rows[current_cat][current_sub];
+            
+            if (param_cursor >= rows.size()) param_cursor = 0; // Kugelsicherer Reset
             
             if (menu_state <= MenuState::INLINE_EDIT) {
                 int max_scroll = std::max(0, static_cast<int>(rows.size()) - visible_rows);
@@ -480,15 +484,28 @@ public:
 
     void HandleInput(uint32_t key) override {
         if (categories.empty()) return;
+        
+        // --- BULLETPROOF BOUNDS CHECK FÜR INPUT ---
+        if (category_cursor >= categories.size()) category_cursor = 0;
         std::string current_cat = categories[category_cursor];
         auto& subcats = subcategories[current_cat];
         
+        if (subcat_cursor >= subcats.size()) subcat_cursor = 0;
         std::string current_sub = subcats.empty() ? "" : subcats[subcat_cursor];
         auto& rows = grouped_rows[current_cat][current_sub];
+        if (param_cursor >= rows.size()) param_cursor = 0;
 
         if (menu_state == MenuState::CATEGORIES) {
-            if (key == NCKEY_UP && category_cursor > 0) category_cursor--;
-            else if (key == NCKEY_DOWN && category_cursor < static_cast<int>(categories.size()) - 1) category_cursor++;
+            if (key == NCKEY_UP && category_cursor > 0) {
+                category_cursor--;
+                subcat_cursor = 0; // RESET
+                param_cursor = 0;  // RESET
+            }
+            else if (key == NCKEY_DOWN && category_cursor < static_cast<int>(categories.size()) - 1) {
+                category_cursor++;
+                subcat_cursor = 0; // RESET
+                param_cursor = 0;  // RESET
+            }
             else if (key == NCKEY_RIGHT || key == NCKEY_ENTER) {
                 menu_state = MenuState::SUBCATEGORIES;
                 subcat_cursor = 0;
@@ -496,9 +513,17 @@ public:
         } 
         else if (menu_state == MenuState::SUBCATEGORIES) {
             if (subcats.empty()) return;
-            if (key == NCKEY_UP && subcat_cursor > 0) subcat_cursor--;
-            else if (key == NCKEY_DOWN && subcat_cursor < static_cast<int>(subcats.size()) - 1) subcat_cursor++;
-            else if (key == NCKEY_LEFT) menu_state = MenuState::CATEGORIES;
+            if (key == NCKEY_UP && subcat_cursor > 0) {
+                subcat_cursor--;
+                param_cursor = 0; // RESET
+            }
+            else if (key == NCKEY_DOWN && subcat_cursor < static_cast<int>(subcats.size()) - 1) {
+                subcat_cursor++;
+                param_cursor = 0; // RESET
+            }
+            else if (key == NCKEY_LEFT) {
+                menu_state = MenuState::CATEGORIES;
+            }
             else if (key == NCKEY_RIGHT || key == NCKEY_ENTER) {
                 menu_state = MenuState::PARAMETERS;
                 param_cursor = 0;

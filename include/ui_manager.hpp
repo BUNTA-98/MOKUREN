@@ -35,9 +35,6 @@ private:
         // dynamic separator line spanning full width
         std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
 
-        UITheme::StyleAlert(stdplane);
-        ncplane_putstr_yx(stdplane, 5, 3, ">>>"); // shifted start to y=5
-        
         
         UITheme::StyleTextDefault(stdplane);
         std::string title = (current_page_id == PageID::CONFIG) ? "VIEW: CONFIG MATRIX" : 
@@ -66,7 +63,7 @@ private:
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 9, 3, hline.c_str());
         
-        // anchor global footer to bottom right (y = dimy - 1)
+        // anchor global footer to bottom right
         int footer_x = dimx > 40 ? dimx - 35 : 5;
         ncplane_putstr_yx(stdplane, dimy - 1, footer_x, "[Q] DISCONNECT   [TAB] NEXT VIEW");
     }
@@ -80,25 +77,26 @@ private:
         else if (new_page == PageID::SCANNER) { 
             current_page = std::make_unique<UIScanner>(&state, &engine, 
                 [this](const nlohmann::json& winning_config) {
+                    
                     std::string data_path = "binance/monthly/DEFAULT.csv"; 
-                    try {
-                        std::ifstream f("config.json");
-                        if (f.is_open()) {
-                            nlohmann::json j = nlohmann::json::parse(f);
-                            std::function<void(const nlohmann::json&)> find_path = [&](const nlohmann::json& node) {
-                                if (node.is_object()) {
-                                    for (auto& [k, v] : node.items()) {
-                                        if (v.is_string() && (k == "filepath" || k == "data_path")) {
-                                            data_path = v.get<std::string>(); 
-                                        } else { find_path(v); }
-                                    }
-                                }
-                            };
-                            find_path(j);
+                    
+                    // FIX Rekursive Suche wie im Scanner, damit wir garantiert das richtige CSV laden!
+                    std::function<void(const nlohmann::json&)> find_path = [&](const nlohmann::json& node) {
+                        if (node.is_object()) {
+                            for (auto& [k, v] : node.items()) {
+                                if (v.is_string() && (k == "filepath" || k == "data_path")) {
+                                    data_path = v.get<std::string>(); 
+                                } else { find_path(v); }
+                            }
+                        } else if (node.is_array()) {
+                            for (auto& item : node) find_path(item);
                         }
-                    } catch (...) {}
+                    };
+                    find_path(winning_config);
 
+                    // Replay mit exakt diesem JSON-Paket und exakt demselben CSV abfeuern
                     this->last_replay = this->engine.ReplaySingleRun(data_path, winning_config);
+                    
                     this->SwitchPage(PageID::EQUITY);
                 }
             ); 
@@ -151,6 +149,7 @@ public:
 
             bool is_editing = current_page && current_page->BlocksGlobalHotkeys();
 
+            // global routing hotkeys
             if (!is_editing && (key == 'q' || key == 'Q')) running = false;
             else if (!is_editing && key == '1') SwitchPage(PageID::INSPECTOR);
             else if (!is_editing && key == '2') SwitchPage(PageID::EQUITY);

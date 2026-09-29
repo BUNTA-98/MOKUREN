@@ -78,24 +78,23 @@ public:
     for (const auto &f : cfg.filters) {
       if (f.params.contains("active") && f.params["active"].get<bool>() == false) continue;
 
-      
-    if (f.name == "MinVolume") {
+      if (f.name == "MinVolume") {
         double min_vol = f.params.value("min_volume", 1.0);
         inst.filters.push_back(std::make_unique<MinVolumeFilter>(min_vol));
         inst.pipeline->AddFilter(inst.filters.back().get());
       
-    } else if (f.name == "MacroTrend") {
+      } else if (f.name == "MacroTrend") {
         int lookback = f.params.value("lookback", 1440);
         inst.filters.push_back(std::make_unique<MacroTrendFilter>(lookback));
         inst.pipeline->AddFilter(inst.filters.back().get());
       
-    } else if (f.name == "Volatility") {
+      } else if (f.name == "Volatility") {
         double min_dl = f.params.value("min_dollar", 150.0);
         int lookback = f.params.value("lookback", 5);
         inst.filters.push_back(std::make_unique<VolatilityFilter>(min_dl, lookback));
         inst.pipeline->AddFilter(inst.filters.back().get());
       
-    }  else if (f.name == "TimeOfDay") {
+      } else if (f.name == "TimeOfDay") {
         int start_h = f.params.value("start_h", 8);
         int start_m = f.params.value("start_m", 0);
         int end_h = f.params.value("end_h", 17);
@@ -105,6 +104,18 @@ public:
 
       } else if (f.name == "POCTrend") {
         inst.filters.push_back(std::make_unique<POCTrendFilter>());
+        inst.pipeline->AddFilter(inst.filters.back().get());
+      
+      } else if (f.name == "RVOL") { 
+        double threshold = f.params.value("threshold", 1.5);
+        int lookback = f.params.value("lookback", 20);
+        inst.filters.push_back(std::make_unique<RVOLFilter>(threshold, lookback));
+        inst.pipeline->AddFilter(inst.filters.back().get());
+    
+      } else if (f.name == "ATRChop") { 
+        double min_atr = f.params.value("min_atr", 20.0);
+        int period = f.params.value("lookback", 14);
+        inst.filters.push_back(std::make_unique<ATRFilter>(min_atr, period));
         inst.pipeline->AddFilter(inst.filters.back().get());
       }
     }
@@ -131,6 +142,14 @@ public:
     for (auto &mod : inst.risk_modules) {
       inst.risk_manager->AddModule(mod.get());
     }
+
+    // ZENTRALER FIX: Der Trader bekommt ab sofort IMMER seine Parameter, 
+    // bevor er die Factory verlässt. Kein Leak mehr möglich!
+    inst.ptrader->ApplyManagementConfig(
+        cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct,
+        cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct,
+        cfg.tm_config.enable_scale_out, cfg.tm_config.scale_out_trigger_pct, cfg.tm_config.scale_out_fraction
+    );
 
     return inst;
   }

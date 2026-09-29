@@ -30,6 +30,82 @@ public:
   }
 };
 
+//RELATIVE VOLUME
+class RVOLFilter : public IFilter {
+private:
+  double rvol_threshold_;
+  int period_;
+
+public:
+  // Standardmäßig fordern wir 150 % (1.5) des durchschnittlichen Volumens der letzten 20 Kerzen
+  RVOLFilter(double rvol_threshold = 1.5, int period = 20)
+      : rvol_threshold_(rvol_threshold), period_(period) {}
+
+  bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
+    // Wir benötigen N vorherige Kerzen + die aktuelle Kerze
+    if (context.history.size() < period_ + 1) return false;
+
+    double volume_sum = 0.0;
+    size_t history_size = context.history.size();
+
+    // 1. SMA des Volumens der letzten N Kerzen berechnen (OHNE die aktuelle)
+    for (size_t i = history_size - 1 - period_; i < history_size - 1; ++i) {
+      volume_sum += context.history[i].total_volume;
+    }
+
+    double avg_volume = volume_sum / period_;
+    
+    // Schutz vor Division durch Null bei extrem illiquiden Phasen
+    if (avg_volume == 0.0) return false; 
+
+    // 2. Relatives Volumen der aktuellsten Kerze ermitteln
+    double current_volume = context.history.back().total_volume;
+    double current_rvol = current_volume / avg_volume;
+
+    // Trade nur erlauben, wenn das aktuelle Volumen den Schwellenwert sprengt
+    return current_rvol >= rvol_threshold_;
+  }
+};
+
+//ATR CHOP COP
+class ATRFilter : public IFilter {
+private:
+  double min_atr_;
+  int period_;
+
+public:
+  // Beispiel: Wir fordern mindestens 20$ durchschnittliche Bewegung über 14 Kerzen
+  ATRFilter(double min_atr = 20.0, int period = 14)
+      : min_atr_(min_atr), period_(period) {}
+
+  bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
+    // Wir benötigen N Kerzen + 1 vorherige für die True-Range-Berechnung
+    if (context.history.size() < period_ + 1) return false;
+
+    double atr_sum = 0.0;
+    size_t size = context.history.size();
+
+    // Average True Range (ATR) der letzten N Kerzen berechnen
+    for (size_t i = size - period_; i < size; ++i) {
+      double high_low = context.history[i].high - context.history[i].low;
+      double high_close = std::abs(context.history[i].high - context.history[i - 1].close);
+      double low_close = std::abs(context.history[i].low - context.history[i - 1].close);
+      
+      // True Range ist das Maximum dieser drei Werte
+      double true_range = std::max({high_low, high_close, low_close});
+      atr_sum += true_range;
+    }
+
+    double current_atr = atr_sum / period_;
+    
+    // Trade blockieren, wenn die Volatilität das Minimum nicht erreicht
+    return current_atr >= min_atr_;
+  }
+};
+
+
+
+//TIME OF DAY 
 class TimeOfDayFilter : public IFilter {
 private:
   int start_hour_, start_min_;

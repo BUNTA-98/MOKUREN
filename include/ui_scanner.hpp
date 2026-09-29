@@ -78,12 +78,12 @@ public:
         (is_running) ? UITheme::StyleCursorActive(stdplane) : UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 13, 40, bar.c_str());
 
-        // --- lower block: leaderboard (shifted up to fit 24y screens) ---
+        // --- lower block: leaderboard ---
         UITheme::StyleTextDefault(stdplane);
         ncplane_putstr_yx(stdplane, 15, 3, "[ LIVE LEADERBOARD : TOP 5 ]");
         
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 16, 3, "   RANK  PROFIT       WINRATE   DRAWDOWN  TRADES   PARAMETERS");
+        ncplane_putstr_yx(stdplane, 16, 3, "   RANK  PROFIT       TP%     BE%     SL%     DRAWDOWN  TRADES   PARAMETERS");
         std::string l_hline = std::string(dimx > 6 ? dimx - 6 : 10, '-');
         ncplane_putstr_yx(stdplane, 17, 3, l_hline.c_str());
 
@@ -100,7 +100,6 @@ public:
         if (selected_run >= limit) selected_run = std::max(0, limit - 1);
 
         for(int i = 0; i < limit; i++) {
-            // clip rendering if we hit the footer zone
             if (18 + i >= (int)dimy - 1) break;
 
             bool is_active = (i == selected_run);
@@ -115,8 +114,9 @@ public:
             }
 
             char buf[256];
-            snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-7.1f%% -%-8.2f%% %-8d %s", 
-                     i + 1, top_runs[i].net_profit, top_runs[i].winrate, 
+            snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-5.1f%% %-5.1f%% %-5.1f%% -%-8.2f%% %-8d %s", 
+                     i + 1, top_runs[i].net_profit, 
+                     top_runs[i].tp_pct, top_runs[i].be_pct, top_runs[i].sl_pct, 
                      top_runs[i].max_drawdown, top_runs[i].trades, top_runs[i].params_str.c_str());
             ncplane_putstr_yx(stdplane, 18 + i, 4, buf);
         }
@@ -168,6 +168,9 @@ public:
                         UIResult ur;
                         ur.net_profit = res.net_profit;
                         ur.winrate = res.winrate;
+                        ur.tp_pct = res.tp_pct;
+                        ur.be_pct = res.be_pct;
+                        ur.sl_pct = res.sl_pct;
                         ur.max_drawdown = res.max_drawdown; 
                         ur.trades = res.trades;
                         ur.full_config = res.full_config; 
@@ -190,11 +193,21 @@ public:
 
         if (key == NCKEY_UP && selected_run > 0) selected_run--;
         if (key == NCKEY_DOWN && selected_run < 4) selected_run++;
+        
+        // ZENTRALER BUGFIX: Die Liste MUSS beim Enter-Drücken exakt so sortiert werden wie beim Rendern!
         if (key == NCKEY_ENTER && !state->is_running.load()) {
             json cached_config;
             {
                 std::lock_guard<std::mutex> lock(state->ui_mutex);
-                if (selected_run < state->top_results.size()) { cached_config = state->top_results[selected_run].full_config; }
+                std::vector<UIResult> sorted_runs = state->top_results;
+                
+                std::sort(sorted_runs.begin(), sorted_runs.end(), [](const UIResult& a, const UIResult& b) {
+                    return a.net_profit > b.net_profit;
+                });
+
+                if (selected_run < sorted_runs.size()) { 
+                    cached_config = sorted_runs[selected_run].full_config; 
+                }
             }
             if (!cached_config.empty()) { on_inspect(cached_config); return; }
         }

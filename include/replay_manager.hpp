@@ -21,6 +21,16 @@ public:
         AppConfig cfg = AppConfig::Load(winning_config);
         EngineInstance eng = StrategyFactory::Build(cfg);
 
+        // FIX: trade management config zwingend in den papertrader injizieren!
+        auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
+        if (pt) {
+            pt->ApplyManagementConfig(
+                cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct,
+                cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct,
+                cfg.tm_config.enable_scale_out, cfg.tm_config.scale_out_trigger_pct, cfg.tm_config.scale_out_fraction
+            );
+        }
+
         Bar live_bar;
         Bar htf_bar;
 

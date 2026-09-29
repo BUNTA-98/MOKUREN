@@ -12,29 +12,40 @@ class UIEquityCurve : public UIPage {
 private:
     std::vector<TradeInfo> trades;
     std::vector<double> equity_curve;
-    double max_dd = 0.0;
+    double max_dd_pct = 0.0;
     double final_pnl = 0.0;
 
     void CalculateCurve() {
         equity_curve.clear();
         double current_pnl = 0.0;
-        double peak = 0.0;
-        max_dd = 0.0;
+        
+        // identische drawdown-logik zum papertrader
+        double current_equity = 10000.0;
+        double peak_equity = 10000.0;
+        max_dd_pct = 0.0;
         
         equity_curve.push_back(current_pnl);
 
         for (const auto& t : trades) {
             current_pnl += t.pnl;
+            current_equity = 10000.0 + current_pnl;
             equity_curve.push_back(current_pnl);
-            if (current_pnl > peak) peak = current_pnl;
-            double dd = peak - current_pnl;
-            if (dd > max_dd) max_dd = dd;
+            
+            if (current_equity > peak_equity) {
+                peak_equity = current_equity;
+            }
+            
+            double dd = ((peak_equity - current_equity) / peak_equity) * 100.0;
+            if (dd > max_dd_pct) {
+                max_dd_pct = dd;
+            }
         }
         final_pnl = current_pnl;
     }
 
 public:
     UIEquityCurve() {}
+    
     void SetReplayData(const std::vector<TradeInfo>& t_list) {
         trades = t_list;
         CalculateCurve();
@@ -45,11 +56,12 @@ public:
         ncplane_dim_yx(stdplane, &dimy, &dimx);
 
         UITheme::StyleTextDefault(stdplane);
-        ncplane_putstr_yx(stdplane, 11, 3, "[ MACRO VIEW : EQUITY CURVE ]"); // shifted to y=11
+        ncplane_putstr_yx(stdplane, 11, 3, "[ MACRO VIEW : EQUITY CURVE ]");
 
         if (equity_curve.empty() || trades.empty()) {
             UITheme::StyleAlert(stdplane);
-            ncplane_putstr_yx(stdplane, 13, 3, "NO TRADE DATA TO PLOT. RUN BACKTEST FIRST.");
+            // warnung, falls die datei aus dem UIManager nicht gefunden wurde
+            ncplane_putstr_yx(stdplane, 13, 3, "NO TRADE DATA. (CHECK CSV DATAPATH IN UI_MANAGER!)");
             return;
         }
 
@@ -68,14 +80,14 @@ public:
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 15, 3, "MAX DRAWDOWN :");
         UITheme::StyleAlert(stdplane);
-        char dd_buf[32]; snprintf(dd_buf, sizeof(dd_buf), "$%.2f", max_dd);
+        // anzeige auf prozent korrigiert
+        char dd_buf[32]; snprintf(dd_buf, sizeof(dd_buf), "-%.2f%%", max_dd_pct);
         ncplane_putstr_yx(stdplane, 15, 18, dd_buf);
 
         // --- responsive braille plotter ---
         int chart_x = 35;
         int chart_y = 12;
         
-        // stretch to fill remaining screen space
         int chart_width = std::max(10, (int)dimx - chart_x - 5);
         int chart_height = std::max(5, (int)dimy - chart_y - 3);
 
@@ -84,7 +96,6 @@ public:
         double range = max_val - min_val;
         if (range == 0) range = 1.0; 
 
-        // y-axis labels
         UITheme::StyleTextMuted(stdplane);
         char label_buf[32];
         snprintf(label_buf, sizeof(label_buf), "$%.0f -", max_val);
@@ -92,7 +103,6 @@ public:
         snprintf(label_buf, sizeof(label_buf), "$%.0f -", min_val);
         ncplane_putstr_yx(stdplane, chart_y + chart_height - 1, chart_x - 8, label_buf);
 
-        // braille grid (sub-pixel resolution: 2x X, 4x Y)
         int pixel_width = chart_width * 2;
         int pixel_height = chart_height * 4;
         std::vector<std::vector<uint8_t>> braille_grid(chart_width, std::vector<uint8_t>(chart_height, 0));
@@ -119,7 +129,6 @@ public:
             braille_grid[char_x][char_y] |= braille_dots[dot_x][dot_y];
         }
 
-        // render braille buffer
         UITheme::StyleDataValue(stdplane); 
         for (int cy = 0; cy < chart_height; ++cy) {
             for (int cx = 0; cx < chart_width; ++cx) {
@@ -136,7 +145,6 @@ public:
             }
         }
 
-        // dynamic bottom border
         std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, dimy - 2, 3, hline.c_str());

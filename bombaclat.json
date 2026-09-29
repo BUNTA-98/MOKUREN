@@ -1,6 +1,6 @@
 {
   "environment": {
-    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-01.csv",
+    "filepath": "binance/monthly/08_26.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -15,31 +15,25 @@
     },
     {
       "active": true,
-      "min_volume": {
-        "max": 10.0,
-        "min": 0.5,
-        "mode": "range",
-        "step": 0.5,
-        "val": 0.5
-      },
+      "min_volume": 50.0,
       "name": "MinVolume"
     },
     {
       "active": true,
       "lookback": 20,
       "name": "RVOL",
-      "threshold": 2.0
+      "threshold": {
+        "max": 2.5,
+        "min": 1.0,
+        "mode": "range",
+        "step": 0.5,
+        "val": 1.0
+      }
     },
     {
       "active": true,
-      "lookback": 25.0,
-      "min_atr": {
-        "max": 100.0,
-        "min": 20.0,
-        "mode": "range",
-        "step": 20.0,
-        "val": 20.0
-      },
+      "lookback": 14,
+      "min_atr": 25.0,
       "name": "ATRChop"
     },
     {
@@ -80,36 +74,30 @@
         "name": "AntiRevengeLock"
       }
     ],
-    "risk_per_trade_pct": 0.02,
-    "sl_pct": 0.02,
-    "tp_pct": 0.1
+    "risk_per_trade_pct": {
+      "max": 0.02,
+      "min": 0.01,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.01
+    },
+    "sl_pct": 0.011,
+    "tp_pct": 0.012
   },
   "trade_management": {
     "break_even": {
       "target_pct": 0.001,
-      "trigger_pct": 0.005
-    },
-    "scale_out": {
-      "enabled": false,
-      "fraction": 0.5,
       "trigger_pct": 0.006
     },
+    "scale_out": {
+      "enabled": true,
+      "fraction": 0.5,
+      "trigger_pct": 0.008
+    },
     "trailing": {
-      "distance_pct": {
-        "max": 0.01,
-        "min": 0.001,
-        "mode": "range",
-        "step": 0.001,
-        "val": 0.001
-      },
-      "enabled": false,
-      "trigger_pct": {
-        "max": 0.1,
-        "min": 0.01,
-        "mode": "range",
-        "step": 0.1,
-        "val": 0.01
-      }
+      "distance_pct": 0.003,
+      "enabled": true,
+      "trigger_pct": 0.01
     }
   },
   "triggers": [

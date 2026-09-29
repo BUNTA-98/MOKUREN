@@ -27,7 +27,7 @@ public:
   double GetNetProfit() const { return balance - 10000.0; }
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
 
-  // interface for config injection
+  // inject config
   void ApplyManagementConfig(double be_trig, double be_targ, 
                              bool trail_en, double trail_trig, double trail_dist,
                              bool scale_en, double scale_trig, double scale_frac) {
@@ -150,6 +150,7 @@ public:
       }
 
       double entry_fee = (entry_price * position_size) * taker_fee_pct;
+      current_entry_fee_ = entry_fee; // log fee
       balance -= entry_fee;
       total_fees_paid += entry_fee;
       current_daily_pnl_ -= entry_fee; 
@@ -178,6 +179,7 @@ private:
   double current_sl_ = 0.0;
   double current_tp_ = 0.0;
   int64_t entry_time_ = 0;
+  double current_entry_fee_ = 0.0; // track fee for correct log
   
   bool sl_moved_to_be_ = false;
   double be_trigger_pct_ = 0.005; 
@@ -246,7 +248,12 @@ private:
       current_daily_pnl_ += net_profit; 
       UpdateDrawdown(balance);
 
-      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});
+      // calc true pnl for log (gross - exit_fee - partial_entry_fee)
+      double partial_entry_fee = current_entry_fee_ * fraction;
+      current_entry_fee_ -= partial_entry_fee;
+      double true_trade_pnl = net_profit - partial_entry_fee;
+
+      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, true_trade_pnl, reason});
       
       position_size -= close_volume; 
   }
@@ -278,13 +285,17 @@ private:
       else if (reason == "scale_out") trades_won++; 
       else trades_lost++;
 
-      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, net_profit, reason});
+      // calc true pnl for log
+      double true_trade_pnl = net_profit - current_entry_fee_;
+
+      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, true_trade_pnl, reason});
 
       position_size = 0.0;
       entry_price = 0.0;
       current_sl_ = 0.0;
       current_tp_ = 0.0;
       entry_time_ = 0;
+      current_entry_fee_ = 0.0; // reset
       sl_moved_to_be_ = false;
       has_scaled_out_ = false;
       position_direction_ = SignalDirection::NONE;

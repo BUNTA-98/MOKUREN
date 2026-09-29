@@ -85,7 +85,6 @@ struct ComponentConfig {
   json params;
 };
 
-// struct for new pro-trade logic
 struct TradeManagementConfig {
   double be_trigger_pct = 0.005;
   double be_target_pct = 0.001;
@@ -131,16 +130,17 @@ struct AppConfig {
       if (cfg.max_cores == 0) cfg.max_cores = 4;
     }
 
-    if (j["strategy"].contains("triggers")) {
-      for (const auto &item : j["strategy"]["triggers"]) {
-        cfg.triggers.push_back({item["name"], item});
-      }
+    // --- NEU: Zuerst auf Root-Ebene suchen, dann Fallback ---
+    if (j.contains("triggers")) {
+      for (const auto &item : j["triggers"]) cfg.triggers.push_back({item["name"], item});
+    } else if (j.contains("strategy") && j["strategy"].contains("triggers")) {
+      for (const auto &item : j["strategy"]["triggers"]) cfg.triggers.push_back({item["name"], item});
     }
 
-    if (j["strategy"].contains("filters")) {
-      for (const auto &item : j["strategy"]["filters"]) {
-        cfg.filters.push_back({item["name"], item});
-      }
+    if (j.contains("filters")) {
+      for (const auto &item : j["filters"]) cfg.filters.push_back({item["name"], item});
+    } else if (j.contains("strategy") && j["strategy"].contains("filters")) {
+      for (const auto &item : j["strategy"]["filters"]) cfg.filters.push_back({item["name"], item});
     }
 
     cfg.sl_pct = j["risk"].value("sl_pct", 0.002);
@@ -155,7 +155,6 @@ struct AppConfig {
       }
     }
 
-    // load trade management dynamic config
     if (j.contains("trade_management")) {
       const auto& tm = j["trade_management"];
       if (tm.contains("break_even")) {

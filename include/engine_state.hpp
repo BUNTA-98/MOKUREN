@@ -14,6 +14,9 @@ struct UIResult {
   double winrate;
   int trades;
   double max_drawdown;
+  double tp_pct = 0.0;
+  double be_pct = 0.0;
+  double sl_pct = 0.0;
 };
 
 // shared memory bridge for notcurses dashboard
