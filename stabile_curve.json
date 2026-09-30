@@ -1,10 +1,4 @@
 {
-  "backtest": {
-    "wfa_in_sample_days": 14.0,
-    "wfa_mode": false,
-    "wfa_out_of_sample_days": 7,
-    "wfa_step_days": 7
-  },
   "environment": {
     "filepath": "binance/2026/BTCUSDT-aggTrades-2026-06.csv",
     "interval_ms": 60000,
@@ -21,19 +15,19 @@
     },
     {
       "active": true,
-      "min_volume": 50.0,
+      "min_volume": 2.0,
       "name": "MinVolume"
     },
     {
       "active": true,
       "lookback": 20,
       "name": "RVOL",
-      "threshold": 1.5
+      "threshold": 2.0
     },
     {
       "active": true,
-      "lookback": 14,
-      "min_atr": 25.0,
+      "lookback": 25.0,
+      "min_atr": 40.0,
       "name": "ATRChop"
     },
     {
@@ -74,36 +68,36 @@
         "name": "AntiRevengeLock"
       }
     ],
-    "risk_per_trade_pct": 0.01,
-    "sl_pct": 0.004,
-    "tp_pct": 0.012
+    "risk_per_trade_pct": 0.02,
+    "sl_pct": 0.02,
+    "tp_pct": 0.1
   },
   "trade_management": {
     "break_even": {
       "target_pct": 0.001,
-      "trigger_pct": 0.006
+      "trigger_pct": 0.005
     },
     "scale_out": {
       "enabled": false,
       "fraction": 0.5,
-      "trigger_pct": 0.008
+      "trigger_pct": 0.006
     },
     "trailing": {
-      "distance_pct": 0.003,
-      "enabled": true,
-      "trigger_pct": 0.01
+      "distance_pct": 0.005,
+      "enabled": false,
+      "trigger_pct": {
+        "max": 0.1,
+        "min": 0.01,
+        "mode": "range",
+        "step": 0.01,
+        "val": 0.01
+      }
     }
   },
   "triggers": [
     {
       "active": true,
-      "delta": {
-        "max": 2.0,
-        "min": 0.8,
-        "mode": "range",
-        "step": 0.2,
-        "val": 1.2
-      },
+      "delta": 1.6,
       "name": "DeltaAbsorption"
     },
     {

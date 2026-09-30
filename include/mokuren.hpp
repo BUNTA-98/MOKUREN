@@ -22,8 +22,6 @@
 
 namespace fs = std::filesystem;
 
-
-
 struct TestResult {
   std::map<std::string, double> parameters;
   nlohmann::json full_config; 
@@ -37,7 +35,6 @@ struct TestResult {
   double sl_pct = 0.0;
 };
 
-
 struct WFAWindow {
   int64_t in_sample_start;
   int64_t in_sample_end;
@@ -45,10 +42,7 @@ struct WFAWindow {
   int64_t out_of_sample_end;
 };
 
-
-
 class Mokuren {
-
 private:
   
   std::vector<TradeEvent> LoadAllTrades(const std::string &input_path_str) {
@@ -110,23 +104,18 @@ private:
     return all_trades;
   }
 
-
-
-std::vector<TradeEvent> SliceTrades(const std::vector<TradeEvent>& source_trades, int64_t start_time, int64_t end_time) {
+  std::vector<TradeEvent> SliceTrades(const std::vector<TradeEvent>& source_trades, int64_t start_time, int64_t end_time) {
     std::vector<TradeEvent> sliced;
-    sliced.reserve(source_trades.size() / 4); // RAM-Optimierung
+    sliced.reserve(source_trades.size() / 4); 
 
     for (const auto& trade : source_trades) {
       if (trade.timestamp >= start_time && trade.timestamp <= end_time) {
         sliced.push_back(trade);
       }
-      // Da Ticks chronologisch sind, können wir sofort abbrechen, wenn wir das Fenster verlassen!
       if (trade.timestamp > end_time) break; 
     }
     return sliced;
   }
-
-
 
   std::vector<WFAWindow> GenerateWFAWindows(int64_t first_ts, int64_t last_ts, 
                                             int64_t in_sample_ms, int64_t out_of_sample_ms, 
@@ -142,21 +131,15 @@ std::vector<TradeEvent> SliceTrades(const std::vector<TradeEvent>& source_trades
       win.out_of_sample_start = win.in_sample_end + 1;
       win.out_of_sample_end = win.out_of_sample_start + out_of_sample_ms - 1;
 
-      // Wenn das Test-Fenster über uer tatsächliches Datenende hinausschießt, brechen wir ab.
-      // So stellen wir sicher, dass wir nur komplette, saubere Fenster testen.
       if (win.out_of_sample_end > last_ts) {
         break; 
       }
 
       windows.push_back(win);
-      current_start += step_ms; // Das Fenster für den nächsten Durchlauf nach vorne schieben
+      current_start += step_ms; 
     }
-    
     return windows;
   }
-
-
-
 
 public:
   
@@ -204,7 +187,6 @@ public:
           AppConfig cfg = AppConfig::Load(run.full_json);
           EngineInstance eng = StrategyFactory::Build(cfg);
 
-          // safe inject trade management config into paper trader
           auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
           if (pt) {
             pt->ApplyManagementConfig(
@@ -263,11 +245,8 @@ public:
             res.tp_pct = total > 0 ? (pt->GetTradesWon() / total) * 100.0 : 0.0;
             res.be_pct = total > 0 ? (pt->GetTradesBE() / total) * 100.0 : 0.0;
             res.sl_pct = total > 0 ? (pt->GetTradesLost() / total) * 100.0 : 0.0;
-
             
             on_result(res);
-            
-            
           }
           
           int done = ++current_iteration;
@@ -284,7 +263,9 @@ public:
   }
 
   void RunWFA(const std::string &filepath, const std::string &config_path,
-              std::function<void(const std::string&)> on_status) {
+              std::function<void(const std::string&)> on_status,
+              std::function<void(int, int)> on_progress,
+              std::function<void(const TestResult&)> on_result) {
 
     on_status("LOADING TICKS FOR WFA...");
     std::vector<TradeEvent> all_trades = LoadAllTrades(filepath);
@@ -296,45 +277,46 @@ public:
     int64_t first_ts = all_trades.front().timestamp;
     int64_t last_ts = all_trades.back().timestamp;
 
-    // Zeitfenster-Setup: 90 Tage Training, 30 Tage Test, 30 Tage rollieren (Step)
+    nlohmann::json base_json;
+    try {
+        std::ifstream file(config_path);
+        if (file.is_open()) base_json = nlohmann::json::parse(file);
+    } catch (...) {}
+
+    int64_t in_days = base_json.value("backtest", nlohmann::json::object()).value("wfa_in_sample_days", 14);
+    int64_t out_days = base_json.value("backtest", nlohmann::json::object()).value("wfa_out_of_sample_days", 7);
+    int64_t step_days = base_json.value("backtest", nlohmann::json::object()).value("wfa_step_days", 7);
+
     int64_t day_ms = 86400000LL; 
-    int64_t in_sample_ms = 90 * day_ms;
-    int64_t out_of_sample_ms = 30 * day_ms;
-    int64_t step_ms = 30 * day_ms;
+    int64_t in_sample_ms = in_days * day_ms;    
+    int64_t out_of_sample_ms = out_days * day_ms; 
+    int64_t step_ms = step_days * day_ms;          
 
     std::vector<WFAWindow> windows = GenerateWFAWindows(first_ts, last_ts, in_sample_ms, out_of_sample_ms, step_ms);
     on_status("WFA: GENERATED " + std::to_string(windows.size()) + " ROLLING WINDOWS");
 
+    std::vector<TradeRecord> global_oos_trades;
+
     for (size_t i = 0; i < windows.size(); ++i) {
       const auto& win = windows[i];
-      on_status("WFA WINDOW " + std::to_string(i + 1) + "/" + std::to_string(windows.size()) + " - SLICING DATA...");
+      on_status("WFA WINDOW " + std::to_string(i + 1) + "/" + std::to_string(windows.size()));
 
-      // 1. Daten präzise für dieses Fenster zerschneiden
       std::vector<TradeEvent> in_sample_data = SliceTrades(all_trades, win.in_sample_start, win.in_sample_end);
       std::vector<TradeEvent> out_of_sample_data = SliceTrades(all_trades, win.out_of_sample_start, win.out_of_sample_end);
 
-      // 2. CONFIGS GENERIEREN
-      std::ifstream file(config_path);
-      if (!file.is_open()) continue;
-      nlohmann::json base_json = nlohmann::json::parse(file);
+      if (base_json.empty()) continue; 
       std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
 
       double best_in_sample_profit = -999999.0;
       RunConfig best_config = runs[0];
 
-      // 3. IN-SAMPLE TRAINING (Grid Search auf Trainingsdaten)
+      // IN-SAMPLE
       for (const auto& run : runs) {
         AppConfig cfg = AppConfig::Load(run.full_json);
         EngineInstance eng = StrategyFactory::Build(cfg);
-
-        // Management Config injizieren (genau wie in RunGridSearch)
         auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
         if (pt) {
-          pt->ApplyManagementConfig(
-              cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct,
-              cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct,
-              cfg.tm_config.enable_scale_out, cfg.tm_config.scale_out_trigger_pct, cfg.tm_config.scale_out_fraction
-          );
+          pt->ApplyManagementConfig(cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct, cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct, cfg.tm_config.enable_scale_out, cfg.tm_config.scale_out_trigger_pct, cfg.tm_config.scale_out_fraction);
         }
 
         Bar live_bar, htf_bar;
@@ -367,16 +349,12 @@ public:
         }
       }
 
-      // 4. OUT-OF-SAMPLE VALIDIERUNG (Den Sieger auf ungesehene Testdaten loslassen)
+      // OUT-OF-SAMPLE
       AppConfig oos_cfg = AppConfig::Load(best_config.full_json);
       EngineInstance oos_eng = StrategyFactory::Build(oos_cfg);
       auto* oos_pt = dynamic_cast<PaperTrader*>(oos_eng.ptrader.get());
       if (oos_pt) {
-        oos_pt->ApplyManagementConfig(
-            oos_cfg.tm_config.be_trigger_pct, oos_cfg.tm_config.be_target_pct,
-            oos_cfg.tm_config.enable_trailing, oos_cfg.tm_config.trailing_trigger_pct, oos_cfg.tm_config.trailing_dist_pct,
-            oos_cfg.tm_config.enable_scale_out, oos_cfg.tm_config.scale_out_trigger_pct, oos_cfg.tm_config.scale_out_fraction
-        );
+        oos_pt->ApplyManagementConfig(oos_cfg.tm_config.be_trigger_pct, oos_cfg.tm_config.be_target_pct, oos_cfg.tm_config.enable_trailing, oos_cfg.tm_config.trailing_trigger_pct, oos_cfg.tm_config.trailing_dist_pct, oos_cfg.tm_config.enable_scale_out, oos_cfg.tm_config.scale_out_trigger_pct, oos_cfg.tm_config.scale_out_fraction);
       }
 
       Bar oos_live, oos_htf;
@@ -402,14 +380,51 @@ public:
       oos_eng.aggregator->FlushLastCandle(oos_live);
       oos_eng.ptrader->CloseOpenPositionAtEnd(oos_live.close, oos_live.timestamp_start);
 
-      double oos_profit = oos_eng.ptrader->GetNetProfit();
-      on_status("WFA WINDOW " + std::to_string(i + 1) + " OOS PROFIT: $" + std::to_string(oos_profit));
+      // --- WFA AGGREGATION ---
+      const auto& window_trades = oos_pt->GetTradeHistory();
+      global_oos_trades.insert(global_oos_trades.end(), window_trades.begin(), window_trades.end());
+
+      on_progress(i + 1, windows.size());
+    }
+
+    // --- FINALE WFA BERECHNUNG ---
+    if (!global_oos_trades.empty()) {
+      TestResult res;
+      res.parameters["WFA_Mode"] = 1.0; 
+      res.full_config = base_json; 
+      res.trades = global_oos_trades.size();
+      res.trade_log = global_oos_trades;
+      
+      double current_balance = 10000.0;
+      double peak_balance = 10000.0;
+      double max_dd = 0.0;
+      double net_profit = 0.0;
+      int wins = 0, be = 0, losses = 0;
+
+      for (const auto& t : global_oos_trades) {
+        net_profit += t.net_profit;
+        current_balance += t.net_profit;
+        if (current_balance > peak_balance) peak_balance = current_balance;
+        double dd = (peak_balance - current_balance) / peak_balance * 100.0;
+        if (dd > max_dd) max_dd = dd;
+
+        if (t.exit_reason == "tp" || t.exit_reason == "scale_out") wins++;
+        else if (t.exit_reason == "be" || t.exit_reason == "trail/be") be++;
+        else losses++;
+      }
+
+      res.net_profit = net_profit;
+      res.max_drawdown = max_dd;
+      res.winrate = res.trades > 0 ? (double)wins / res.trades * 100.0 : 0.0;
+      res.tp_pct = res.trades > 0 ? (double)wins / res.trades * 100.0 : 0.0;
+      res.be_pct = res.trades > 0 ? (double)be / res.trades * 100.0 : 0.0;
+      res.sl_pct = res.trades > 0 ? (double)losses / res.trades * 100.0 : 0.0;
+
+      on_result(res);
     }
 
     on_status("WFA COMPLETE");
   }
-
-
 
   ReplayResult ReplaySingleRun(const std::string &filepath, const nlohmann::json& winning_config) {
       ReplayResult result;
@@ -420,7 +435,6 @@ public:
       AppConfig cfg = AppConfig::Load(winning_config);
       EngineInstance eng = StrategyFactory::Build(cfg);
 
-      // fix: trade management an ptrader übergeben, damit trailing/be funktioniert
       auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
       if (pt) {
         pt->ApplyManagementConfig(

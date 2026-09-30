@@ -62,9 +62,14 @@ private:
     
     ParamConfigState sub_state;
 
-    // --- AUTO-RECOVERY DEFAULT CONFIG WITH BTCUSDT M1 STRATEGY ---
     json CreateDefaultConfig() {
         return json::parse(R"({
+          "backtest": {
+            "wfa_mode": false,
+            "wfa_in_sample_days": 14,
+            "wfa_out_of_sample_days": 7,
+            "wfa_step_days": 7
+          },
           "environment": {
             "filepath": "binance/monthly",
             "interval_ms": 60000,
@@ -286,10 +291,8 @@ public:
 
         int visible_rows = std::max(5, (int)dimy - start_y - 4);
 
-        // --- BULLETPROOF BOUNDS CHECK FÜR RENDER ---
         if (category_cursor >= categories.size()) category_cursor = 0;
         
-        // --- COL 1: CATEGORIES ---
         for (size_t i = 0; i < categories.size() && (int)i < visible_rows; ++i) {
             int y = start_y + i;
             bool is_active_cat = (static_cast<int>(i) == category_cursor);
@@ -310,15 +313,13 @@ public:
             ncplane_putstr_yx(stdplane, y, 4, cat_name.c_str());
         }
 
-        // --- SEP 1 ---
         UITheme::StyleTextMuted(stdplane);
         for (int i = 0; i < visible_rows; ++i) ncplane_putstr_yx(stdplane, start_y + i, 21, "|");
 
-        // --- COL 2: SUBCATEGORIES ---
         std::string current_cat = categories[category_cursor];
         auto& subcats = subcategories[current_cat];
         
-        if (subcat_cursor >= subcats.size()) subcat_cursor = 0; // Kugelsicherer Reset
+        if (subcat_cursor >= subcats.size()) subcat_cursor = 0; 
         
         int sub_max_scroll = std::max(0, static_cast<int>(subcats.size()) - visible_rows);
         int sub_start_idx = std::max(0, std::min(subcat_cursor - visible_rows / 2, sub_max_scroll));
@@ -361,16 +362,14 @@ public:
             ncplane_putstr_yx(stdplane, y, 25, sub_name.c_str());
         }
 
-        // --- SEP 2 ---
         UITheme::StyleTextMuted(stdplane);
         for (int i = 0; i < visible_rows; ++i) ncplane_putstr_yx(stdplane, start_y + i, 43, "|");
 
-        // --- COL 3: PARAMETERS ---
         if (!subcats.empty()) {
             std::string current_sub = subcats[subcat_cursor];
             auto& rows = grouped_rows[current_cat][current_sub];
             
-            if (param_cursor >= rows.size()) param_cursor = 0; // Kugelsicherer Reset
+            if (param_cursor >= rows.size()) param_cursor = 0; 
             
             if (menu_state <= MenuState::INLINE_EDIT) {
                 int max_scroll = std::max(0, static_cast<int>(rows.size()) - visible_rows);
@@ -472,7 +471,6 @@ public:
             }
         }
 
-        // --- FOOTER ---
         std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, dimy - 3, 3, hline.c_str());
@@ -485,7 +483,6 @@ public:
     void HandleInput(uint32_t key) override {
         if (categories.empty()) return;
         
-        // --- BULLETPROOF BOUNDS CHECK FÜR INPUT ---
         if (category_cursor >= categories.size()) category_cursor = 0;
         std::string current_cat = categories[category_cursor];
         auto& subcats = subcategories[current_cat];
@@ -498,13 +495,13 @@ public:
         if (menu_state == MenuState::CATEGORIES) {
             if (key == NCKEY_UP && category_cursor > 0) {
                 category_cursor--;
-                subcat_cursor = 0; // RESET
-                param_cursor = 0;  // RESET
+                subcat_cursor = 0; 
+                param_cursor = 0;  
             }
             else if (key == NCKEY_DOWN && category_cursor < static_cast<int>(categories.size()) - 1) {
                 category_cursor++;
-                subcat_cursor = 0; // RESET
-                param_cursor = 0;  // RESET
+                subcat_cursor = 0; 
+                param_cursor = 0;  
             }
             else if (key == NCKEY_RIGHT || key == NCKEY_ENTER) {
                 menu_state = MenuState::SUBCATEGORIES;
@@ -515,11 +512,11 @@ public:
             if (subcats.empty()) return;
             if (key == NCKEY_UP && subcat_cursor > 0) {
                 subcat_cursor--;
-                param_cursor = 0; // RESET
+                param_cursor = 0; 
             }
             else if (key == NCKEY_DOWN && subcat_cursor < static_cast<int>(subcats.size()) - 1) {
                 subcat_cursor++;
-                param_cursor = 0; // RESET
+                param_cursor = 0; 
             }
             else if (key == NCKEY_LEFT) {
                 menu_state = MenuState::CATEGORIES;

@@ -5,11 +5,12 @@
 #include <vector>
 #include <map>
 #include <nlohmann/json.hpp>
+#include "ibroker.hpp" 
 
 // single result for the terminal leaderboard
 struct UIResult {
   std::string params_str;
-  nlohmann::json full_config; // <--- HIER: Die perfekte, fertige Config
+  nlohmann::json full_config; 
   double net_profit;
   double winrate;
   int trades;
@@ -17,6 +18,7 @@ struct UIResult {
   double tp_pct = 0.0;
   double be_pct = 0.0;
   double sl_pct = 0.0;
+  std::vector<TradeRecord> trade_log; 
 };
 
 // shared memory bridge for notcurses dashboard

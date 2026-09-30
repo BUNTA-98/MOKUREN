@@ -31,17 +31,13 @@ private:
         unsigned int dimy, dimx;
         ncplane_dim_yx(stdplane, &dimy, &dimx);
 
-
-        // dynamic separator line spanning full width
         std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
 
-        
         UITheme::StyleTextDefault(stdplane);
         std::string title = (current_page_id == PageID::CONFIG) ? "VIEW: CONFIG MATRIX" : 
                             (current_page_id == PageID::SCANNER) ? "VIEW: GRID SCANNER" : 
                             (current_page_id == PageID::EQUITY) ? "VIEW: EQUITY CURVE" : "VIEW: FOOTPRINT";
         
-        // anchor title to the right side safely
         int title_x = dimx > (title.length() + 5) ? dimx - title.length() - 5 : 60;
         ncplane_putstr_yx(stdplane, 5, title_x, title.c_str());
 
@@ -63,7 +59,6 @@ private:
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 9, 3, hline.c_str());
         
-        // anchor global footer to bottom right
         int footer_x = dimx > 40 ? dimx - 35 : 5;
         ncplane_putstr_yx(stdplane, dimy - 1, footer_x, "[Q] DISCONNECT   [TAB] NEXT VIEW");
     }
@@ -76,11 +71,10 @@ private:
         } 
         else if (new_page == PageID::SCANNER) { 
             current_page = std::make_unique<UIScanner>(&state, &engine, 
-                [this](const nlohmann::json& winning_config) {
+                [this](const UIResult& winning_run) { 
                     
                     std::string data_path = "binance/monthly/DEFAULT.csv"; 
                     
-                    // FIX Rekursive Suche wie im Scanner, damit wir garantiert das richtige CSV laden!
                     std::function<void(const nlohmann::json&)> find_path = [&](const nlohmann::json& node) {
                         if (node.is_object()) {
                             for (auto& [k, v] : node.items()) {
@@ -92,10 +86,23 @@ private:
                             for (auto& item : node) find_path(item);
                         }
                     };
-                    find_path(winning_config);
+                    find_path(winning_run.full_config);
 
-                    // Replay mit exakt diesem JSON-Paket und exakt demselben CSV abfeuern
-                    this->last_replay = this->engine.ReplaySingleRun(data_path, winning_config);
+                    if (winning_run.params_str.find("WFA_Mode") != std::string::npos) {
+                        this->last_replay = ReplayResult(); 
+                        for (const auto& t : winning_run.trade_log) {
+                            TradeInfo ti;
+                            ti.is_long = (t.direction == SignalDirection::BUY);
+                            ti.entry_price = t.entry_price;
+                            ti.exit_price = t.exit_price;
+                            ti.pnl = t.net_profit;
+                            ti.candle_idx = 0; 
+                            ti.exit_candle_idx = 0;
+                            this->last_replay.trades.push_back(ti);
+                        }
+                    } else {
+                        this->last_replay = this->engine.ReplaySingleRun(data_path, winning_run.full_config);
+                    }
                     
                     this->SwitchPage(PageID::EQUITY);
                 }
@@ -149,7 +156,6 @@ public:
 
             bool is_editing = current_page && current_page->BlocksGlobalHotkeys();
 
-            // global routing hotkeys
             if (!is_editing && (key == 'q' || key == 'Q')) running = false;
             else if (!is_editing && key == '1') SwitchPage(PageID::INSPECTOR);
             else if (!is_editing && key == '2') SwitchPage(PageID::EQUITY);

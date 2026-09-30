@@ -21,10 +21,11 @@ private:
     std::string config_path = "config.json";
     
     int selected_run = 0; 
-    std::function<void(const json&)> on_inspect; 
+    int scroll_offset = 0; 
+    std::function<void(const UIResult&)> on_inspect; 
 
 public:
-    UIScanner(EngineState* s, Mokuren* e, std::function<void(const json&)> inspect_cb) 
+    UIScanner(EngineState* s, Mokuren* e, std::function<void(const UIResult&)> inspect_cb) 
         : state(s), engine(e), on_inspect(inspect_cb) {}
 
     void Render(struct ncplane* stdplane) override {
@@ -36,7 +37,7 @@ public:
         int total_perm = state->total_permutations.load();
         bool is_running = state->is_running.load();
 
-        // --- top block: compact diag & matrix ---
+        // --- TOP SECTION: Diagnostics & Matrix Info ---
         UITheme::StyleTextDefault(stdplane);
         ncplane_putstr_yx(stdplane, 10, 3, "[ SYSTEM DIAGNOSTICS ]");
         ncplane_putstr_yx(stdplane, 10, 40, "[ HYPERPARAMETER MATRIX ]");
@@ -57,6 +58,11 @@ public:
         }
 
         UITheme::StyleTextMuted(stdplane);
+        ncplane_putstr_yx(stdplane, 13, 3, "MODE   :");
+        UITheme::StyleDataValue(stdplane);
+        ncplane_putstr_yx(stdplane, 13, 12, is_running ? "[ SCANNING ]" : "PRESS [S] OR [W]");
+
+        UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 11, 40, "STATUS:");
         UITheme::StyleAlert(stdplane);
         ncplane_putstr_yx(stdplane, 11, 48, current_status.c_str());
@@ -67,7 +73,7 @@ public:
         std::string perm_text = std::to_string(current_perm) + " / " + std::to_string(total_perm);
         ncplane_putstr_yx(stdplane, 12, 48, perm_text.c_str());
 
-        // dynamic progress bar
+        // --- PROGRESS BAR ---
         int max_bar = std::max(10, (int)dimx - 48 - 5); 
         int bar_width = std::min(40, max_bar);
         int filled = total_perm > 0 ? (current_perm * bar_width) / total_perm : 0;
@@ -78,9 +84,9 @@ public:
         (is_running) ? UITheme::StyleCursorActive(stdplane) : UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 13, 40, bar.c_str());
 
-        // --- lower block: leaderboard ---
+        // --- LOWER SECTION: Live Leaderboard ---
         UITheme::StyleTextDefault(stdplane);
-        ncplane_putstr_yx(stdplane, 15, 3, "[ LIVE LEADERBOARD : TOP 5 ]");
+        ncplane_putstr_yx(stdplane, 15, 3, "[ LIVE LEADERBOARD : TOP 100 ]");
         
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, 16, 3, "   RANK  PROFIT       TP%     BE%     SL%     DRAWDOWN  TRADES   PARAMETERS");
@@ -89,20 +95,29 @@ public:
 
         std::vector<UIResult> top_runs;
         {
+            // Thread-safe copy of top results for rendering
             std::lock_guard<std::mutex> lock(state->ui_mutex);
-            top_runs = state->top_results;
+            top_runs = state->top_results; 
         }
-        std::sort(top_runs.begin(), top_runs.end(), [](const UIResult& a, const UIResult& b) {
-            return a.net_profit > b.net_profit;
-        });
 
-        int limit = std::min(static_cast<int>(top_runs.size()), 5);
-        if (selected_run >= limit) selected_run = std::max(0, limit - 1);
+        int limit = top_runs.size();
+        if (selected_run >= limit && limit > 0) selected_run = limit - 1;
+        if (selected_run < 0) selected_run = 0;
 
-        for(int i = 0; i < limit; i++) {
-            if (18 + i >= (int)dimy - 1) break;
+        // --- DYNAMIC SCROLL LOGIC ---
+        int max_visible = std::max(1, (int)dimy - 19); 
+        int scroll_margin = 1; 
 
-            bool is_active = (i == selected_run);
+        if (selected_run < scroll_offset + scroll_margin) {
+            scroll_offset = std::max(0, selected_run - scroll_margin);
+        } else if (selected_run >= scroll_offset + max_visible - scroll_margin) {
+            scroll_offset = std::min(std::max(0, limit - max_visible), selected_run - max_visible + scroll_margin + 1);
+        }
+
+        for(int i = 0; i < max_visible && (scroll_offset + i) < limit; i++) {
+            int idx = scroll_offset + i;
+            bool is_active = (idx == selected_run);
+            
             if (is_active) {
                 UITheme::StyleCursorActive(stdplane);
                 ncplane_putstr_yx(stdplane, 18 + i, 1, ">");
@@ -115,21 +130,24 @@ public:
 
             char buf[256];
             snprintf(buf, sizeof(buf), "%-4d  $%-10.2f %-5.1f%% %-5.1f%% %-5.1f%% -%-8.2f%% %-8d %s", 
-                     i + 1, top_runs[i].net_profit, 
-                     top_runs[i].tp_pct, top_runs[i].be_pct, top_runs[i].sl_pct, 
-                     top_runs[i].max_drawdown, top_runs[i].trades, top_runs[i].params_str.c_str());
+                     idx + 1, top_runs[idx].net_profit, 
+                     top_runs[idx].tp_pct, top_runs[idx].be_pct, top_runs[idx].sl_pct, 
+                     top_runs[idx].max_drawdown, top_runs[idx].trades, top_runs[idx].params_str.c_str());
             ncplane_putstr_yx(stdplane, 18 + i, 4, buf);
         }
 
-        // --- anchored footer ---
+        // --- FOOTER ---
         if (!is_running) {
             UITheme::StyleAlert(stdplane); 
-            ncplane_putstr_yx(stdplane, dimy - 1, 3, "[S] START SCAN   [UP/DOWN] SELECT RUN   [ENTER] REPLAY & INSPECT");
+            ncplane_putstr_yx(stdplane, dimy - 1, 3, "[S] GRID SCAN   [W] WFA SCAN   [UP/DOWN] SELECT   [ENTER] REPLAY");
         }
     }
 
     void HandleInput(uint32_t key) override {
-        if ((key == 's' || key == 'S') && !state->is_running.load()) {
+        // --- LAUNCH SCAN THREAD (Grid or WFA) ---
+        if ((key == 's' || key == 'S' || key == 'w' || key == 'W') && !state->is_running.load()) {
+            bool run_wfa = (key == 'w' || key == 'W'); 
+            
             state->is_running = true;
             state->current_permutation = 0;
             state->total_permutations = 0;
@@ -142,8 +160,10 @@ public:
             Mokuren* bg_engine = engine;
             std::string bg_config = config_path;
 
-            std::thread([bg_state, bg_engine, bg_config]() {
+            std::thread([bg_state, bg_engine, bg_config, run_wfa]() {
                 std::string data_path = "binance/monthly/DEFAULT.csv"; 
+                
+                // Parse config safely to locate the historical data path
                 try {
                     std::ifstream file(bg_config);
                     if (file.is_open()) {
@@ -161,55 +181,77 @@ public:
                     }
                 } catch (...) {}
 
-                bg_engine->RunGridSearch(data_path, bg_config, 
-                    [bg_state](const std::string& status) { bg_state->SetStatus(status); },
-                    [bg_state](int current, int total) { bg_state->current_permutation = current; bg_state->total_permutations = total; },
-                    [bg_state](const TestResult& res) {
-                        UIResult ur;
-                        ur.net_profit = res.net_profit;
-                        ur.winrate = res.winrate;
-                        ur.tp_pct = res.tp_pct;
-                        ur.be_pct = res.be_pct;
-                        ur.sl_pct = res.sl_pct;
-                        ur.max_drawdown = res.max_drawdown; 
-                        ur.trades = res.trades;
-                        ur.full_config = res.full_config; 
-                        
-                        std::string p_str;
-                        for (const auto& [k, v] : res.parameters) {
-                            char buf[32]; snprintf(buf, sizeof(buf), "%g", v);
-                            p_str += k + "=" + std::string(buf) + " ";
-                        }
-                        ur.params_str = p_str;
-                        
-                        std::lock_guard<std::mutex> lock(bg_state->ui_mutex);
-                        bg_state->top_results.push_back(ur);
+                // Define callbacks to update the UI safely from background thread
+                auto status_cb = [bg_state](const std::string& status) { bg_state->SetStatus(status); };
+                auto progress_cb = [bg_state](int current, int total) { bg_state->current_permutation = current; bg_state->total_permutations = total; };
+                
+                auto result_cb = [bg_state](const TestResult& res) {
+                    UIResult ur;
+                    ur.net_profit = res.net_profit;
+                    ur.winrate = res.winrate;
+                    ur.tp_pct = res.tp_pct;
+                    ur.be_pct = res.be_pct;
+                    ur.sl_pct = res.sl_pct;
+                    ur.max_drawdown = res.max_drawdown; 
+                    ur.trades = res.trades;
+                    ur.full_config = res.full_config; 
+                    ur.trade_log = res.trade_log; 
+                    
+                    // Format parameters for the leaderboard view
+                    std::string p_str;
+                    for (const auto& [k, v] : res.parameters) {
+                        char buf[32]; snprintf(buf, sizeof(buf), "%g", v);
+                        p_str += k + "=" + std::string(buf) + " ";
                     }
-                );
+                    ur.params_str = p_str;
+                    
+                    std::lock_guard<std::mutex> lock(bg_state->ui_mutex);
+                    bg_state->top_results.push_back(ur);
+                    
+                    // Keep the top 100 runs to preserve memory and rendering performance
+                    std::sort(bg_state->top_results.begin(), bg_state->top_results.end(), [](const UIResult& a, const UIResult& b) {
+                        return a.net_profit > b.net_profit;
+                    });
+                    if (bg_state->top_results.size() > 100) {
+                        bg_state->top_results.pop_back();
+                    }
+                };
+
+                // Route execution based on selected mode
+                if (run_wfa) {
+                    bg_engine->RunWFA(data_path, bg_config, status_cb, progress_cb, result_cb);
+                } else {
+                    bg_engine->RunGridSearch(data_path, bg_config, status_cb, progress_cb, result_cb);
+                }
+
                 bg_state->is_running = false;
-                bg_state->SetStatus("IDLE");
+               // bg_state->SetStatus("IDLE");
             }).detach();
         }
 
+        // --- NAVIGATION ---
+        int limit = 0;
+        {
+            std::lock_guard<std::mutex> lock(state->ui_mutex);
+            limit = state->top_results.size();
+        }
+
         if (key == NCKEY_UP && selected_run > 0) selected_run--;
-        if (key == NCKEY_DOWN && selected_run < 4) selected_run++;
+        if (key == NCKEY_DOWN && selected_run < limit - 1) selected_run++;
         
-        // ZENTRALER BUGFIX: Die Liste MUSS beim Enter-Drücken exakt so sortiert werden wie beim Rendern!
+        // --- EXECUTE REPLAY ---
         if (key == NCKEY_ENTER && !state->is_running.load()) {
-            json cached_config;
+            UIResult selected_res;
             {
                 std::lock_guard<std::mutex> lock(state->ui_mutex);
-                std::vector<UIResult> sorted_runs = state->top_results;
-                
-                std::sort(sorted_runs.begin(), sorted_runs.end(), [](const UIResult& a, const UIResult& b) {
-                    return a.net_profit > b.net_profit;
-                });
-
-                if (selected_run < sorted_runs.size()) { 
-                    cached_config = sorted_runs[selected_run].full_config; 
+                if (selected_run < state->top_results.size()) { 
+                    selected_res = state->top_results[selected_run]; 
                 }
             }
-            if (!cached_config.empty()) { on_inspect(cached_config); return; }
+            if (!selected_res.full_config.empty()) { 
+                on_inspect(selected_res); 
+                return; 
+            }
         }
     }
 };
