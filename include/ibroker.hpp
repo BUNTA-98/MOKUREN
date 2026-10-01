@@ -3,7 +3,15 @@
 #include <vector>
 #include <string>
 
-// Das Struct zieht aus der papertrader.hpp hierher um!
+// represents a single adjustment of the stop loss
+struct StopEvent {
+    int64_t timestamp;
+    size_t candle_idx;
+    double sl_price;
+    std::string type;
+};
+
+// core trade data protocol logged by the paper trader
 struct TradeRecord {
   int64_t entry_time;
   int64_t exit_time;
@@ -12,6 +20,7 @@ struct TradeRecord {
   double exit_price;
   double net_profit;
   std::string exit_reason;
+  std::vector<StopEvent> stop_events; // <--- NEU: speichert trailing history
 };
 
 class IBroker {
@@ -23,7 +32,7 @@ public:
     virtual TradeSignal GetCurrentPosition() const = 0;
     virtual void UpdateStopLoss(double new_sl) = 0;
     
-    // NEU: Damit die Risk-Module ihre Checks machen können
+    // required for risk manager and engine state synchronization
     virtual double GetNetProfit() const = 0;
     virtual const std::vector<TradeRecord>& GetTradeHistory() const = 0;
 };

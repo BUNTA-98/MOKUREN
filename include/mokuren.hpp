@@ -25,7 +25,6 @@
 
 namespace fs = std::filesystem;
 
-// core result structure passed to ui and leaderboard
 struct TestResult {
   std::map<std::string, double> parameters;
   nlohmann::json full_config; 
@@ -45,7 +44,6 @@ struct TestResult {
   double mc_drawdown = 0.0;
 };
 
-// represents a single rolling window in walk-forward analysis
 struct WFAWindow {
   int64_t in_sample_start;
   int64_t in_sample_end;
@@ -59,7 +57,6 @@ struct AdvancedMetrics {
     double mc_dd = 0.0;
 };
 
-// calculate deep statistics including monte carlo permutations
 AdvancedMetrics CalculateAdvancedMetrics(const std::vector<TradeRecord>& trades) {
     AdvancedMetrics m;
     if (trades.size() < 2) return m;
@@ -86,7 +83,6 @@ AdvancedMetrics CalculateAdvancedMetrics(const std::vector<TradeRecord>& trades)
     if (std_dev > 0.0001) m.sharpe = (mean / std_dev) * std::sqrt(trades.size());
     if (down_dev > 0.0001) m.sortino = (mean / down_dev) * std::sqrt(trades.size());
 
-    // monte carlo simulation for worst case historical drawdown
     std::mt19937 rng(42); 
     std::vector<double> sim = returns;
     double worst_dd = 0.0;
@@ -108,8 +104,6 @@ AdvancedMetrics CalculateAdvancedMetrics(const std::vector<TradeRecord>& trades)
 
 class Mokuren {
 private:
-  
-  // load and cache raw binance tick data to avoid redundant parsing
   std::vector<TradeEvent> LoadAllTrades(const std::string &input_path_str) {
     fs::path input_path = input_path_str;
     fs::path cache_path;
@@ -123,7 +117,6 @@ private:
       cache_path = input_path.parent_path() / (file_stem + "_cache.bin");
     }
 
-    // return binary cache if it already exists
     if (fs::exists(cache_path)) {
       std::ifstream cache_file(cache_path, std::ios::binary);
       if (cache_file) {
@@ -155,13 +148,11 @@ private:
     std::vector<TradeEvent> all_trades;
     all_trades.reserve(5000000); 
 
-    // parse raw tick data
     for (const auto &file : csv_files) {
       CSVLoader::ProcessBinanceCSV(
           file, [&](const TradeEvent &trade) { all_trades.push_back(trade); });
     }
 
-    // write binary cache for future runs
     if (!all_trades.empty()) {
       std::ofstream cache_file(cache_path, std::ios::binary);
       if (cache_file) {
@@ -172,7 +163,6 @@ private:
     return all_trades;
   }
 
-  // extract a specific timeframe for wfa windowing
   std::vector<TradeEvent> SliceTrades(const std::vector<TradeEvent>& source_trades, int64_t start_time, int64_t end_time) {
     std::vector<TradeEvent> sliced;
     sliced.reserve(source_trades.size() / 4); 
@@ -186,7 +176,6 @@ private:
     return sliced;
   }
 
-  // precalculate start and end timestamps for all wfa periods
   std::vector<WFAWindow> GenerateWFAWindows(int64_t first_ts, int64_t last_ts, 
                                             int64_t in_sample_ms, int64_t out_of_sample_ms, 
                                             int64_t step_ms) {
@@ -211,7 +200,6 @@ private:
     return windows;
   }
 
-  // dynamic r-multiple translation bridging gui and core logic
   void ApplyRMultiplesManagement(const nlohmann::json& json_config, double base_sl_pct, EngineInstance& eng) {
       auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
       if (pt) {
@@ -220,7 +208,6 @@ private:
           auto tr = tm.value("trailing", nlohmann::json::object());
           auto so = tm.value("scale_out", nlohmann::json::object());
 
-          // bypass features by setting triggers to unreachable values if disabled
           double be_trig = be.value("enabled", false) ? (base_sl_pct * be.value("trigger_r", 1.5)) : 999.0;
           double be_targ = base_sl_pct * be.value("target_r", 0.25);
           
@@ -237,10 +224,8 @@ private:
   }
 
 public:
-  
   Mokuren() = default;
 
-  // executes standard multithreaded grid search on full dataset
   void RunGridSearch(const std::string &filepath, const std::string &config_path,
                      std::function<void(const std::string&)> on_status,
                      std::function<void(int, int)> on_progress,
@@ -282,7 +267,6 @@ public:
           const auto& run = runs[idx];
           AppConfig cfg = AppConfig::Load(run.full_json);
           
-          // inject mapped r-multiple values
           cfg.sl_pct = run.full_json.value("risk", nlohmann::json::object()).value("sl_price_pct", run.full_json.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
           cfg.tp_pct = cfg.sl_pct * run.full_json.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
           
@@ -292,7 +276,6 @@ public:
           Bar live_bar;
           Bar htf_bar;
 
-          // tick playback loop
           for (const auto &trade : all_trades) {
             eng.pos_manager->Update(trade.price);
             eng.ptrader->CheckRisk(trade.price, trade.timestamp);
@@ -301,7 +284,6 @@ public:
             eng.htf_aggregator->ProcessTrade(htf_bar, trade);
             MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar};
 
-            // query strategy alpha
             TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
 
             if (raw_signal.direction != SignalDirection::NONE) {
@@ -315,7 +297,6 @@ public:
               }
             }
 
-            // apply risk and sizing modules
             TradeSignal sized_signal = eng.sizer->CalculateSize(raw_signal);
             TradeSignal final_signal = eng.risk_manager->Evaluate(sized_signal, trade.timestamp);
 
@@ -324,11 +305,9 @@ public:
             }
           }
 
-          // cleanup remaining positions
           eng.aggregator->FlushLastCandle(live_bar);
           eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
 
-          // compile and push results
           if (eng.ptrader->GetTotalTrades() > 0) {
             TestResult res;
             res.parameters = run.grid_values;
@@ -339,10 +318,17 @@ public:
             res.winrate = eng.ptrader->GetWinrate();
             res.trade_log = eng.ptrader->GetTradeHistory();
             
-            double total = static_cast<double>(eng.ptrader->GetTotalTrades());
-            res.tp_pct = total > 0 ? (eng.ptrader->GetTradesWon() / total) * 100.0 : 0.0;
-            res.be_pct = total > 0 ? (eng.ptrader->GetTradesBE() / total) * 100.0 : 0.0;
-            res.sl_pct = total > 0 ? (eng.ptrader->GetTradesLost() / total) * 100.0 : 0.0;
+            // pure pnl based performance classification
+            int wins = 0, be = 0, losses = 0;
+            for (const auto& t : res.trade_log) {
+                if (t.net_profit > 0.0) wins++;
+                else if (t.net_profit < 0.0) losses++;
+                else be++;
+            }
+            double total = res.trade_log.size();
+            res.tp_pct = total > 0 ? (wins / total) * 100.0 : 0.0;
+            res.be_pct = total > 0 ? (be / total) * 100.0 : 0.0;
+            res.sl_pct = total > 0 ? (losses / total) * 100.0 : 0.0;
 
             AdvancedMetrics am = CalculateAdvancedMetrics(res.trade_log);
             res.sharpe = am.sharpe;
@@ -365,7 +351,6 @@ public:
     on_status("SCAN COMPLETE");
   }
 
-  // executes walk-forward analysis with rolling windows
   void RunWFA(const std::string &filepath, const std::string &config_path,
               std::function<void(const std::string&)> on_status,
               std::function<void(int, int)> on_progress,
@@ -400,10 +385,8 @@ public:
     int64_t out_of_sample_ms = out_days * day_ms; 
     int64_t step_ms = step_days * day_ms;          
 
-    // map wfa timeframe constraints
     std::vector<WFAWindow> windows = GenerateWFAWindows(first_ts, last_ts, in_sample_ms, out_of_sample_ms, step_ms);
     
-    // halt instantly if dataset is too short to even form one window
     if (windows.empty()) {
         std::string err = "ERR: CSV TOO SHORT (NEEDS " + std::to_string(in_days + out_days) + " DAYS)";
         on_status(err);
@@ -415,7 +398,6 @@ public:
     std::vector<TradeRecord> global_oos_trades;
     std::vector<WFAOOSConfig> collected_configs;
 
-    // process rolling windows sequentially
     for (size_t i = 0; i < windows.size(); ++i) {
       const auto& win = windows[i];
       on_status("WFA WINDOW " + std::to_string(i + 1) + "/" + std::to_string(windows.size()) + " (PARALLEL)");
@@ -434,7 +416,6 @@ public:
       std::atomic<size_t> task_index{0};
       std::vector<std::thread> workers;
 
-      // train: run grid search on in-sample data
       for (unsigned int c = 0; c < max_cores; ++c) {
         workers.emplace_back([&]() {
           while (true) {
@@ -488,7 +469,6 @@ public:
         if (w.joinable()) w.join();
       }
 
-      // test: deploy winning configuration on out-of-sample window
       AppConfig oos_cfg = AppConfig::Load(best_config.full_json);
       oos_cfg.sl_pct = best_config.full_json.value("risk", nlohmann::json::object()).value("sl_price_pct", best_config.full_json.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
       oos_cfg.tp_pct = oos_cfg.sl_pct * best_config.full_json.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
@@ -519,7 +499,6 @@ public:
       oos_eng.aggregator->FlushLastCandle(oos_live);
       oos_eng.ptrader->CloseOpenPositionAtEnd(oos_live.close, oos_live.timestamp_start);
 
-      // aggregate window results
       auto* oos_pt = dynamic_cast<PaperTrader*>(oos_eng.ptrader.get());
       const auto& window_trades = oos_pt->GetTradeHistory();
       global_oos_trades.insert(global_oos_trades.end(), window_trades.begin(), window_trades.end());
@@ -527,14 +506,12 @@ public:
       collected_configs.push_back({win.out_of_sample_start, win.out_of_sample_end, best_config.full_json});
 
       on_progress(i + 1, windows.size());
-    } // <--- END OF ROLLING WINDOWS LOOP
+    } 
 
-    // --- PUSH FINAL LEADERBOARD UPDATE ONLY ONCE ---
     if (!global_oos_trades.empty()) {
       TestResult res;
       res.parameters["WFA_Windows_Done"] = windows.size(); 
       
-      // force inspector to explicitly run the ReplayWFA routine
       nlohmann::json final_cfg = collected_configs.back().config;
       final_cfg["backtest"]["wfa_mode"] = true; 
       res.full_config = final_cfg; 
@@ -554,9 +531,10 @@ public:
         double dd = (peak_balance - current_balance) / peak_balance * 100.0;
         if (dd > max_dd) max_dd = dd;
 
-        if (t.exit_reason == "tp" || t.exit_reason == "scale_out") wins++;
-        else if (t.exit_reason == "be" || t.exit_reason == "trail/be") be++;
-        else losses++;
+        // pure pnl based performance classification
+        if (t.net_profit > 0.0) wins++;
+        else if (t.net_profit < 0.0) losses++;
+        else be++;
       }
 
       res.net_profit = net_profit;
@@ -577,7 +555,6 @@ public:
     on_status("WFA COMPLETE");
   }
 
-  // rebuilds and exports a single successful grid iteration for ui inspection
   ReplayResult ReplaySingleRun(const std::string &filepath, const nlohmann::json& winning_config) {
       ReplayResult result;
 
@@ -635,6 +612,8 @@ public:
           ti.entry_price = t.entry_price;
           ti.exit_price = t.exit_price;
           ti.pnl = t.net_profit;
+          ti.exit_reason = t.exit_reason; 
+          ti.stop_history = t.stop_events; // pass trailing history 
           
           auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
               [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
@@ -655,10 +634,22 @@ public:
           } else {
               ti.exit_candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
           }
+
+          // map physical candle indices for trailing history rendering
+          for (auto& se : ti.stop_history) {
+              auto sit = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), se.timestamp, 
+                  [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
+              if (sit != result.history_1m.end()) {
+                  se.candle_idx = std::distance(result.history_1m.begin(), sit);
+                  if (se.candle_idx > 0 && sit->timestamp_start > se.timestamp) se.candle_idx--;
+              } else {
+                  se.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
+              }
+          }
+
           result.trades.push_back(ti);
       }
       
-      // bulletproof index clamping for ui rendering
       for (auto& ti : result.trades) {
           if (result.history_1m.empty()) {
               ti.candle_idx = 0;
@@ -674,7 +665,6 @@ public:
       return result;
   }
 
-  // stitches multiple out-of-sample wfa periods together for ui rendering
   ReplayResult ReplayWFA(const std::string &filepath, const std::vector<WFAOOSConfig>& wfa_configs) {
       ReplayResult result;
       if (wfa_configs.empty()) return result;
@@ -729,6 +719,8 @@ public:
               ti.entry_price = t.entry_price;
               ti.exit_price = t.exit_price;
               ti.pnl = t.net_profit;
+              ti.exit_reason = t.exit_reason; 
+              ti.stop_history = t.stop_events; // pass trailing history
               
               auto it = std::lower_bound(hist_1m.begin(), hist_1m.end(), t.entry_time, 
                   [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
@@ -751,11 +743,24 @@ public:
               } else {
                   ti.exit_candle_idx = start_idx_1m + (hist_1m.empty() ? 0 : hist_1m.size() - 1);
               }
+
+              // map physical candle indices for trailing history rendering
+              for (auto& se : ti.stop_history) {
+                  auto sit = std::lower_bound(hist_1m.begin(), hist_1m.end(), se.timestamp, 
+                      [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
+                  if (sit != hist_1m.end()) {
+                      size_t local_idx = std::distance(hist_1m.begin(), sit);
+                      if (local_idx > 0 && sit->timestamp_start > se.timestamp) local_idx--;
+                      se.candle_idx = start_idx_1m + local_idx;
+                  } else {
+                      se.candle_idx = start_idx_1m + (hist_1m.empty() ? 0 : hist_1m.size() - 1);
+                  }
+              }
+
               result.trades.push_back(ti);
           }
       }
 
-      // bulletproof index clamping for ui rendering
       for (auto& ti : result.trades) {
           if (result.history_1m.empty()) {
               ti.candle_idx = 0;

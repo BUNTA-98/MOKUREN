@@ -85,6 +85,8 @@ public:
             has_scaled_out_ = true;
             current_sl_ = (position_direction_ == SignalDirection::BUY) ? entry_price * (1.0 + be_target_pct_) : entry_price * (1.0 - be_target_pct_);
             sl_moved_to_be_ = true;
+            // log partial scale out stop move
+            current_stop_history_.push_back({current_time, 0, current_sl_, "SCALE->BE"});
         }
     }
 
@@ -92,11 +94,17 @@ public:
       if (!sl_moved_to_be_ && current_price >= entry_price * (1.0 + be_trigger_pct_)) {
         current_sl_ = entry_price * (1.0 + be_target_pct_);
         sl_moved_to_be_ = true;
+        // log breakeven hit
+        current_stop_history_.push_back({current_time, 0, current_sl_, "BE TRIGGER"});
       }
       
       if (enable_trailing_ && current_price >= entry_price * (1.0 + trailing_trigger_pct_)) {
           double proposed_sl = highest_seen_price_ * (1.0 - trailing_dist_pct_);
-          if (proposed_sl > current_sl_) current_sl_ = proposed_sl; 
+          if (proposed_sl > current_sl_) {
+              current_sl_ = proposed_sl; 
+              // log trailing step
+              current_stop_history_.push_back({current_time, 0, current_sl_, "TRAIL MOVE"});
+          }
       }
 
       if (current_price <= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "trail/be" : "sl", current_time);
@@ -106,11 +114,17 @@ public:
       if (!sl_moved_to_be_ && current_price <= entry_price * (1.0 - be_trigger_pct_)) {
         current_sl_ = entry_price * (1.0 - be_target_pct_);
         sl_moved_to_be_ = true;
+        // log breakeven hit
+        current_stop_history_.push_back({current_time, 0, current_sl_, "BE TRIGGER"});
       }
 
       if (enable_trailing_ && current_price <= entry_price * (1.0 - trailing_trigger_pct_)) {
           double proposed_sl = lowest_seen_price_ * (1.0 + trailing_dist_pct_);
-          if (proposed_sl < current_sl_ || current_sl_ == 0.0) current_sl_ = proposed_sl; 
+          if (proposed_sl < current_sl_ || current_sl_ == 0.0) {
+              current_sl_ = proposed_sl; 
+              // log trailing step
+              current_stop_history_.push_back({current_time, 0, current_sl_, "TRAIL MOVE"});
+          }
       }
 
       if (current_price >= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "trail/be" : "sl", current_time);
@@ -134,6 +148,7 @@ public:
       has_scaled_out_ = false;
       highest_seen_price_ = current_price;
       lowest_seen_price_ = current_price;
+      current_stop_history_.clear(); // reset trailing log for new trade
 
       if (position_direction_ == SignalDirection::BUY) {
         entry_price = current_price * (1.0 + slippage);
@@ -150,7 +165,7 @@ public:
       }
 
       double entry_fee = (entry_price * position_size) * taker_fee_pct;
-      current_entry_fee_ = entry_fee; // log fee
+      current_entry_fee_ = entry_fee; 
       balance -= entry_fee;
       total_fees_paid += entry_fee;
       current_daily_pnl_ -= entry_fee; 
@@ -179,7 +194,7 @@ private:
   double current_sl_ = 0.0;
   double current_tp_ = 0.0;
   int64_t entry_time_ = 0;
-  double current_entry_fee_ = 0.0; // track fee for correct log
+  double current_entry_fee_ = 0.0; 
   
   bool sl_moved_to_be_ = false;
   double be_trigger_pct_ = 0.005; 
@@ -201,6 +216,7 @@ private:
   int64_t current_day_start_ = 0;
 
   std::vector<TradeRecord> trade_history_;
+  std::vector<StopEvent> current_stop_history_; // local event collector
 
   double stop_loss_pct;
   double take_profit_pct;
@@ -248,12 +264,23 @@ private:
       current_daily_pnl_ += net_profit; 
       UpdateDrawdown(balance);
 
-      // calc true pnl for log (gross - exit_fee - partial_entry_fee)
       double partial_entry_fee = current_entry_fee_ * fraction;
       current_entry_fee_ -= partial_entry_fee;
       double true_trade_pnl = net_profit - partial_entry_fee;
 
-      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, true_trade_pnl, reason});
+      // EXPLICIT STRUCT INSTANTIATION TO PREVENT C++ BRACE-ENCLOSURE ERRORS
+      TradeRecord rec;
+      rec.entry_time = entry_time_;
+      rec.exit_time = current_time;
+      rec.direction = position_direction_;
+      rec.entry_price = entry_price;
+      rec.exit_price = actual_exit_price;
+      rec.net_profit = true_trade_pnl;
+      rec.exit_reason = reason;
+      rec.stop_events = current_stop_history_;
+
+      // append partial close to trade history
+      trade_history_.push_back(rec);
       
       position_size -= close_volume; 
   }
@@ -280,25 +307,36 @@ private:
       
       UpdateDrawdown(balance);
 
-      if (reason == "tp") trades_won++;
-      else if (reason == "trail/be" || reason == "be") trades_be++;
-      else if (reason == "scale_out") trades_won++; 
-      else trades_lost++;
+      if (net_profit > 0) trades_won++;
+      else if (net_profit < 0) trades_lost++;
+      else trades_be++;
 
-      // calc true pnl for log
       double true_trade_pnl = net_profit - current_entry_fee_;
 
-      trade_history_.push_back({entry_time_, current_time, position_direction_, entry_price, actual_exit_price, true_trade_pnl, reason});
+      // EXPLICIT STRUCT INSTANTIATION TO PREVENT C++ BRACE-ENCLOSURE ERRORS
+      TradeRecord rec;
+      rec.entry_time = entry_time_;
+      rec.exit_time = current_time;
+      rec.direction = position_direction_;
+      rec.entry_price = entry_price;
+      rec.exit_price = actual_exit_price;
+      rec.net_profit = true_trade_pnl;
+      rec.exit_reason = reason;
+      rec.stop_events = current_stop_history_;
+
+      // append final close to trade history
+      trade_history_.push_back(rec);
 
       position_size = 0.0;
       entry_price = 0.0;
       current_sl_ = 0.0;
       current_tp_ = 0.0;
       entry_time_ = 0;
-      current_entry_fee_ = 0.0; // reset
+      current_entry_fee_ = 0.0; 
       sl_moved_to_be_ = false;
       has_scaled_out_ = false;
       position_direction_ = SignalDirection::NONE;
+      current_stop_history_.clear(); // reset trailing log 
     }
   }
 };

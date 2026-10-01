@@ -7,11 +7,23 @@
 #include <nlohmann/json.hpp>
 #include "ibroker.hpp" 
 
-// Speichert die spezifische Config für ein Out-of-Sample Fenster
+// map out of sample wfa window configs
 struct WFAOOSConfig {
   int64_t oos_start;
   int64_t oos_end;
   nlohmann::json config;
+};
+
+// core trade data passed to ui renderers
+struct TradeInfo {
+    bool is_long;
+    double entry_price;
+    double exit_price;
+    double pnl;
+    size_t candle_idx;
+    size_t exit_candle_idx;
+    std::string exit_reason;
+    std::vector<StopEvent> stop_history; // <--- holds all trailing/be events
 };
 
 // single result for the terminal leaderboard
@@ -26,13 +38,12 @@ struct UIResult {
   double be_pct = 0.0;
   double sl_pct = 0.0;
   
-  // NEUE QUANT METRIKEN
   double sharpe = 0.0;
   double sortino = 0.0;
   double mc_drawdown = 0.0;
-  
+    
   std::vector<TradeRecord> trade_log; 
-  std::vector<WFAOOSConfig> wfa_configs; // Für das WFA Footprint Stitching
+  std::vector<WFAOOSConfig> wfa_configs; 
 };
 
 // shared memory bridge for notcurses dashboard
