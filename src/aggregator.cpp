@@ -70,6 +70,26 @@ void Aggregator::AnalyzeCandle(Bar &bar) {
 }
 
 bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
+  // vwap reset & calculation with offset
+  int64_t offset_ms = vwap_reset_hour_ * 3600000LL;
+  int64_t session_day = (trade.timestamp - offset_ms) / 86400000LL;
+
+  if (session_day > current_session_day_) {
+    session_vol_ = 0.0;
+    session_price_vol_ = 0.0;
+    current_session_day_ = session_day;
+  }
+
+  session_vol_ += trade.quantity;
+  session_price_vol_ += (trade.price * trade.quantity);
+  
+  current_metrics_.vwap = session_vol_ > 0.0 ? (session_price_vol_ / session_vol_) : trade.price;
+  current_metrics_.total_session_volume = session_vol_;
+  
+  // save to bar
+  live_bar.vwap = current_metrics_.vwap;
+
+  // --- original close logic ---
   if (next_close_time == 0) {
     int64_t start_time = trade.timestamp - (trade.timestamp % interval_ms);
     next_close_time = start_time + interval_ms;

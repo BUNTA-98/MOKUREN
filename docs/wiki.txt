@@ -1,0 +1,43 @@
+Filter-Module (Engine Wiki)
+
+Filter werden nach einem Trigger ausgewertet. Sie generieren selbst keine Signale, sondern dienen als Sicherheitsnetz, um Trades in ungünstigen Marktphasen (Chop, Gegen-Trend, Illiquidität) zu blockieren.
+
+VwapTrendFilter
+Parameter: require_trend_alignment (Boolean)
+Funktion: Erlaubt Longs nur über und Shorts nur unter dem tagesaktuellen VWAP (Volume Weighted Average Price).
+Einsatzgebiet: Richtet Trades an der institutionellen Tageskontrolle aus. Verhindert das Fangen von fallenden Messern.
+
+MinVolumeFilter
+Parameter: min_volume (Double)
+Funktion: Blockiert das Signal, wenn das Gesamthandelsvolumen der letzten Kerze den Schwellenwert unterschreitet.
+Einsatzgebiet: Harter Filter gegen Trades im Niemandsland oder in toten asiatischen Sessions.   
+
+RVOLFilter (Relative Volume)
+Parameter: threshold (Double, z.B. 1.5 für 150%), lookback (Int)
+Funktion: Setzt das aktuelle Kerzenvolumen ins Verhältnis zum Durchschnittsvolumen der letzten N Kerzen. Blockiert bei zu niedrigem Wert.
+Einsatzgebiet: Bestätigt Ausbrüche oder Footprint-Imbalances durch die Validierung, dass tatsächlich überdurchschnittliches Interesse vorliegt.   
+
+ATRFilter (Average True Range)
+Parameter: min_atr (Double), lookback (Int)
+Funktion: Berechnet die echte Volatilität (ATR) der letzten N Kerzen und blockiert bei Unterschreitung des Minimums.
+Einsatzgebiet: Schützt vor Phasen ohne Momentum, in denen der Preis nur seitwärts rauscht und Ziele nicht erreicht werden.   
+
+TimeOfDayFilter
+Parameter: start_h, start_m, end_h, end_m (Int)
+Funktion: Erlaubt Trades ausschließlich innerhalb eines hart definierten Uhrzeit-Fensters der lokalen Systemzeit.
+Einsatzgebiet: Fokus auf Kernhandelszeiten (z.B. New York Open, London Session) und Blockieren von Übernacht-Trades.   
+
+POCTrendFilter
+Parameter: Keine
+Funktion: Blockiert Longs, wenn der Schlusskurs unter dem Point of Control (POC) der Kerze liegt, und Shorts, wenn er darüber liegt.
+Einsatzgebiet: Bestätigt, dass der Preis aus der volumenstärksten Zone der Kerze in die gewünschte Trade-Richtung gedrückt wurde.   
+
+MacroTrendFilter
+Parameter: lookback (Int, z.B. 200)
+Funktion: Baut einen Simple Moving Average (SMA) über N Kerzen. Erlaubt Longs nur über, Shorts nur unter dem SMA.
+Einsatzgebiet: Der klassische übergeordnete Trendfilter, um nicht blind gegen die grobe Makro-Richtung zu handeln.   
+
+VolatilityFilter
+Parameter: min_dollar (Double), lookback (Int)
+Funktion: Prüft, ob die Spanne von High zu Low der letzten N Kerzen im Schnitt mindestens X Punkte/Dollar beträgt.
+Einsatzgebiet: Einfachere, preisbasierte Alternative zum ATR-Filter, um inaktive, enge Marktphasen auszufiltern.   

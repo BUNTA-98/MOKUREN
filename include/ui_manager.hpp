@@ -28,6 +28,9 @@ private:
     
     PageID current_page_id = PageID::CONFIG; 
     std::unique_ptr<UIPage> current_page;
+    
+    // hold active config path across page switches
+    std::string active_config_path = "configs/default.json";
 
     void DrawGlobalHeader() {
         unsigned int dimy, dimx;
@@ -87,13 +90,21 @@ private:
     }
 
     void SwitchPage(PageID new_page) {
+        // capture active config before config page is destroyed
+        if (current_page_id == PageID::CONFIG && current_page) {
+            if (auto* p_config = dynamic_cast<PageConfig*>(current_page.get())) {
+                active_config_path = p_config->GetActiveConfigPath();
+            }
+        }
+
         current_page_id = new_page;
         
         if (new_page == PageID::CONFIG) {
             current_page = std::make_unique<PageConfig>(); 
         } 
         else if (new_page == PageID::SCANNER) { 
-            current_page = std::make_unique<UIScanner>(&state, &engine, 
+            // pass the captured path to the scanner
+            current_page = std::make_unique<UIScanner>(&state, &engine, active_config_path, 
                 [this](const UIResult& winning_run) { 
                     
                     std::string data_path = "binance/monthly/DEFAULT.csv"; 
@@ -192,6 +203,12 @@ public:
                 int next_id = (static_cast<int>(current_page_id) + 1) % 5;
                 SwitchPage(static_cast<PageID>(next_id));
             }
+            // --- NEU: Fängt S und W im Config Menü ab und routet sie durch ---
+            else if (!is_editing && (key == 's' || key == 'S' || key == 'w' || key == 'W') && current_page_id == PageID::CONFIG) {
+                SwitchPage(PageID::SCANNER);
+                if (current_page) current_page->HandleInput(key);
+            }
+            // ----------------------------------------------------------------
             else {
                 if (current_page) current_page->HandleInput(key);
             }

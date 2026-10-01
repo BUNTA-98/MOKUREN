@@ -21,6 +21,8 @@
 #include <fstream>
 #include <random>
 #include <cmath>
+#include <ctime>
+#include <iomanip>
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -257,6 +259,26 @@ public:
     std::atomic<size_t> task_index{0};
     std::atomic<int> current_iteration{0};
 
+    // --- workspace setup & provenance ---
+    fs::create_directories("runs");
+    auto now = std::time(nullptr);
+    auto tm = *std::localtime(&now);
+    std::ostringstream oss;
+    oss << "runs/scan_" << std::put_time(&tm, "%Y%m%d_%H%M%S");
+    std::string run_dir = oss.str();
+    fs::create_directories(run_dir);
+
+    std::ofstream cfg_out(run_dir + "/used_config.json");
+    if (cfg_out.is_open()) {
+        cfg_out << base_json.dump(4);
+        cfg_out.close();
+    }
+
+    std::mutex csv_mutex;
+    std::ofstream csv_file(run_dir + "/results.csv");
+    bool header_written = false;
+    // ------------------------------------
+
     std::vector<std::thread> workers;
     for (unsigned int i = 0; i < max_cores; ++i) {
       workers.emplace_back([&, this]() {
@@ -336,6 +358,30 @@ public:
             res.mc_drawdown = am.mc_dd;
             
             on_result(res);
+
+            // thread-safe csv write
+            {
+              std::lock_guard<std::mutex> lock(csv_mutex);
+              if (csv_file.is_open()) {
+                if (!header_written) {
+                  for (const auto& [key, val] : run.grid_values) {
+                    csv_file << key << ",";
+                  }
+                  csv_file << "NetProfit,MaxDrawdown,Trades,WinRate,Sharpe\n";
+                  header_written = true;
+                }
+                
+                for (const auto& [key, val] : run.grid_values) {
+                  csv_file << val << ",";
+                }
+                csv_file << res.net_profit << ","
+                         << res.max_drawdown << ","
+                         << res.trades << ","
+                         << res.winrate << ","
+                         << res.sharpe << "\n";
+                csv_file.flush();
+              }
+            }
           }
           
           int done = ++current_iteration;

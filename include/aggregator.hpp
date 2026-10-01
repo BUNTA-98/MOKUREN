@@ -29,11 +29,11 @@ struct Bar {
   double total_volume = 0.0;
   double cumulative_delta = 0.0;
   double poc_price = 0.0;
+  double vwap = 0.0; // vwap für die kerze
 
   int64_t timestamp_start = 0;
   double tick_size = 0.0;
 
-  // NEU: Der Vektor für den komprimierten Footprint
   std::vector<PriceLevel> footprint;
 
   void ResetBar(int64_t new_timestamp) {
@@ -44,34 +44,37 @@ struct Bar {
     total_volume = 0.0;
     cumulative_delta = 0.0;
     poc_price = 0.0;
+    vwap = 0.0;
     timestamp_start = new_timestamp;
     footprint.clear();
   }
 };
 
+struct SessionMetrics {
+  double vwap = 0.0;
+  double total_session_volume = 0.0;
+};
+
 class Aggregator {
 public:
-  Aggregator(int64_t interval, double tick)
-      : interval_ms(interval), tick_size(tick) {
+  // config parameter übergeben (standard ist 0)
+  Aggregator(int64_t interval, double tick, int vwap_reset_hour = 0)
+      : interval_ms(interval), tick_size(tick), vwap_reset_hour_(vwap_reset_hour) {
     ResetWorkspace();
   }
 
-  // Neue Signatur ohne "Bar &bar"
   PriceLevel *GetOrAddLevel(double price);
-
   bool ProcessTrade(Bar &live_bar, const TradeEvent &trade);
-
   void UpdateBarData(Bar &bar, const TradeEvent &trade);
-
   void AnalyzeCandle(Bar &bar); 
-
   const std::vector<Bar> &GetHistory() const { return history; }
-
+  SessionMetrics GetSessionMetrics() const { return current_metrics_; }
   void FlushLastCandle(Bar &live_bar);
 
 private:
   int64_t interval_ms;
   double tick_size;
+  int vwap_reset_hour_ = 0; // offset parameter
   int64_t next_close_time = 0;
 
   std::vector<Bar> history;
@@ -80,6 +83,12 @@ private:
   double base_price = 0.0;
   double lowest_price = 0.0;
   int active_levels = 0;
+
+  // vwap state
+  int64_t current_session_day_ = -1; 
+  double session_vol_ = 0.0;
+  double session_price_vol_ = 0.0;
+  SessionMetrics current_metrics_;
 
   void ResetWorkspace() {
     base_price = 0.0;

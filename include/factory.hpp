@@ -34,8 +34,9 @@ public:
   static EngineInstance Build(const AppConfig &cfg) {
     EngineInstance inst;
 
-    inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size);
-    inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size);
+    // pass vwap reset hour to aggregators
+    inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
+    inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
     inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss, cfg.slippage_pct);
     inst.pos_manager = std::make_unique<PositionManager>(inst.ptrader.get());
 
@@ -83,6 +84,18 @@ public:
         inst.filters.push_back(std::make_unique<MinVolumeFilter>(min_vol));
         inst.pipeline->AddFilter(inst.filters.back().get());
       
+      } else if (f.name == "VwapTrend") {
+        bool require_trend = f.params.value("require_trend_alignment", true);
+        inst.filters.push_back(std::make_unique<VwapTrendFilter>(require_trend));
+        inst.pipeline->AddFilter(inst.filters.back().get());
+      
+      // --- NEU: CVD DIVERGENCE FILTER ---
+      } else if (f.name == "CVDDivergence") {
+        int lookback = f.params.value("lookback", 5);
+        inst.filters.push_back(std::make_unique<CVDDivergenceFilter>(lookback));
+        inst.pipeline->AddFilter(inst.filters.back().get());
+      // ----------------------------------
+
       } else if (f.name == "MacroTrend") {
         int lookback = f.params.value("lookback", 1440);
         inst.filters.push_back(std::make_unique<MacroTrendFilter>(lookback));
@@ -143,8 +156,7 @@ public:
       inst.risk_manager->AddModule(mod.get());
     }
 
-    // ZENTRALER FIX: Der Trader bekommt ab sofort IMMER seine Parameter, 
-    // bevor er die Factory verlässt. Kein Leak mehr möglich!
+    // zentales update der trademanagement params
     inst.ptrader->ApplyManagementConfig(
         cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct,
         cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct,

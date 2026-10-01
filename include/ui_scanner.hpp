@@ -18,7 +18,7 @@ class UIScanner : public UIPage {
 private:
     EngineState* state;
     Mokuren* engine;
-    std::string config_path = "config.json"; 
+    std::string config_path; 
     
     int selected_run = 0; 
     int scroll_offset = 0; 
@@ -26,8 +26,9 @@ private:
     std::function<void(const UIResult&)> on_inspect; 
 
 public:
-    UIScanner(EngineState* s, Mokuren* e, std::function<void(const UIResult&)> inspect_cb) 
-        : state(s), engine(e), on_inspect(inspect_cb) {}
+    // require config path via constructor now
+    UIScanner(EngineState* s, Mokuren* e, const std::string& cfg_path, std::function<void(const UIResult&)> inspect_cb) 
+        : state(s), engine(e), config_path(cfg_path), on_inspect(inspect_cb) {}
 
     // core rendering loop for scanner ui
     void Render(struct ncplane* stdplane) override {

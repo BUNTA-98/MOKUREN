@@ -229,3 +229,81 @@ public:
     return avg_range >= min_avg_range_;
   }
 };
+
+
+class VwapTrendFilter : public IFilter {
+private:
+  bool require_trend_alignment_;
+
+public:
+  // Über den Parameter kannst du den Filter im Grid-Scanner per Boolean an- und ausschalten
+  VwapTrendFilter(bool require_trend_alignment = true) 
+      : require_trend_alignment_(require_trend_alignment) {}
+
+  bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
+    // Wenn der Filter im Grid-Run deaktiviert ist, lass das Signal ungeprüft durch
+    if (!require_trend_alignment_) return true;
+
+    if (intended_signal.direction == SignalDirection::NONE) return false;
+
+    // Der VWAP aus unserem frisch eingebauten Makro-Context
+    double vwap = context.session.vwap;
+
+    // Schutz: Wenn noch gar kein VWAP berechnet wurde (z.B. erster Tick am Tag), erlaube Trade
+    if (vwap == 0.0) return true;
+
+    // Aktueller Preis aus der laufenden Kerze
+    double current_price = context.live_bar.close;
+
+    // Filter-Logik: Keine Longs unterm VWAP, keine Shorts überm VWAP
+    if (intended_signal.direction == SignalDirection::BUY && current_price < vwap) {
+      return false; // Gegen den Trend -> Blockiert
+    }
+    if (intended_signal.direction == SignalDirection::SELL && current_price > vwap) {
+      return false; // Gegen den Trend -> Blockiert
+    }
+
+    return true; // Im Einklang mit dem VWAP-Trend -> Erlaubt
+  }
+};
+
+
+class CVDDivergenceFilter : public IFilter {
+private:
+  int lookback_;
+
+public:
+  // Standard: Vergleicht Preis und Delta der letzten 5 Kerzen
+  CVDDivergenceFilter(int lookback = 5) : lookback_(lookback) {}
+
+  bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
+    // Wir brauchen genug Historie für den Lookback + 1 Referenzkerze davor
+    if (context.history.size() < lookback_ + 1) return false;
+
+    size_t current_idx = context.history.size() - 1;
+    size_t start_idx = current_idx - lookback_;
+
+    // 1. Preis-Trend der letzten N Kerzen berechnen
+    double price_change = context.history[current_idx].close - context.history[start_idx].close;
+
+    // 2. Kumuliertes Delta (CVD) der letzten N Kerzen berechnen
+    double cumulative_delta = 0.0;
+    for (size_t i = start_idx + 1; i <= current_idx; ++i) {
+      cumulative_delta += context.history[i].cumulative_delta;
+    }
+
+    // BEARISH DIVERGENCE: Preis macht höhere Hochs, aber aggressives Kaufinteresse (Delta) ist negativ.
+    // -> Fake-Out Gefahr! Wir blockieren Long-Trades in diese Schwäche hinein.
+    if (intended_signal.direction == SignalDirection::BUY && price_change > 0 && cumulative_delta < 0) {
+      return false; 
+    }
+
+    // BULLISH DIVERGENCE: Preis macht tiefere Tiefs, aber aggressives Verkaufsinteresse ist negativ (Käufer sammeln auf).
+    // -> Fake-Out Gefahr! Wir blockieren Short-Trades am absoluten Boden.
+    if (intended_signal.direction == SignalDirection::SELL && price_change < 0 && cumulative_delta > 0) {
+      return false; 
+    }
+
+    return true; // Keine gefährliche Divergenz erkannt -> Trade erlaubt
+  }
+};

@@ -58,13 +58,16 @@ private:
     int param_cursor = 0;
     
     std::string edit_buffer = "";
-    std::string config_path = "config.json";
+    
+    // Standard-Pfad für die Konfiguration
+    std::string config_path = "configs/default.json";
     
     ParamConfigState sub_state;
 
-    json CreateDefaultConfig() {
+   json CreateDefaultConfig() {
         return json::parse(R"({
           "backtest": {
+            "config_profile": "configs/default.json",
             "wfa_mode": false,
             "wfa_in_sample_days": 14,
             "wfa_out_of_sample_days": 7,
@@ -74,10 +77,22 @@ private:
             "filepath": "binance/monthly",
             "interval_ms": 60000,
             "macro_interval_ms": 900000,
+            "vwap_reset_hour": 0,
             "max_cores": 0,
             "slippage_pct": 0.0002,
             "tick_size": 0.1
           },
+          "filters": [
+            { "active": true, "lookback": 1440, "name": "MacroTrend" },
+            { "active": true, "min_volume": 2.0, "name": "MinVolume" },
+            { "active": true, "lookback": 20, "name": "RVOL", "threshold": 2.0 },
+            { "active": true, "lookback": 25.0, "min_atr": 40.0, "name": "ATRChop" },
+            { "active": false, "lookback": 5, "min_dollar": 150.0, "name": "Volatility" },
+            { "active": false, "end_h": 17, "end_m": 0, "name": "TimeOfDay", "start_h": 8, "start_m": 0 },
+            { "active": false, "name": "POCTrend" },
+            { "active": true, "name": "VwapTrend", "require_trend_alignment": true },
+            { "active": true, "lookback": 5, "name": "CVDDivergence" }
+          ],
           "risk": {
             "max_daily_loss": 400.0,
             "min_distance_dollars": 10.0,
@@ -86,28 +101,19 @@ private:
               { "active": true, "max_leverage": 10.0, "name": "MaxLeverageLock" },
               { "active": true, "cooldown_ms": 1800000, "name": "AntiRevengeLock" }
             ],
-            "risk_per_trade_pct": 0.01,
+            "risk_per_trade_pct": 0.02,
             "sl_price_pct": 0.004,
             "tp_r": 3.0
           },
-          "filters": [
-            { "active": true, "lookback": 1440, "name": "MacroTrend" },
-            { "active": true, "min_volume": 50.0, "name": "MinVolume" },
-            { "active": true, "lookback": 20, "name": "RVOL", "threshold": 1.5 },
-            { "active": true, "lookback": 14, "min_atr": 25.0, "name": "ATRChop" },
-            { "active": false, "lookback": 5, "min_dollar": 150.0, "name": "Volatility" },
-            { "active": false, "end_h": 17, "end_m": 0, "name": "TimeOfDay", "start_h": 8, "start_m": 0 },
-            { "active": false, "name": "POCTrend" }
-          ],
-          "triggers": [
-            { "active": true, "delta": { "max": 2.0, "min": 0.8, "mode": "range", "step": 0.2, "val": 1.2 }, "name": "DeltaAbsorption" },
-            { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 }
-          ],
           "trade_management": {
             "break_even": { "enabled": false, "target_r": 0.25, "trigger_r": 1.5 },
             "scale_out": { "enabled": false, "fraction": 0.5, "trigger_r": 2.0 },
-            "trailing": { "distance_r": 0.5, "enabled": true, "trigger_r": 2.5 }
-          }
+            "trailing": { "distance_r": 0.5, "enabled": false, "trigger_r": 2.5 }
+          },
+          "triggers": [
+            { "active": true, "delta": 1.6, "name": "DeltaAbsorption" },
+            { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 }
+          ]
         })");
     }
 
@@ -128,7 +134,10 @@ private:
                 for (const auto& entry : fs::recursive_directory_iterator(folder)) {
                     if (entry.is_directory()) {
                         options.push_back(entry.path().string());
-                    } else if (entry.is_regular_file() && entry.path().extension() == ".csv") {
+                    } 
+                    // Liest jetzt .csv UND .json Dateien
+                    else if (entry.is_regular_file() && 
+                            (entry.path().extension() == ".csv" || entry.path().extension() == ".json")) {
                         options.push_back(entry.path().string());
                     }
                 }
@@ -187,9 +196,20 @@ private:
             
             if (j.is_string()) {
                 row.is_string = true;
+                
+                // Binance CSVs einlesen
                 if (current_path.find("filepath") != std::string::npos || current_path.find("data_path") != std::string::npos) {
                     row.is_file_selector = true;
                     row.file_options = ScanDirectory("binance");
+                    
+                    std::string current_val = j.get<std::string>();
+                    auto it = std::find(row.file_options.begin(), row.file_options.end(), current_val);
+                    if (it != row.file_options.end()) row.current_file_idx = std::distance(row.file_options.begin(), it);
+                }
+                // Config Profile JSONs einlesen
+                else if (current_path.find("config_profile") != std::string::npos) {
+                    row.is_file_selector = true;
+                    row.file_options = ScanDirectory("configs");
                     
                     std::string current_val = j.get<std::string>();
                     auto it = std::find(row.file_options.begin(), row.file_options.end(), current_val);
@@ -217,6 +237,13 @@ private:
         } else {
             config_data = CreateDefaultConfig();
             needs_save = true;
+        }
+
+        // Automatische Synchronisation des config_profile Pfades im Menü
+        if (config_data.contains("backtest")) {
+            if (config_data["backtest"].value("config_profile", "") != config_path) {
+                config_data["backtest"]["config_profile"] = config_path;
+            }
         }
 
         if (needs_save) {
@@ -269,20 +296,29 @@ private:
     }
 
 public:
-    PageConfig() { LoadConfigSmart(); }
+    // get active config path for backend
+    std::string GetActiveConfigPath() const { return config_path; }
+
+    PageConfig() { 
+        fs::create_directories("configs"); // Stellt sicher, dass der Ordner existiert
+        fs::create_directories("binance");
+        LoadConfigSmart(); 
+    }
     
     bool BlocksGlobalHotkeys() const override {
         return menu_state == MenuState::INLINE_EDIT || menu_state == MenuState::SUBMENU_EDIT;
     }
 
-    void OnEnter() override { LoadConfigSmart(); }
+    void OnEnter() override { 
+        LoadConfigSmart(true); 
+    }
 
     void Render(struct ncplane* stdplane) override {
         unsigned int dimy, dimx;
         ncplane_dim_yx(stdplane, &dimy, &dimx);
 
         int start_y = 11; 
-        
+
         if (categories.empty()) {
             UITheme::StyleAlert(stdplane);
             ncplane_putstr_yx(stdplane, start_y, 3, "ERR: NO EDITABLE PARAMS.");
@@ -423,7 +459,7 @@ public:
                         else UITheme::StyleTextDefault(stdplane);
                     }
                     
-                    ncplane_putstr_yx(stdplane, y, 63, val_str.c_str());
+                    ncplane_putstr_yx(stdplane, y, 75, val_str.c_str());
                     UITheme::StyleBackground(stdplane);
                 }
             } 
@@ -443,11 +479,11 @@ public:
 
                     if (sub_state.cursor_y == cur_idx && menu_state == MenuState::SUBMENU_EDIT) {
                         UITheme::StyleTextDefault(stdplane); UITheme::StyleEditBackground(stdplane);
-                        ncplane_putstr_yx(stdplane, y, 55, ("[" + edit_buffer + "_]").c_str());
+                        ncplane_putstr_yx(stdplane, y, 65, ("[" + edit_buffer + "_]").c_str());
                     } else {
                         if (sub_state.cursor_y == cur_idx) UITheme::StyleDataValue(stdplane);
                         else UITheme::StyleTextDefault(stdplane);
-                        ncplane_putstr_yx(stdplane, y, 55, val.c_str());
+                        ncplane_putstr_yx(stdplane, y, 65, val.c_str());
                     }
                     UITheme::StyleBackground(stdplane);
                 };
@@ -455,7 +491,7 @@ public:
                 if (sub_state.cursor_y == 0) UITheme::StyleCursorActive(stdplane); else UITheme::StyleTextMuted(stdplane);
                 ncplane_putstr_yx(stdplane, start_y + 3, 47, "Type:");
                 if (sub_state.cursor_y == 0) UITheme::StyleDataValue(stdplane); else UITheme::StyleTextDefault(stdplane);
-                ncplane_putstr_yx(stdplane, start_y + 3, 55, sub_state.is_range ? "< RANGE >" : "< STATIC >");
+                ncplane_putstr_yx(stdplane, start_y + 3, 65, sub_state.is_range ? "< RANGE >" : "< STATIC >");
 
                 if (sub_state.is_range) {
                     draw_field(1, start_y + 5, "Min:",  "[" + sub_state.min_str + "]");
@@ -565,9 +601,21 @@ public:
                 if (key == NCKEY_LEFT && row.current_file_idx > 0) row.current_file_idx--;
                 else if (key == NCKEY_RIGHT && row.current_file_idx < static_cast<int>(row.file_options.size()) - 1) row.current_file_idx++;
                 else if (key == NCKEY_ENTER) {
-                    config_data[row.ptr] = row.file_options[row.current_file_idx];
-                    SaveAndReload();
-                    menu_state = MenuState::PARAMETERS;
+                    std::string selected_file = row.file_options[row.current_file_idx];
+                    config_data[row.ptr] = selected_file;
+                    
+                    // Besonderes Verhalten beim Profil-Wechsel: Lädt das UI sofort neu!
+                    if (row.display_path == "config_profile") {
+                        {
+                            std::ofstream out(config_path);
+                            if (out.is_open()) out << config_data.dump(2);
+                        }
+                        config_path = selected_file;
+                        LoadConfigSmart(false); // UI mit neuem Profil neu rendern
+                    } else {
+                        SaveAndReload();
+                        menu_state = MenuState::PARAMETERS;
+                    }
                 }
             } else {
                 if (key == NCKEY_ENTER) {

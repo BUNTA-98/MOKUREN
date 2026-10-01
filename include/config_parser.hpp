@@ -97,40 +97,49 @@ struct TradeManagementConfig {
 };
 
 struct AppConfig {
+  // --- ENVIRONMENT (Inklusive Filepath!) ---
+  std::string filepath = "";
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
+  int vwap_reset_hour = 0;
   double tick_size = 1.0;
   unsigned int max_cores = 0;
+  double slippage_pct = 0.0002;
 
+  // --- MODULES ---
   std::vector<ComponentConfig> triggers;
   std::vector<ComponentConfig> filters;
   std::vector<ComponentConfig> risk_modules;
   
+  // --- TRADE MANAGEMENT ---
   TradeManagementConfig tm_config;
 
+  // --- RISK ---
   double sl_pct = 0.002;
   double tp_pct = 0.01;
   double risk_per_trade_pct = 0.01;
   double min_distance_dollars = 10.0;
   double max_daily_loss = 400.0;
-  double slippage_pct = 0.0002;
 
   static AppConfig Load(const json& j) {
     AppConfig cfg;
 
-    cfg.interval_ms = j["environment"].value("interval_ms", 60000);
-    cfg.macro_interval_ms = j["environment"].value("macro_interval_ms", 900000);
-    cfg.tick_size = j["environment"].value("tick_size", 1.0);
-    cfg.slippage_pct = j["environment"].value("slippage_pct", 0.0002);
+    if (j.contains("environment")) {
+      cfg.filepath = j["environment"].value("filepath", "");
+      cfg.interval_ms = j["environment"].value("interval_ms", 60000);
+      cfg.macro_interval_ms = j["environment"].value("macro_interval_ms", 900000);
+      cfg.tick_size = j["environment"].value("tick_size", 1.0);
+      cfg.slippage_pct = j["environment"].value("slippage_pct", 0.0002);
+      cfg.vwap_reset_hour = j["environment"].value("vwap_reset_hour", 0);
 
-    if (j["environment"].contains("max_cores") && j["environment"]["max_cores"] > 0) {
-      cfg.max_cores = j["environment"]["max_cores"];
-    } else {
-      cfg.max_cores = std::thread::hardware_concurrency();
-      if (cfg.max_cores == 0) cfg.max_cores = 4;
+      if (j["environment"].contains("max_cores") && j["environment"]["max_cores"] > 0) {
+        cfg.max_cores = j["environment"]["max_cores"];
+      } else {
+        cfg.max_cores = std::thread::hardware_concurrency();
+        if (cfg.max_cores == 0) cfg.max_cores = 4;
+      }
     }
 
-    // --- NEU: Zuerst auf Root-Ebene suchen, dann Fallback ---
     if (j.contains("triggers")) {
       for (const auto &item : j["triggers"]) cfg.triggers.push_back({item["name"], item});
     } else if (j.contains("strategy") && j["strategy"].contains("triggers")) {
@@ -143,15 +152,17 @@ struct AppConfig {
       for (const auto &item : j["strategy"]["filters"]) cfg.filters.push_back({item["name"], item});
     }
 
-    cfg.sl_pct = j["risk"].value("sl_pct", 0.002);
-    cfg.tp_pct = j["risk"].value("tp_pct", 0.01);
-    cfg.risk_per_trade_pct = j["risk"].value("risk_per_trade_pct", 0.01);
-    cfg.min_distance_dollars = j["risk"].value("min_distance_dollars", 10.0);
-    cfg.max_daily_loss = j["risk"].value("max_daily_loss", 400.0);
+    if (j.contains("risk")) {
+      cfg.sl_pct = j["risk"].value("sl_pct", 0.002);
+      cfg.tp_pct = j["risk"].value("tp_pct", 0.01);
+      cfg.risk_per_trade_pct = j["risk"].value("risk_per_trade_pct", 0.01);
+      cfg.min_distance_dollars = j["risk"].value("min_distance_dollars", 10.0);
+      cfg.max_daily_loss = j["risk"].value("max_daily_loss", 400.0);
 
-    if (j["risk"].contains("modules")) {
-      for (const auto &item : j["risk"]["modules"]) {
-        cfg.risk_modules.push_back({item["name"], item});
+      if (j["risk"].contains("modules")) {
+        for (const auto &item : j["risk"]["modules"]) {
+          cfg.risk_modules.push_back({item["name"], item});
+        }
       }
     }
 

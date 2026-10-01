@@ -1,11 +1,19 @@
 {
+  "backtest": {
+    "config_profile": "configs/default.json",
+    "wfa_in_sample_days": 14,
+    "wfa_mode": false,
+    "wfa_out_of_sample_days": 7,
+    "wfa_step_days": 7
+  },
   "environment": {
-    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-06.csv",
+    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-08.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
     "slippage_pct": 0.0002,
-    "tick_size": 0.1
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
   },
   "filters": [
     {
@@ -47,6 +55,16 @@
     {
       "active": false,
       "name": "POCTrend"
+    },
+    {
+      "active": true,
+      "name": "VwapTrend",
+      "require_trend_alignment": true
+    },
+    {
+      "active": true,
+      "lookback": 5,
+      "name": "CVDDivergence"
     }
   ],
   "risk": {
@@ -69,29 +87,24 @@
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_pct": 0.02,
-    "tp_pct": 0.1
+    "sl_price_pct": 0.004,
+    "tp_r": 3.0
   },
   "trade_management": {
     "break_even": {
-      "target_pct": 0.001,
-      "trigger_pct": 0.005
+      "enabled": false,
+      "target_r": 0.25,
+      "trigger_r": 1.5
     },
     "scale_out": {
       "enabled": false,
       "fraction": 0.5,
-      "trigger_pct": 0.006
+      "trigger_r": 2.0
     },
     "trailing": {
-      "distance_pct": 0.005,
+      "distance_r": 0.5,
       "enabled": false,
-      "trigger_pct": {
-        "max": 0.1,
-        "min": 0.01,
-        "mode": "range",
-        "step": 0.01,
-        "val": 0.01
-      }
+      "trigger_r": 2.5
     }
   },
   "triggers": [
