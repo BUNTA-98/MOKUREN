@@ -87,8 +87,8 @@ private:
               { "active": true, "cooldown_ms": 1800000, "name": "AntiRevengeLock" }
             ],
             "risk_per_trade_pct": 0.01,
-            "sl_pct": 0.004,
-            "tp_pct": 0.012
+            "sl_price_pct": 0.004,
+            "tp_r": 3.0
           },
           "filters": [
             { "active": true, "lookback": 1440, "name": "MacroTrend" },
@@ -104,9 +104,9 @@ private:
             { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 }
           ],
           "trade_management": {
-            "break_even": { "target_pct": 0.001, "trigger_pct": 0.006 },
-            "scale_out": { "enabled": false, "fraction": 0.5, "trigger_pct": 0.008 },
-            "trailing": { "distance_pct": 0.003, "enabled": true, "trigger_pct": 0.01 }
+            "break_even": { "enabled": false, "target_r": 0.25, "trigger_r": 1.5 },
+            "scale_out": { "enabled": false, "fraction": 0.5, "trigger_r": 2.0 },
+            "trailing": { "distance_r": 0.5, "enabled": true, "trigger_r": 2.5 }
           }
         })");
     }
@@ -333,7 +333,7 @@ public:
             bool has_active_flag = false;
             bool is_module_active = false;
             for (const auto& row : grouped_rows[current_cat][sub_name]) {
-                if (row.display_path == "active") {
+                if (row.display_path == "active" || row.display_path == "enabled") {
                     has_active_flag = true;
                     if (config_data.contains(row.ptr) && config_data[row.ptr].is_boolean()) {
                         is_module_active = config_data[row.ptr].get<bool>();

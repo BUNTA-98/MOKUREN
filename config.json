@@ -2,11 +2,11 @@
   "backtest": {
     "wfa_in_sample_days": 14.0,
     "wfa_mode": false,
-    "wfa_out_of_sample_days": 7,
-    "wfa_step_days": 7
+    "wfa_out_of_sample_days": 7.0,
+    "wfa_step_days": 7.0
   },
   "environment": {
-    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-06.csv",
+    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-08.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -15,25 +15,25 @@
   },
   "filters": [
     {
-      "active": true,
-      "lookback": 1440,
+      "active": false,
+      "lookback": 4.0,
       "name": "MacroTrend"
     },
     {
-      "active": true,
+      "active": false,
       "min_volume": 50.0,
       "name": "MinVolume"
     },
     {
       "active": true,
-      "lookback": 20,
+      "lookback": 60.0,
       "name": "RVOL",
-      "threshold": 1.5
+      "threshold": 2.0
     },
     {
-      "active": true,
-      "lookback": 14,
-      "min_atr": 25.0,
+      "active": false,
+      "lookback": 60.0,
+      "min_atr": 15.0,
       "name": "ATRChop"
     },
     {
@@ -75,34 +75,47 @@
       }
     ],
     "risk_per_trade_pct": 0.01,
-    "sl_pct": 0.004,
-    "tp_pct": 0.012
+    "sl_price_pct": {
+      "max": 0.01,
+      "min": 0.001,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.001
+    },
+    "tp_r": {
+      "max": 10.0,
+      "min": 2.0,
+      "mode": "range",
+      "step": 1.0,
+      "val": 2.0
+    }
   },
   "trade_management": {
     "break_even": {
-      "target_pct": 0.001,
-      "trigger_pct": 0.006
+      "enabled": true,
+      "target_r": 0.5,
+      "trigger_r": 2.0
     },
     "scale_out": {
       "enabled": false,
       "fraction": 0.5,
-      "trigger_pct": 0.008
+      "trigger_r": 2.0
     },
     "trailing": {
-      "distance_pct": 0.003,
-      "enabled": true,
-      "trigger_pct": 0.01
+      "distance_r": 0.5,
+      "enabled": false,
+      "trigger_r": 2.0
     }
   },
   "triggers": [
     {
       "active": true,
       "delta": {
-        "max": 2.0,
-        "min": 0.8,
+        "max": 10.0,
+        "min": 1.0,
         "mode": "range",
-        "step": 0.2,
-        "val": 1.2
+        "step": 1.0,
+        "val": 1.0
       },
       "name": "DeltaAbsorption"
     },

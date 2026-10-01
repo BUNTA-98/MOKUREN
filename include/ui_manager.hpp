@@ -28,36 +28,57 @@ private:
     std::unique_ptr<UIPage> current_page;
 
     void DrawGlobalHeader() {
-        unsigned int dimy, dimx;
+        
+    unsigned int dimy, dimx;
         ncplane_dim_yx(stdplane, &dimy, &dimx);
+    
 
-        std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
+    //---HEADER----    
+    
+    int hdr_origin_y = 1;
+    std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
+      std::string header_L1 = "---//O-O\\\\---- // <MOKUREN MFT ENGINE> //";
+      std::string header_L2 = "--||O-O-O||-- //         V0.5         //";
+      std::string header_L3 = "---\\\\O-O//-- //                      //";
+    std::string usr_id= " >>> USR_ID  <BUNTA>"; 
+        
+    UITheme::StyleTextDefault(stdplane);
+    ncplane_putstr_yx(stdplane, hdr_origin_y + 1, 3, header_L1.c_str());
+      ncplane_putstr_yx(stdplane, hdr_origin_y, 3, hline.c_str());
+      
+    UITheme::StyleTextDefault(stdplane);
+    ncplane_putstr_yx(stdplane, hdr_origin_y + 2, 3, header_L2.c_str());
+      ncplane_putstr_yx(stdplane, hdr_origin_y + 3, 3, header_L3.c_str());
+         UITheme::StyleCursorActive(stdplane);
+      ncplane_putstr_yx(stdplane, hdr_origin_y + 3, 29, usr_id.c_str());
+    UITheme::StyleTextDefault(stdplane);
+    ncplane_putstr_yx(stdplane, hdr_origin_y + 4, 3, hline.c_str());
+      
 
         UITheme::StyleTextDefault(stdplane);
         std::string title = (current_page_id == PageID::CONFIG) ? "VIEW: CONFIG MATRIX" : 
                             (current_page_id == PageID::SCANNER) ? "VIEW: GRID SCANNER" : 
                             (current_page_id == PageID::EQUITY) ? "VIEW: EQUITY CURVE" : "VIEW: FOOTPRINT";
-        
+                              
         int title_x = dimx > (title.length() + 5) ? dimx - title.length() - 5 : 60;
-        ncplane_putstr_yx(stdplane, 5, title_x, title.c_str());
-
-        UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 7, 3, hline.c_str());
+        ncplane_putstr_yx(stdplane, hdr_origin_y + 2, title_x, title.c_str());
         
+    //PAGE BAR 
+    int pg_bar_y = hdr_origin_y + 5;
         (current_page_id == PageID::INSPECTOR) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 8, 3, "[1] INSPECTOR");
+        ncplane_putstr_yx(stdplane, pg_bar_y, 3, "[1] INSPECTOR");
         
         (current_page_id == PageID::EQUITY) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 8, 20, "[2] EQUITY");
+        ncplane_putstr_yx(stdplane, pg_bar_y, 20, "[2] EQUITY");
         
         (current_page_id == PageID::SCANNER) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 8, 35, "[3] SCANNER");
+        ncplane_putstr_yx(stdplane, pg_bar_y, 35, "[3] SCANNER");
         
         (current_page_id == PageID::CONFIG) ? UITheme::StyleDataValue(stdplane) : UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 8, 50, "[4] CONFIG");
+        ncplane_putstr_yx(stdplane, pg_bar_y, 50, "[4] CONFIG");
 
         UITheme::StyleTextMuted(stdplane);
-        ncplane_putstr_yx(stdplane, 9, 3, hline.c_str());
+        ncplane_putstr_yx(stdplane, pg_bar_y + 1, 3, hline.c_str());
         
         int footer_x = dimx > 40 ? dimx - 35 : 5;
         ncplane_putstr_yx(stdplane, dimy - 1, footer_x, "[Q] DISCONNECT   [TAB] NEXT VIEW");
@@ -88,19 +109,11 @@ private:
                     };
                     find_path(winning_run.full_config);
 
-                    if (winning_run.params_str.find("WFA_Mode") != std::string::npos) {
-                        this->last_replay = ReplayResult(); 
-                        for (const auto& t : winning_run.trade_log) {
-                            TradeInfo ti;
-                            ti.is_long = (t.direction == SignalDirection::BUY);
-                            ti.entry_price = t.entry_price;
-                            ti.exit_price = t.exit_price;
-                            ti.pnl = t.net_profit;
-                            ti.candle_idx = 0; 
-                            ti.exit_candle_idx = 0;
-                            this->last_replay.trades.push_back(ti);
-                        }
+                    // --- INTEGRIERTES WFA FOOTPRINT STITCHING ---
+                    if (winning_run.params_str.find("WFA_Mode") != std::string::npos && !winning_run.wfa_configs.empty()) {
+                        this->last_replay = this->engine.ReplayWFA(data_path, winning_run.wfa_configs);
                     } else {
+                        // NORMALER GRID-MODE
                         this->last_replay = this->engine.ReplaySingleRun(data_path, winning_run.full_config);
                     }
                     

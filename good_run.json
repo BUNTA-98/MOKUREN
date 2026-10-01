@@ -1,4 +1,9 @@
-{
+{"backtest": {
+    "wfa_in_sample_days": 14.0,
+    "wfa_mode": false,
+    "wfa_out_of_sample_days": 7,
+    "wfa_step_days": 7
+  },
   "environment": {
     "filepath": "binance/monthly/08_26.csv",
     "interval_ms": 60000,
