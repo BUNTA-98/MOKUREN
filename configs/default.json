@@ -7,7 +7,7 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-08.csv",
+    "filepath": "binance/2026/BTCUSDT-aggTrades-2026-07.csv",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -17,20 +17,20 @@
   },
   "filters": [
     {
-      "active": true,
-      "lookback": 1440,
+      "active": false,
+      "lookback": 4.0,
       "name": "MacroTrend"
     },
     {
-      "active": true,
+      "active": false,
       "min_volume": 2.0,
       "name": "MinVolume"
     },
     {
-      "active": true,
-      "lookback": 20,
+      "active": false,
+      "lookback": 10.0,
       "name": "RVOL",
-      "threshold": 2.0
+      "threshold": 3.0
     },
     {
       "active": true,
@@ -57,13 +57,19 @@
       "name": "POCTrend"
     },
     {
-      "active": true,
+      "active": false,
       "name": "VwapTrend",
-      "require_trend_alignment": true
+      "require_trend_alignment": false
     },
     {
       "active": true,
-      "lookback": 5,
+      "lookback": {
+        "max": 8.0,
+        "min": 5.0,
+        "mode": "range",
+        "step": 1.0,
+        "val": 5.0
+      },
       "name": "CVDDivergence"
     }
   ],
@@ -77,7 +83,7 @@
       },
       {
         "active": true,
-        "max_leverage": 10.0,
+        "max_leverage": 8.0,
         "name": "MaxLeverageLock"
       },
       {
@@ -87,19 +93,19 @@
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_price_pct": 0.004,
-    "tp_r": 3.0
+    "sl_price_pct": 0.005,
+    "tp_r": 3.5
   },
   "trade_management": {
     "break_even": {
-      "enabled": false,
+      "enabled": true,
       "target_r": 0.25,
       "trigger_r": 1.5
     },
     "scale_out": {
       "enabled": false,
       "fraction": 0.5,
-      "trigger_r": 2.0
+      "trigger_r": 4.0
     },
     "trailing": {
       "distance_r": 0.5,
@@ -110,7 +116,13 @@
   "triggers": [
     {
       "active": true,
-      "delta": 1.6,
+      "delta": {
+        "max": 2.6,
+        "min": 1.2,
+        "mode": "range",
+        "step": 0.2,
+        "val": 1.2
+      },
       "name": "DeltaAbsorption"
     },
     {
