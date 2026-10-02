@@ -2,3 +2,6 @@ build/
 binance/
 docs/
 runs/
+venv/
+configs/
+build/
