@@ -22,15 +22,9 @@
       "name": "MacroTrend"
     },
     {
-      "active": true,
+      "active": false,
       "name": "OrderbookImbalance",
-      "ratio": {
-        "max": 10.0,
-        "min": 1.0,
-        "mode": "range",
-        "step": 1.0,
-        "val": 1.0
-      }
+      "ratio": 1.0
     },
     {
       "active": false,
@@ -38,14 +32,20 @@
       "name": "MinVolume"
     },
     {
-      "active": true,
+      "active": false,
       "lookback": 100.0,
       "name": "RVOL",
       "threshold": 3.0
     },
     {
-      "active": true,
-      "lookback": 25.0,
+      "active": false,
+      "lookback": {
+        "max": 50.0,
+        "min": 25.0,
+        "mode": "range",
+        "step": 1.0,
+        "val": 25.0
+      },
       "min_atr": 40.0,
       "name": "ATRChop"
     },
@@ -74,13 +74,7 @@
     },
     {
       "active": false,
-      "lookback": {
-        "max": 10.0,
-        "min": 6.0,
-        "mode": "range",
-        "step": 1.0,
-        "val": 6.0
-      },
+      "lookback": 6.0,
       "name": "CVDDivergence"
     }
   ],
@@ -104,8 +98,14 @@
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_price_pct": 0.005,
-    "tp_r": 3.5
+    "sl_price_pct": {
+      "max": 0.01,
+      "min": 0.001,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.001
+    },
+    "tp_r": 6.0
   },
   "trade_management": {
     "break_even": {
@@ -127,13 +127,7 @@
   "triggers": [
     {
       "active": true,
-      "delta": {
-        "max": 3.5,
-        "min": 1.5,
-        "mode": "range",
-        "step": 0.5,
-        "val": 1.5
-      },
+      "delta": 1.5,
       "name": "DeltaAbsorption"
     },
     {
@@ -141,6 +135,13 @@
       "levels": 6.0,
       "name": "StackedImbalance",
       "ratio": 3.0
+    },
+    {
+      "active": false,
+      "name": "SpoofHunter",
+      "lookback_ms": 500,
+      "min_wall_qty": 30.0,
+      "drop_threshold": 0.9
     }
   ]
 }

@@ -290,8 +290,15 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                     bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
                     eng.htf_aggregator->ProcessTrade(htf_bar, trade);
                     
-                    // context injected with vwap and l2 data
-                    MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar, eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2()};
+                    // context injected with vwap, l2 state and l2 history buffer
+                    MarketContext context{
+                        eng.aggregator->GetHistory(), 
+                        live_bar, 
+                        htf_bar, 
+                        eng.aggregator->GetSessionMetrics(), 
+                        eng.aggregator->GetLatestL2(), 
+                        eng.aggregator->GetL2History()
+                    };
 
                     TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
 
@@ -484,8 +491,15 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
                         bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
                         eng.htf_aggregator->ProcessTrade(htf_bar, trade);
                         
-                        // context injected with vwap and l2 data
-                        MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar, eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2()};
+                        // in-sample context injected with vwap, l2 state and l2 history buffer
+                        MarketContext context{
+                            eng.aggregator->GetHistory(), 
+                            live_bar, 
+                            htf_bar, 
+                            eng.aggregator->GetSessionMetrics(), 
+                            eng.aggregator->GetLatestL2(), 
+                            eng.aggregator->GetL2History()
+                        };
 
                         TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
                         if (raw_signal.direction != SignalDirection::NONE) {
@@ -539,8 +553,15 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
             bool candle_finished = oos_eng.aggregator->ProcessTrade(oos_live, trade);
             oos_eng.htf_aggregator->ProcessTrade(oos_htf, trade);
             
-            // out-of-sample context injected with vwap and l2 data
-            MarketContext context{oos_eng.aggregator->GetHistory(), oos_live, oos_htf, oos_eng.aggregator->GetSessionMetrics(), oos_eng.aggregator->GetLatestL2()};
+            // out-of-sample context injected with vwap, l2 state and l2 history buffer
+            MarketContext context{
+                oos_eng.aggregator->GetHistory(), 
+                oos_live, 
+                oos_htf, 
+                oos_eng.aggregator->GetSessionMetrics(), 
+                oos_eng.aggregator->GetLatestL2(), 
+                oos_eng.aggregator->GetL2History()
+            };
 
             TradeSignal raw_signal = oos_eng.alpha->Evaluate(context, candle_finished);
             if (raw_signal.direction != SignalDirection::NONE) {
@@ -645,8 +666,15 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
         bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
         eng.htf_aggregator->ProcessTrade(htf_bar, trade);
         
-        // replay context injected with vwap and l2 data
-        MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar, eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2()};
+        // replay context injected with vwap, l2 state and l2 history buffer
+        MarketContext context{
+            eng.aggregator->GetHistory(), 
+            live_bar, 
+            htf_bar, 
+            eng.aggregator->GetSessionMetrics(), 
+            eng.aggregator->GetLatestL2(), 
+            eng.aggregator->GetL2History()
+        };
 
         TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
         if (raw_signal.direction != SignalDirection::NONE) {
@@ -769,8 +797,15 @@ ReplayResult Mokuren::ReplayWFA(const std::string &/*ignored*/, const std::vecto
             bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
             eng.htf_aggregator->ProcessTrade(htf_bar, trade);
             
-            // wfa replay context injected with vwap and l2 data
-            MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar, eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2()};
+            // wfa replay context injected with vwap, l2 state and l2 history buffer
+            MarketContext context{
+                eng.aggregator->GetHistory(), 
+                live_bar, 
+                htf_bar, 
+                eng.aggregator->GetSessionMetrics(), 
+                eng.aggregator->GetLatestL2(), 
+                eng.aggregator->GetL2History()
+            };
 
             TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
             if (raw_signal.direction != SignalDirection::NONE) {

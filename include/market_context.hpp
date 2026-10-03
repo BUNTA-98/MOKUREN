@@ -8,5 +8,6 @@ struct MarketContext {
   const Bar &htf_bar;
   
   SessionMetrics session; 
-  L2Snapshot latest_l2; // <--- NEU: Die direkte Live-Leitung ins Orderbuch
+  L2Snapshot latest_l2; 
+  const L2RingBuffer &l2_history; // <--- NEU: constant reference to the ring buffer
 };

@@ -12,13 +12,13 @@ if(POLICY CMP0115)
   cmake_policy(SET CMP0115 NEW)
 endif()
 
-# 1. system-bibliotheken (threads & pkgconfig für notcurses)
+# system libs
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 include(FetchContent)
 
-# 2. json-bibliothek
+# json lib
 FetchContent_Declare(
   json 
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
@@ -26,21 +26,53 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# 3. notcurses c++ binding finden
+# notcurses bindings
 pkg_check_modules(NOTCURSES REQUIRED IMPORTED_TARGET notcurses++)
 
-# Sammelt automatisch alle .cpp Dateien im src-Ordner
+# collect source files
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
-# 4. executable mit all deinen source-dateien
+# main executable
 add_executable(mokuren ${SOURCES})
 
-# 5. include ordner bekanntmachen
+# include dirs
 target_include_directories(mokuren PRIVATE include)
 
-# 6. alle bibliotheken verlinken
+# link libs
 target_link_libraries(mokuren PRIVATE 
   Threads::Threads 
   nlohmann_json::nlohmann_json
   PkgConfig::NOTCURSES
+)
+
+# --- test environment ---
+include(FetchContent)
+
+FetchContent_Declare(
+  Catch2
+  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+  GIT_TAG        v3.5.2
+)
+FetchContent_MakeAvailable(Catch2)
+
+enable_testing()
+
+# collect test files
+file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "test/*.cpp")
+
+# test executable
+add_executable(engine_tests ${TEST_SOURCES})
+
+# collect engine code without main.cpp
+file(GLOB ENGINE_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+list(REMOVE_ITEM ENGINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+
+# attach engine code and include dirs
+target_sources(engine_tests PRIVATE ${ENGINE_SOURCES})
+target_include_directories(engine_tests PRIVATE src include)
+
+# link test libs
+target_link_libraries(engine_tests PRIVATE 
+  Catch2::Catch2WithMain
+  nlohmann_json::nlohmann_json
 )

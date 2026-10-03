@@ -21,7 +21,7 @@ public:
         AppConfig cfg = AppConfig::Load(winning_config);
         EngineInstance eng = StrategyFactory::Build(cfg);
 
-        // FIX: trade management config zwingend in den papertrader injizieren!
+        // inject trade management config into paper trader
         auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
         if (pt) {
             pt->ApplyManagementConfig(
@@ -40,7 +40,16 @@ public:
 
             bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
             eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-            MarketContext context{eng.aggregator->GetHistory(), live_bar, htf_bar};
+            
+            // create context with all required buffers and metrics
+            MarketContext context{
+                eng.aggregator->GetHistory(), 
+                live_bar, 
+                htf_bar, 
+                eng.aggregator->GetSessionMetrics(), 
+                eng.aggregator->GetLatestL2(), 
+                eng.aggregator->GetL2History()
+            };
 
             TradeSignal raw_signal = eng.alpha->Evaluate(context, candle_finished);
             if (raw_signal.direction != SignalDirection::NONE) {
@@ -76,7 +85,7 @@ public:
             ti.exit_price = t.exit_price;
             ti.pnl = t.net_profit;
             
-            // Finde Entry Candle
+            // find entry candle
             auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
                 [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
                 
@@ -87,7 +96,7 @@ public:
                 ti.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
             }
 
-            // Finde Exit Candle
+            // find exit candle
             auto exit_it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.exit_time, 
                 [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
                 

@@ -16,7 +16,7 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
     active_triggers.push_back(t);
   }
 
-  // wire single trigger or combine multiple with OR logic
+  // wire single trigger or combine multiple with or-logic
   if (active_triggers.size() == 1) {
     if (active_triggers[0].name == "DeltaAbsorption") {
       double delta = active_triggers[0].params.value("delta", 1.0);
@@ -25,6 +25,11 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
       double ratio = active_triggers[0].params.value("ratio", 1.5);
       int levels = active_triggers[0].params.value("levels", 2);
       inst.trigger = std::make_unique<StackedImbalanceTrigger>(ratio, levels);
+    } else if (active_triggers[0].name == "SpoofHunter") {
+      int lookback = active_triggers[0].params.value("lookback_ms", 500);
+      double min_wall = active_triggers[0].params.value("min_wall_qty", 30.0);
+      double drop = active_triggers[0].params.value("drop_threshold", 0.9);
+      inst.trigger = std::make_unique<SpoofHunterTrigger>(lookback, min_wall, drop);
     }
   } else if (active_triggers.size() > 1) {
     auto or_trigger = std::make_unique<OR_Trigger>();
@@ -37,6 +42,12 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
         double ratio = t.params.value("ratio", 1.5);
         int levels = t.params.value("levels", 2);
         inst.sub_triggers.push_back(std::make_unique<StackedImbalanceTrigger>(ratio, levels));
+        or_trigger->AddTrigger(inst.sub_triggers.back().get());
+      } else if (t.name == "SpoofHunter") {
+        int lookback = t.params.value("lookback_ms", 500);
+        double min_wall = t.params.value("min_wall_qty", 30.0);
+        double drop = t.params.value("drop_threshold", 0.9);
+        inst.sub_triggers.push_back(std::make_unique<SpoofHunterTrigger>(lookback, min_wall, drop));
         or_trigger->AddTrigger(inst.sub_triggers.back().get());
       }
     }
@@ -99,7 +110,6 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
       inst.filters.push_back(std::make_unique<ATRFilter>(min_atr, period));
       inst.pipeline->AddFilter(inst.filters.back().get());
 
-    // --- NEU: ORDERBOOK IMBALANCE FILTER ---
     } else if (f.name == "OrderbookImbalance") {
       double ratio = f.params.value("ratio", 3.0);
       inst.filters.push_back(std::make_unique<OrderbookImbalanceFilter>(ratio));
