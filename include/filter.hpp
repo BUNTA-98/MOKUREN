@@ -1,4 +1,3 @@
-
 #pragma once
 #include "aggregator.hpp"
 #include "market_context.hpp"
@@ -13,6 +12,7 @@ public:
                           TradeSignal intended_signal) = 0;
 };
 
+// blocks trade if last candle volume is too low
 class MinVolumeFilter : public IFilter {
 private:
   double min_volume_;
@@ -22,90 +22,71 @@ public:
 
   bool AllowTrade(const MarketContext &context,
                   TradeSignal intended_signal) override {
-    if (context.history.empty())
-      return false;
-    // Blockiert den Trade, wenn die letzte Kerze extrem wenig Volumen hatte
-    // (Choppiness)
+    if (context.history.empty()) return false;
     return context.history.back().total_volume >= min_volume_;
   }
 };
 
-//RELATIVE VOLUME
+// blocks trade if relative volume (rvol) is below threshold
 class RVOLFilter : public IFilter {
 private:
   double rvol_threshold_;
   int period_;
 
 public:
-  // Standardmäßig fordern wir 150 % (1.5) des durchschnittlichen Volumens der letzten 20 Kerzen
   RVOLFilter(double rvol_threshold = 1.5, int period = 20)
       : rvol_threshold_(rvol_threshold), period_(period) {}
 
   bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
-    // Wir benötigen N vorherige Kerzen + die aktuelle Kerze
     if (context.history.size() < period_ + 1) return false;
 
     double volume_sum = 0.0;
     size_t history_size = context.history.size();
 
-    // 1. SMA des Volumens der letzten N Kerzen berechnen (OHNE die aktuelle)
+    // calculate sma of previous candles
     for (size_t i = history_size - 1 - period_; i < history_size - 1; ++i) {
       volume_sum += context.history[i].total_volume;
     }
 
     double avg_volume = volume_sum / period_;
-    
-    // Schutz vor Division durch Null bei extrem illiquiden Phasen
     if (avg_volume == 0.0) return false; 
 
-    // 2. Relatives Volumen der aktuellsten Kerze ermitteln
+    // check if current volume meets ratio
     double current_volume = context.history.back().total_volume;
-    double current_rvol = current_volume / avg_volume;
-
-    // Trade nur erlauben, wenn das aktuelle Volumen den Schwellenwert sprengt
-    return current_rvol >= rvol_threshold_;
+    return (current_volume / avg_volume) >= rvol_threshold_;
   }
 };
 
-//ATR CHOP COP
+// blocks trade if average true range (atr) is below minimum volatility
 class ATRFilter : public IFilter {
 private:
   double min_atr_;
   int period_;
 
 public:
-  // Beispiel: Wir fordern mindestens 20$ durchschnittliche Bewegung über 14 Kerzen
   ATRFilter(double min_atr = 20.0, int period = 14)
       : min_atr_(min_atr), period_(period) {}
 
   bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
-    // Wir benötigen N Kerzen + 1 vorherige für die True-Range-Berechnung
     if (context.history.size() < period_ + 1) return false;
 
     double atr_sum = 0.0;
     size_t size = context.history.size();
 
-    // Average True Range (ATR) der letzten N Kerzen berechnen
+    // calc true range and sum it up
     for (size_t i = size - period_; i < size; ++i) {
       double high_low = context.history[i].high - context.history[i].low;
       double high_close = std::abs(context.history[i].high - context.history[i - 1].close);
       double low_close = std::abs(context.history[i].low - context.history[i - 1].close);
       
-      // True Range ist das Maximum dieser drei Werte
-      double true_range = std::max({high_low, high_close, low_close});
-      atr_sum += true_range;
+      atr_sum += std::max({high_low, high_close, low_close});
     }
 
-    double current_atr = atr_sum / period_;
-    
-    // Trade blockieren, wenn die Volatilität das Minimum nicht erreicht
-    return current_atr >= min_atr_;
+    return (atr_sum / period_) >= min_atr_;
   }
 };
 
-
-
-//TIME OF DAY 
+// blocks trade if outside defined trading hours
 class TimeOfDayFilter : public IFilter {
 private:
   int start_hour_, start_min_;
@@ -118,47 +99,35 @@ public:
 
   bool AllowTrade(const MarketContext &context,
                   TradeSignal intended_signal) override {
-    if (context.history.empty())
-      return false;
+    if (context.history.empty()) return false;
     
-    // Unix-Timestamp der Kerze in lokale Zeit umwandeln
+    // convert unix ms to local time
     std::time_t time_val = context.history.back().timestamp_start / 1000;
-    
-    // Eigene, thread-sichere Struktur anlegen
     struct tm time_info; 
-    
-    // localtime_r schreibt das Ergebnis direkt in unsere Variable
     localtime_r(&time_val, &time_info); 
 
-    int current_mins_of_day = time_info.tm_hour * 60 + time_info.tm_min;
-    int start_mins_of_day = start_hour_ * 60 + start_min_;
-    int end_mins_of_day = end_hour_ * 60 + end_min_;
+    int current_mins = time_info.tm_hour * 60 + time_info.tm_min;
+    int start_mins = start_hour_ * 60 + start_min_;
+    int end_mins = end_hour_ * 60 + end_min_;
     
-    // Prüfen, ob die aktuelle Zeit im Zeitfenster liegt
-    return (current_mins_of_day >= start_mins_of_day &&
-            current_mins_of_day <= end_mins_of_day);
+    return (current_mins >= start_mins && current_mins <= end_mins);
   }
 };
 
+// blocks trades against point of control (poc) trend
 class POCTrendFilter : public IFilter {
 public:
   bool AllowTrade(const MarketContext &context,
                   TradeSignal intended_signal) override {
-    if (context.history.empty())
-      return false;
+    if (context.history.empty()) return false;
 
     const Bar &last_bar = context.history.back();
+    if (last_bar.poc_price == 0.0) return true;
 
-    // Wenn kein POC berechnet wurde (sollte nicht passieren), erlaube den Trade
-    if (last_bar.poc_price == 0.0)
-      return true;
-
+    // long above poc, short below poc
     if (intended_signal.direction == SignalDirection::BUY) {
-      // Nur kaufen, wenn wir über dem stärksten Volumenknoten geschlossen haben
       return last_bar.close > last_bar.poc_price;
     } else if (intended_signal.direction == SignalDirection::SELL) {
-      // Nur shorten, wenn wir unter dem stärksten Volumenknoten geschlossen
-      // haben
       return last_bar.close < last_bar.poc_price;
     }
 
@@ -166,144 +135,139 @@ public:
   }
 };
 
+// blocks trades against simple moving average trend
 class MacroTrendFilter : public IFilter {
 private:
   int period_;
 
 public:
-  // Standardmäßig prüfen wir den 200-Perioden-Trend (200 SMA)
   MacroTrendFilter(int period = 200) : period_(period) {}
 
   bool AllowTrade(const MarketContext &context, TradeSignal signal) override {
-    // Wenn wir noch nicht genug Kerzen für den SMA haben, handeln wir nicht
     if (context.history.size() < period_) return false;
 
+    // calc sma
     double sum = 0.0;
-    // Berechne den Durchschnitt der letzten N Kerzen
     for (size_t i = context.history.size() - period_; i < context.history.size(); ++i) {
       sum += context.history[i].close;
     }
+    
     double sma = sum / period_;
     double current_price = context.history.back().close;
 
-    // Nur LONG, wenn der Preis über dem SMA liegt
-    if (signal.direction == SignalDirection::BUY && current_price < sma) {
-      return false;
-    }
-    
-    // Nur SHORT, wenn der Preis unter dem SMA liegt
-    if (signal.direction == SignalDirection::SELL && current_price > sma) {
-      return false;
-    }
+    // long above sma, short below sma
+    if (signal.direction == SignalDirection::BUY && current_price < sma) return false;
+    if (signal.direction == SignalDirection::SELL && current_price > sma) return false;
 
     return true;
   }
 };
 
+// blocks trade if average candle range is too tight
 class VolatilityFilter : public IFilter {
 private:
   double min_avg_range_;
   int period_;
 
 public:
-  // benötigt durchschnittlich 50$ kerzen-bewegung (high bis low) über die letzten 5 kerzen
   VolatilityFilter(double min_range = 50.0, int period = 5)
       : min_avg_range_(min_range), period_(period) {}
 
   bool AllowTrade(const MarketContext &context,
                   TradeSignal intended_signal) override {
-    // wir brauchen genug kerzen für die berechnung
-    if (context.history.size() < period_)
-      return false;
+    if (context.history.size() < period_) return false;
 
+    // calc average high-low range
     double total_range = 0.0;
-    
-    // summiere die spanne der letzten kerzen auf
     for (size_t i = context.history.size() - period_; i < context.history.size(); ++i) {
       total_range += (context.history[i].high - context.history[i].low);
     }
 
-    double avg_range = total_range / period_;
-    
-    // erlaube trade nur, wenn der markt sich durchschnittlich stark genug bewegt
-    return avg_range >= min_avg_range_;
+    return (total_range / period_) >= min_avg_range_;
   }
 };
 
-
+// blocks trades against daily session vwap
 class VwapTrendFilter : public IFilter {
 private:
   bool require_trend_alignment_;
 
 public:
-  // Über den Parameter kannst du den Filter im Grid-Scanner per Boolean an- und ausschalten
   VwapTrendFilter(bool require_trend_alignment = true) 
       : require_trend_alignment_(require_trend_alignment) {}
 
   bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
-    // Wenn der Filter im Grid-Run deaktiviert ist, lass das Signal ungeprüft durch
     if (!require_trend_alignment_) return true;
-
     if (intended_signal.direction == SignalDirection::NONE) return false;
 
-    // Der VWAP aus unserem frisch eingebauten Makro-Context
     double vwap = context.session.vwap;
-
-    // Schutz: Wenn noch gar kein VWAP berechnet wurde (z.B. erster Tick am Tag), erlaube Trade
     if (vwap == 0.0) return true;
 
-    // Aktueller Preis aus der laufenden Kerze
     double current_price = context.live_bar.close;
 
-    // Filter-Logik: Keine Longs unterm VWAP, keine Shorts überm VWAP
-    if (intended_signal.direction == SignalDirection::BUY && current_price < vwap) {
-      return false; // Gegen den Trend -> Blockiert
-    }
-    if (intended_signal.direction == SignalDirection::SELL && current_price > vwap) {
-      return false; // Gegen den Trend -> Blockiert
-    }
+    // long above vwap, short below vwap
+    if (intended_signal.direction == SignalDirection::BUY && current_price < vwap) return false;
+    if (intended_signal.direction == SignalDirection::SELL && current_price > vwap) return false;
 
-    return true; // Im Einklang mit dem VWAP-Trend -> Erlaubt
+    return true;
   }
 };
 
-
+// blocks trades during price and cumulative delta divergence
 class CVDDivergenceFilter : public IFilter {
 private:
   int lookback_;
 
 public:
-  // Standard: Vergleicht Preis und Delta der letzten 5 Kerzen
   CVDDivergenceFilter(int lookback = 5) : lookback_(lookback) {}
 
   bool AllowTrade(const MarketContext &context, TradeSignal intended_signal) override {
-    // Wir brauchen genug Historie für den Lookback + 1 Referenzkerze davor
     if (context.history.size() < lookback_ + 1) return false;
 
     size_t current_idx = context.history.size() - 1;
     size_t start_idx = current_idx - lookback_;
 
-    // 1. Preis-Trend der letzten N Kerzen berechnen
     double price_change = context.history[current_idx].close - context.history[start_idx].close;
 
-    // 2. Kumuliertes Delta (CVD) der letzten N Kerzen berechnen
+    // sum up cvd
     double cumulative_delta = 0.0;
     for (size_t i = start_idx + 1; i <= current_idx; ++i) {
       cumulative_delta += context.history[i].cumulative_delta;
     }
 
-    // BEARISH DIVERGENCE: Preis macht höhere Hochs, aber aggressives Kaufinteresse (Delta) ist negativ.
-    // -> Fake-Out Gefahr! Wir blockieren Long-Trades in diese Schwäche hinein.
-    if (intended_signal.direction == SignalDirection::BUY && price_change > 0 && cumulative_delta < 0) {
-      return false; 
-    }
+    // block long if price goes up but delta goes down
+    if (intended_signal.direction == SignalDirection::BUY && price_change > 0 && cumulative_delta < 0) return false; 
+    
+    // block short if price goes down but delta goes up
+    if (intended_signal.direction == SignalDirection::SELL && price_change < 0 && cumulative_delta > 0) return false; 
 
-    // BULLISH DIVERGENCE: Preis macht tiefere Tiefs, aber aggressives Verkaufsinteresse ist negativ (Käufer sammeln auf).
-    // -> Fake-Out Gefahr! Wir blockieren Short-Trades am absoluten Boden.
-    if (intended_signal.direction == SignalDirection::SELL && price_change < 0 && cumulative_delta > 0) {
-      return false; 
-    }
-
-    return true; // Keine gefährliche Divergenz erkannt -> Trade erlaubt
+    return true; 
   }
+};
+
+// blocks trade if l2 orderbook imbalance is too low
+class OrderbookImbalanceFilter : public IFilter {
+private:
+    double required_ratio_; 
+
+public:
+    OrderbookImbalanceFilter(double ratio = 3.0) : required_ratio_(ratio) {}
+
+    bool AllowTrade(const MarketContext& context, TradeSignal intended_signal) override {
+        const auto& l2 = context.latest_l2;
+        
+        if (intended_signal.direction == SignalDirection::BUY) {
+            // avoid division by zero
+            if (l2.best_ask_qty <= 0.0) return true; 
+            // check bid wall vs ask wall
+            return (l2.best_bid_qty / l2.best_ask_qty) >= required_ratio_;
+        } 
+        else if (intended_signal.direction == SignalDirection::SELL) {
+            if (l2.best_bid_qty <= 0.0) return true;
+            // check ask wall vs bid wall
+            return (l2.best_ask_qty / l2.best_bid_qty) >= required_ratio_;
+        }
+        
+        return false;
+    }
 };

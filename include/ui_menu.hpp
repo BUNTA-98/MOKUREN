@@ -59,7 +59,6 @@ private:
     
     std::string edit_buffer = "";
     
-    // Standard-Pfad für die Konfiguration
     std::string config_path = "configs/default.json";
     
     ParamConfigState sub_state;
@@ -74,7 +73,7 @@ private:
             "wfa_step_days": 7
           },
           "environment": {
-            "filepath": "binance/monthly",
+            "dataset": "data",
             "interval_ms": 60000,
             "macro_interval_ms": 900000,
             "vwap_reset_hour": 0,
@@ -126,25 +125,27 @@ private:
         try { return std::stod(str); } catch (...) { return 0.0; }
     }
 
-    std::vector<std::string> ScanDirectory(const std::string& folder) {
+    std::vector<std::string> ScanDirectory(const std::string& folder, bool only_dirs = false) {
         std::vector<std::string> options;
         options.push_back(folder);
         try {
             if (fs::exists(folder)) {
-                for (const auto& entry : fs::recursive_directory_iterator(folder)) {
-                    if (entry.is_directory()) {
-                        options.push_back(entry.path().string());
-                    } 
-                    // Liest jetzt .csv UND .json Dateien
-                    else if (entry.is_regular_file() && 
-                            (entry.path().extension() == ".csv" || entry.path().extension() == ".json")) {
-                        options.push_back(entry.path().string());
+                for (const auto& entry : fs::directory_iterator(folder)) {
+                    if (only_dirs) {
+                        if (entry.is_directory()) {
+                            options.push_back(entry.path().string());
+                        }
+                    } else {
+                        if (entry.is_regular_file() && 
+                           (entry.path().extension() == ".csv" || entry.path().extension() == ".json")) {
+                            options.push_back(entry.path().string());
+                        }
                     }
                 }
             }
         } catch (...) {}
         
-        if (options.empty()) options.push_back("NO_FILES_FOUND");
+        if (options.empty()) options.push_back(only_dirs ? "NO_DATASETS_FOUND" : "NO_FILES_FOUND");
         return options;
     }
 
@@ -197,10 +198,11 @@ private:
             if (j.is_string()) {
                 row.is_string = true;
                 
-                // Binance CSVs einlesen
-                if (current_path.find("filepath") != std::string::npos || current_path.find("data_path") != std::string::npos) {
+                // --- NEU: Dataset Ordner einlesen ---
+                if (current_path.find("dataset") != std::string::npos) {
                     row.is_file_selector = true;
-                    row.file_options = ScanDirectory("binance");
+                    // Scannt nur nach Unterordnern im "data"-Verzeichnis
+                    row.file_options = ScanDirectory("data", true); 
                     
                     std::string current_val = j.get<std::string>();
                     auto it = std::find(row.file_options.begin(), row.file_options.end(), current_val);
@@ -209,7 +211,7 @@ private:
                 // Config Profile JSONs einlesen
                 else if (current_path.find("config_profile") != std::string::npos) {
                     row.is_file_selector = true;
-                    row.file_options = ScanDirectory("configs");
+                    row.file_options = ScanDirectory("configs", false);
                     
                     std::string current_val = j.get<std::string>();
                     auto it = std::find(row.file_options.begin(), row.file_options.end(), current_val);
@@ -239,7 +241,6 @@ private:
             needs_save = true;
         }
 
-        // Automatische Synchronisation des config_profile Pfades im Menü
         if (config_data.contains("backtest")) {
             if (config_data["backtest"].value("config_profile", "") != config_path) {
                 config_data["backtest"]["config_profile"] = config_path;
@@ -296,12 +297,11 @@ private:
     }
 
 public:
-    // get active config path for backend
     std::string GetActiveConfigPath() const { return config_path; }
 
     PageConfig() { 
-        fs::create_directories("configs"); // Stellt sicher, dass der Ordner existiert
-        fs::create_directories("binance");
+        fs::create_directories("configs"); 
+        fs::create_directories("data"); // Stellt sicher, dass das HFT-Data-Dir existiert
         LoadConfigSmart(); 
     }
     
@@ -604,14 +604,13 @@ public:
                     std::string selected_file = row.file_options[row.current_file_idx];
                     config_data[row.ptr] = selected_file;
                     
-                    // Besonderes Verhalten beim Profil-Wechsel: Lädt das UI sofort neu!
                     if (row.display_path == "config_profile") {
                         {
                             std::ofstream out(config_path);
                             if (out.is_open()) out << config_data.dump(2);
                         }
                         config_path = selected_file;
-                        LoadConfigSmart(false); // UI mit neuem Profil neu rendern
+                        LoadConfigSmart(false);
                     } else {
                         SaveAndReload();
                         menu_state = MenuState::PARAMETERS;

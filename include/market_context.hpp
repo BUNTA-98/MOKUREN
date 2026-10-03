@@ -7,6 +7,6 @@ struct MarketContext {
   const Bar &live_bar;
   const Bar &htf_bar;
   
-  // neu: zugriff auf vwap und value area
   SessionMetrics session; 
+  L2Snapshot latest_l2; // <--- NEU: Die direkte Live-Leitung ins Orderbuch
 };

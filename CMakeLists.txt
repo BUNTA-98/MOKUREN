@@ -29,8 +29,11 @@ FetchContent_MakeAvailable(json)
 # 3. notcurses c++ binding finden
 pkg_check_modules(NOTCURSES REQUIRED IMPORTED_TARGET notcurses++)
 
+# Sammelt automatisch alle .cpp Dateien im src-Ordner
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+
 # 4. executable mit all deinen source-dateien
-add_executable(mokuren src/main.cpp src/aggregator.cpp src/csv_parser.cpp)
+add_executable(mokuren ${SOURCES})
 
 # 5. include ordner bekanntmachen
 target_include_directories(mokuren PRIVATE include)
