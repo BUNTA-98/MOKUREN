@@ -132,6 +132,9 @@ struct AppConfig {
   int vwap_reset_hour = 0;
   double tick_size = 1.0;
   unsigned int max_cores = 0;
+  
+  // execution and fee settings (new)
+  double taker_fee_pct = 0.0004;
   double slippage_pct = 0.0002;
 
   // modules
@@ -159,7 +162,6 @@ struct AppConfig {
       cfg.interval_ms = j["environment"].value("interval_ms", 60000);
       cfg.macro_interval_ms = j["environment"].value("macro_interval_ms", 900000);
       cfg.tick_size = j["environment"].value("tick_size", 1.0);
-      cfg.slippage_pct = j["environment"].value("slippage_pct", 0.0002);
       cfg.vwap_reset_hour = j["environment"].value("vwap_reset_hour", 0);
 
       if (j["environment"].contains("max_cores") && j["environment"]["max_cores"] > 0) {
@@ -168,6 +170,16 @@ struct AppConfig {
         cfg.max_cores = std::thread::hardware_concurrency();
         if (cfg.max_cores == 0) cfg.max_cores = 4;
       }
+    }
+
+    // parse execution settings (fees & slippage)
+    if (j.contains("execution")) {
+      cfg.taker_fee_pct = j["execution"].value("taker_fee_pct", 0.0004);
+      cfg.slippage_pct = j["execution"].value("slippage_pct", 0.0002);
+    } else if (j.contains("environment")) {
+      // fallback for backwards compatibility
+      cfg.taker_fee_pct = j["environment"].value("taker_fee_pct", 0.0004);
+      cfg.slippage_pct = j["environment"].value("slippage_pct", 0.0002);
     }
 
     // parse triggers

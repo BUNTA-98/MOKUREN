@@ -1,8 +1,3 @@
-/*
- * TODO
- * -split trigger strategy und filter in separate files
- */
-
 #pragma once
 #include "aggregator.hpp"
 #include "filter.hpp"
@@ -12,6 +7,7 @@
 #include <ctime>
 #include <vector>
 
+// base strategy interface
 class IStrategy {
 public:
   virtual ~IStrategy() = default;
@@ -21,6 +17,7 @@ public:
   }
 };
 
+// standard pipeline: evaluates trigger -> runs safety filters -> returns signal
 class PipelineStrategy : public IStrategy {
 private:
   ITrigger *trigger_;
@@ -31,32 +28,30 @@ public:
 
   void AddFilter(IFilter *filter) { filters_.push_back(filter); }
 
+  // evaluate standard indicator triggers on candle close
   TradeSignal OnCandleClose(const MarketContext &context) override {
-    if (!trigger_)
-      return TradeSignal{};
+    if (!trigger_) return TradeSignal{};
 
-    // 1. Hat der Trigger überhaupt ein Setup gefunden?
+    // check if trigger found a setup
     TradeSignal signal = trigger_->EvaluateCandle(context);
-    if (signal.direction == SignalDirection::NONE)
-      return TradeSignal{};
+    if (signal.direction == SignalDirection::NONE) return TradeSignal{};
 
-    // 2. Wenn ja, müssen alle Filter grünes Licht geben
+    // all filters must allow the trade (early exit saves cpu)
     for (auto *filter : filters_) {
       if (!filter->AllowTrade(context, signal)) {
-        return TradeSignal{}; // Early Exit! (Spart CPU-Zyklen)
+        return TradeSignal{}; 
       }
     }
 
     return signal;
   }
 
+  // evaluate hft orderbook triggers on every l2 update
   TradeSignal OnTickUpdate(const MarketContext &context) override {
-    if (!trigger_)
-      return TradeSignal{};
+    if (!trigger_) return TradeSignal{};
 
     TradeSignal signal = trigger_->EvaluateTick(context);
-    if (signal.direction == SignalDirection::NONE)
-      return TradeSignal{};
+    if (signal.direction == SignalDirection::NONE) return TradeSignal{};
 
     for (auto *filter : filters_) {
       if (!filter->AllowTrade(context, signal)) {

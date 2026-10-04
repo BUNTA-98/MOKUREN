@@ -9,12 +9,11 @@ private:
 public:
   AlphaEngine(IStrategy &strategy) : strategy_(strategy) {}
 
-  // data in - signal out
+  // route signal evaluation based on tick or candle resolution
   TradeSignal Evaluate(const MarketContext &context, bool candle_finished) {
     if (candle_finished) {
       return strategy_.OnCandleClose(context);
-    } else {
-      return strategy_.OnTickUpdate(context);
     }
+    return strategy_.OnTickUpdate(context);
   }
 };

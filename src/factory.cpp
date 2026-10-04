@@ -6,7 +6,9 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   // initialize core engine parts
   inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
   inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
-  inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss, cfg.slippage_pct);
+  
+  // pass fees and slippage to papertrader constructor
+  inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss, cfg.slippage_pct, cfg.taker_fee_pct);
   inst.pos_manager = std::make_unique<PositionManager>(inst.ptrader.get());
 
   // 1. build entry triggers

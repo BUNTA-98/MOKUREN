@@ -78,8 +78,11 @@ private:
             "macro_interval_ms": 900000,
             "vwap_reset_hour": 0,
             "max_cores": 0,
-            "slippage_pct": 0.0002,
             "tick_size": 0.1
+          },
+          "execution": {
+            "taker_fee_pct": 0.0004,
+            "slippage_pct": 0.0002
           },
           "filters": [
             { "active": true, "lookback": 1440, "name": "MacroTrend" },
@@ -111,7 +114,8 @@ private:
           },
           "triggers": [
             { "active": true, "delta": 1.6, "name": "DeltaAbsorption" },
-            { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 }
+            { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 },
+            { "active": false, "name": "SpoofHunter", "lookback_ms": 500, "min_wall_qty": 30.0, "drop_threshold": 0.9 }
           ]
         })");
     }
