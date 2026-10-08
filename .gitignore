@@ -8,5 +8,4 @@ configs/
 build/
 cryptohft/
 logs/
-
 .aider*
