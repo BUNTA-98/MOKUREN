@@ -1,5 +1,6 @@
 #pragma once
 #include "aggregator.hpp"
+#include "logger.hpp"
 #include "market_context.hpp"
 #include <algorithm>
 #include <ctime>
@@ -99,18 +100,40 @@ public:
 
   bool AllowTrade(const MarketContext &context,
                   TradeSignal intended_signal) override {
-    if (context.history.empty()) return false;
-    
+    if (context.history.empty()) {
+      LOG_TRACE("TimeOfDayFilter reject: empty history");
+      return false;
+    }
+
     // convert unix ms to local time
     std::time_t time_val = context.history.back().timestamp_start / 1000;
-    struct tm time_info; 
-    localtime_r(&time_val, &time_info); 
+    struct tm time_info;
+    if (localtime_r(&time_val, &time_info) == nullptr) {
+      LOG_TRACE("TimeOfDayFilter reject: localtime_r failed for ts={}",
+                context.history.back().timestamp_start);
+      return false;
+    }
 
     int current_mins = time_info.tm_hour * 60 + time_info.tm_min;
     int start_mins = start_hour_ * 60 + start_min_;
     int end_mins = end_hour_ * 60 + end_min_;
-    
-    return (current_mins >= start_mins && current_mins <= end_mins);
+
+    bool allowed;
+    if (start_mins <= end_mins) {
+      // same-day session, e.g. 09:30 -> 16:00
+      allowed = (current_mins >= start_mins && current_mins <= end_mins);
+    } else {
+      // overnight session crossing midnight, e.g. 22:00 -> 02:00
+      allowed = (current_mins >= start_mins || current_mins <= end_mins);
+    }
+
+    if (!allowed) {
+      LOG_TRACE("TimeOfDayFilter reject: now={:02d}:{:02d} window=[{:02d}:{:02d}-{:02d}:{:02d}] overnight={}",
+                time_info.tm_hour, time_info.tm_min,
+                start_hour_, start_min_, end_hour_, end_min_,
+                start_mins > end_mins);
+    }
+    return allowed;
   }
 };
 

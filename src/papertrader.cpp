@@ -1,4 +1,5 @@
 #include "papertrader.hpp"
+#include "logger.hpp"
 #include <cmath>
 
 PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee)
@@ -64,6 +65,9 @@ void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
       bool hit_scale_short = (position_direction_ == SignalDirection::SELL && current_price <= entry_price * (1.0 - scale_out_trigger_pct_));
       
       if (hit_scale_long || hit_scale_short) {
+          LOG_INFO("scale-out trigger: dir={} price={} entry={} fraction={} t={}",
+                   static_cast<int>(position_direction_), current_price,
+                   entry_price, scale_out_fraction_, current_time);
           ClosePartial(scale_out_fraction_, current_price, current_time, "scale_out");
           has_scaled_out_ = true;
           current_sl_ = (position_direction_ == SignalDirection::BUY) ? entry_price * (1.0 + be_target_pct_) : entry_price * (1.0 - be_target_pct_);
@@ -156,6 +160,11 @@ void PaperTrader::ProcessSignal(TradeSignal signal, double fill_price, int64_t c
     current_daily_pnl_ -= entry_fee; 
     
     UpdateDrawdown(balance);
+
+    LOG_INFO("entry: dir={} fill={} entry={} sl={} tp={} vol={} slip={} fee={} balance={} t={}",
+             static_cast<int>(position_direction_), fill_price, entry_price,
+             current_sl_, current_tp_, position_size, slippage,
+             entry_fee, balance, current_time);
   }
 }
 
@@ -207,6 +216,11 @@ void PaperTrader::ClosePartial(double fraction, double current_price, int64_t cu
     current_entry_fee_ -= partial_entry_fee;
     double true_trade_pnl = net_profit - partial_entry_fee;
 
+    LOG_INFO("partial exit: reason={} dir={} price={} exit={} vol={} slip={} fee={} pnl={} balance={} t={}",
+             reason, static_cast<int>(position_direction_), current_price,
+             actual_exit_price, close_volume, slippage, exit_fee,
+             true_trade_pnl, balance, current_time);
+
     // save log record
     TradeRecord rec;
     rec.entry_time = entry_time_;
@@ -247,6 +261,11 @@ void PaperTrader::ClosePosition(double current_price, const std::string &reason,
     else trades_be++;
 
     double true_trade_pnl = net_profit - current_entry_fee_;
+
+    LOG_INFO("exit: reason={} dir={} price={} exit={} vol={} slip={} fee={} pnl={} balance={} t={}",
+             reason, static_cast<int>(position_direction_), current_price,
+             actual_exit_price, position_size, slippage, exit_fee,
+             true_trade_pnl, balance, current_time);
 
     // save final log record
     TradeRecord rec;

@@ -26,6 +26,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+# spdlog (async logging)
+FetchContent_Declare(
+  spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG        v1.14.1
+)
+FetchContent_MakeAvailable(spdlog)
+
 # notcurses bindings
 pkg_check_modules(NOTCURSES REQUIRED IMPORTED_TARGET notcurses++)
 
@@ -43,6 +51,7 @@ target_link_libraries(mokuren PRIVATE
   Threads::Threads 
   nlohmann_json::nlohmann_json
   PkgConfig::NOTCURSES
+  spdlog::spdlog
 )
 
 # --- test environment ---
@@ -75,4 +84,5 @@ target_include_directories(engine_tests PRIVATE src include)
 target_link_libraries(engine_tests PRIVATE 
   Catch2::Catch2WithMain
   nlohmann_json::nlohmann_json
+  spdlog::spdlog
 )

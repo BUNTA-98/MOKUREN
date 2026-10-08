@@ -1,5 +1,6 @@
 #include "mokuren.hpp"
 #include "data_manager.hpp"
+#include "logger.hpp"
 #include "performance_metrics.hpp"
 
 #include <algorithm>
@@ -45,6 +46,7 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                             std::function<void(const TestResult&)> on_result) {
     std::ifstream file(config_path);
     if (!file.is_open()) {
+        LOG_ERROR("grid search: config not found: {}", config_path);
         on_status("ERROR: CONFIG NOT FOUND");
         return;
     }
@@ -56,17 +58,21 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
     std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
     
     std::string active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+    LOG_INFO("grid search start: config={} dataset={} permutations={}",
+             config_path, active_dataset, runs.size());
     on_status("LOADING DATASET: " + active_dataset);
     
     // load full dataset to ram via data manager
     std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
     if (all_trades.empty()) {
+        LOG_ERROR("grid search: no trades found in dataset {}", active_dataset);
         on_status("ERR: NO TRADES FOUND IN DATASET");
         return;
     }
 
     std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
     if (all_l2.empty()) {
+        LOG_WARN("grid search: no L2 data (L2_cache.bin) found for {}", active_dataset);
         on_status("WARN: NO L2 DATA (L2_cache.bin) FOUND");
     } else {
         if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
@@ -76,6 +82,8 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
     unsigned int max_cores = base_json["environment"].value("max_cores", 0);
     if (max_cores == 0) max_cores = std::thread::hardware_concurrency();
     
+    LOG_INFO("grid search: {} trades, {} l2 snapshots, {} threads",
+             all_trades.size(), all_l2.size(), max_cores);
     on_status("GRID SCAN ACTIVE (" + std::to_string(max_cores) + " THREADS)");
 
     int total_iterations = runs.size();
@@ -227,6 +235,10 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                     res.sharpe = am.sharpe;
                     res.sortino = am.sortino;
                     res.mc_drawdown = am.mc_dd;
+
+                    LOG_INFO("grid result: trades={} net={} dd={} winrate={} sharpe={}",
+                             res.trades, res.net_profit, res.max_drawdown,
+                             res.winrate, res.sharpe);
                     
                     on_result(res);
 
@@ -268,6 +280,7 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
         if (w.joinable()) w.join();
     }
     
+    LOG_INFO("grid search complete: {} permutations evaluated", total_iterations);
     on_status("SCAN COMPLETE");
 }
 
@@ -286,12 +299,15 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
     
     std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
     if (all_trades.empty()) {
+        LOG_ERROR("wfa: no trades found in dataset {}", active_dataset);
         on_status("ERR: NO TRADES FOUND IN DATASET");
         return;
     }
 
     std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
     if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
+
+    LOG_INFO("wfa start: dataset={} trades={}", active_dataset, all_trades.size());
 
     int64_t first_ts = all_trades.front().timestamp;
     int64_t last_ts = all_trades.back().timestamp;
@@ -313,9 +329,12 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
 
     std::vector<WFAWindow> windows = DataManager::GenerateWFAWindows(first_ts, last_ts, in_sample_ms, out_of_sample_ms, step_ms);
     if (windows.empty()) {
+        LOG_ERROR("wfa: dataset too short (needs {} days)", in_days + out_days);
         on_status("ERR: CSV TOO SHORT (NEEDS " + std::to_string(in_days + out_days) + " DAYS)");
         return;
     }
+    LOG_INFO("wfa: generated {} rolling windows (in={}d out={}d step={}d)",
+             windows.size(), in_days, out_days, step_days);
     on_status("WFA: GENERATED " + std::to_string(windows.size()) + " ROLLING WINDOWS");
 
     std::vector<TradeRecord> global_oos_trades;
@@ -324,6 +343,10 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
     // run wfa windows seq
     for (size_t i = 0; i < windows.size(); ++i) {
         const auto& win = windows[i];
+        LOG_INFO("wfa window {}/{}: is=[{},{}] oos=[{},{}]",
+                 i + 1, windows.size(),
+                 win.in_sample_start, win.in_sample_end,
+                 win.out_of_sample_start, win.out_of_sample_end);
         on_status("WFA WINDOW " + std::to_string(i + 1) + "/" + std::to_string(windows.size()) + " (PARALLEL)");
 
         // isolate window data via data mgr
@@ -506,6 +529,8 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
         
         // save config for ui replay
         collected_configs.push_back({win.out_of_sample_start, win.out_of_sample_end, best_config.full_json});
+        LOG_INFO("wfa window {}/{}: best_is_profit={} oos_trades={}",
+                 i + 1, windows.size(), best_in_sample_profit, window_trades.size());
         on_progress(i + 1, windows.size());
     } 
 
@@ -549,6 +574,10 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
         res.sortino = am.sortino;
         res.mc_drawdown = am.mc_dd;
 
+        LOG_INFO("wfa complete: trades={} net={} dd={} winrate={} sharpe={}",
+                 res.trades, res.net_profit, res.max_drawdown,
+                 res.winrate, res.sharpe);
+
         on_result(res);
     }
 
@@ -559,8 +588,12 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
     ReplayResult result;
 
     std::string active_dataset = winning_config.value("environment", nlohmann::json::object()).value("dataset", "data");
+    LOG_INFO("replay single run: dataset={}", active_dataset);
     std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
-    if (all_trades.empty()) return result;
+    if (all_trades.empty()) {
+        LOG_ERROR("replay single run: no trades found in dataset {}", active_dataset);
+        return result;
+    }
 
     std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
 
@@ -687,6 +720,9 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
             if (ti.exit_candle_idx < ti.candle_idx) ti.exit_candle_idx = ti.candle_idx;
         }
     }
+
+    LOG_INFO("replay single run complete: bars_1m={} bars_15m={} trades={}",
+             result.history_1m.size(), result.history_15m.size(), result.trades.size());
     
     return result;
 }
@@ -696,8 +732,12 @@ ReplayResult Mokuren::ReplayWFA(const std::string &/*ignored*/, const std::vecto
     if (wfa_configs.empty()) return result;
 
     std::string active_dataset = wfa_configs[0].config.value("environment", nlohmann::json::object()).value("dataset", "data");
+    LOG_INFO("replay wfa: dataset={} windows={}", active_dataset, wfa_configs.size());
     std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
-    if (all_trades.empty()) return result;
+    if (all_trades.empty()) {
+        LOG_ERROR("replay wfa: no trades found in dataset {}", active_dataset);
+        return result;
+    }
 
     std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
 
@@ -831,6 +871,9 @@ ReplayResult Mokuren::ReplayWFA(const std::string &/*ignored*/, const std::vecto
             if (ti.exit_candle_idx < ti.candle_idx) ti.exit_candle_idx = ti.candle_idx;
         }
     }
+
+    LOG_INFO("replay wfa complete: bars_1m={} bars_15m={} trades={}",
+             result.history_1m.size(), result.history_15m.size(), result.trades.size());
 
     return result;
 }

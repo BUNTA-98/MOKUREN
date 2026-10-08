@@ -2,7 +2,6 @@
 #include "trade_event.hpp"
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <vector>
 
 // updates current l2 state and ring buffer memory

@@ -1,6 +1,7 @@
 #pragma once
 #include "aggregator.hpp"
 #include "ibroker.hpp"
+#include "logger.hpp"
 #include <string>
 #include <vector>
 

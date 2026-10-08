@@ -1,5 +1,6 @@
 #pragma once
 #include "ibroker.hpp"
+#include "logger.hpp"
 #include "strategy.hpp"
 #include <vector>
 
@@ -9,6 +10,8 @@ public:
   virtual ~IRiskModule() = default;
   // returns true if trade is safe to execute
   virtual bool CheckRisk(const TradeSignal &signal, int64_t current_time) = 0;
+  // human-readable name used for audit logging
+  virtual const char* Name() const = 0;
 };
 
 // blocks signals if a trade is already active
@@ -18,6 +21,8 @@ private:
 
 public:
   SinglePositionLock(IBroker* broker) : broker_(broker) {}
+
+  const char* Name() const override { return "SinglePositionLock"; }
 
   bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
     if (broker_->HasOpenPosition()) return false;
@@ -35,6 +40,8 @@ public:
   MaxDrawdownLock(IBroker* broker, double max_loss)
       : broker_(broker), max_loss_usd_(max_loss) {}
 
+  const char* Name() const override { return "MaxDrawdownLock"; }
+
   bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
     if (broker_->GetNetProfit() <= -max_loss_usd_) return false;
     return true;
@@ -50,6 +57,8 @@ private:
 public:
   MaxLeverageLock(IBroker* broker, double max_leverage)
       : broker_(broker), max_leverage_(max_leverage) {}
+
+  const char* Name() const override { return "MaxLeverageLock"; }
 
   bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
     if (signal.entry_price == 0.0 || signal.volume == 0.0) return false;
@@ -67,6 +76,8 @@ private:
 
 public:
   MaxStopDistanceLock(double max_stop_pct) : max_stop_pct_(max_stop_pct) {}
+
+  const char* Name() const override { return "MaxStopDistanceLock"; }
 
   bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
     // reject if no stop is set (suicide)
@@ -93,6 +104,8 @@ public:
   AntiRevengeLock(IBroker* broker, int64_t cooldown_ms = 1800000) 
       : broker_(broker), cooldown_ms_(cooldown_ms) {}
 
+  const char* Name() const override { return "AntiRevengeLock"; }
+
   bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
     const auto& history = broker_->GetTradeHistory();
     if (history.empty()) return true;
@@ -118,9 +131,18 @@ public:
 
     for (auto *module : modules_) {
       if (!module->CheckRisk(signal, current_time)) {
+        LOG_TRACE("risk reject: module={} dir={} entry={} sl={} tp={} vol={} t={}",
+                  module->Name(),
+                  static_cast<int>(signal.direction),
+                  signal.entry_price, signal.stop_loss,
+                  signal.take_profit, signal.volume, current_time);
         return TradeSignal{}; // signal rejected by firewall
       }
     }
+    LOG_TRACE("risk pass: dir={} entry={} sl={} tp={} vol={} t={}",
+              static_cast<int>(signal.direction),
+              signal.entry_price, signal.stop_loss,
+              signal.take_profit, signal.volume, current_time);
     return signal; // all checks passed
   }
 };

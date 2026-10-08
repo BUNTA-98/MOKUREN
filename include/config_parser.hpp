@@ -3,6 +3,7 @@
 #include <iostream>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <thread>
@@ -152,6 +153,108 @@ struct AppConfig {
   double min_distance_dollars = 10.0;
   double max_daily_loss = 400.0;
 
+  // strict validation of all critical bounds.
+  // throws std::invalid_argument with a precise message on the first violation.
+  void Validate() const {
+    auto fail = [](const std::string& msg) {
+      throw std::invalid_argument("AppConfig validation failed: " + msg);
+    };
+
+    // --- environment ---
+    if (interval_ms <= 0) {
+      fail("environment.interval_ms must be > 0 (got " + std::to_string(interval_ms) + ")");
+    }
+    if (macro_interval_ms <= 0) {
+      fail("environment.macro_interval_ms must be > 0 (got " + std::to_string(macro_interval_ms) + ")");
+    }
+    if (macro_interval_ms < interval_ms) {
+      fail("environment.macro_interval_ms (" + std::to_string(macro_interval_ms) +
+           ") must be >= environment.interval_ms (" + std::to_string(interval_ms) + ")");
+    }
+    if (tick_size <= 0.0) {
+      fail("environment.tick_size must be > 0 (got " + std::to_string(tick_size) + ")");
+    }
+    if (vwap_reset_hour < 0 || vwap_reset_hour > 23) {
+      fail("environment.vwap_reset_hour must be in [0, 23] (got " + std::to_string(vwap_reset_hour) + ")");
+    }
+
+    // --- execution ---
+    if (taker_fee_pct < 0.0 || taker_fee_pct >= 0.1) {
+      fail("execution.taker_fee_pct must be in [0.0, 0.1) (got " + std::to_string(taker_fee_pct) + ")");
+    }
+    if (slippage_pct < 0.0 || slippage_pct >= 0.1) {
+      fail("execution.slippage_pct must be in [0.0, 0.1) (got " + std::to_string(slippage_pct) + ")");
+    }
+
+    // --- risk ---
+    if (sl_pct <= 0.0 || sl_pct >= 0.1) {
+      fail("risk.sl_pct must be in (0.0, 0.1) (got " + std::to_string(sl_pct) + ")");
+    }
+    if (tp_pct <= 0.0 || tp_pct >= 0.1) {
+      fail("risk.tp_pct must be in (0.0, 0.1) (got " + std::to_string(tp_pct) + ")");
+    }
+    if (risk_per_trade_pct <= 0.0 || risk_per_trade_pct >= 0.1) {
+      fail("risk.risk_per_trade_pct must be in (0.0, 0.1) (got " + std::to_string(risk_per_trade_pct) + ")");
+    }
+    if (min_distance_dollars < 0.0) {
+      fail("risk.min_distance_dollars must be >= 0.0 (got " + std::to_string(min_distance_dollars) + ")");
+    }
+    if (max_daily_loss <= 0.0) {
+      fail("risk.max_daily_loss must be > 0.0 (got " + std::to_string(max_daily_loss) + ")");
+    }
+
+    // --- trade management ---
+    if (tm_config.be_trigger_pct <= 0.0 || tm_config.be_trigger_pct >= 0.1) {
+      fail("trade_management.break_even.trigger_pct must be in (0.0, 0.1) (got " +
+           std::to_string(tm_config.be_trigger_pct) + ")");
+    }
+    if (tm_config.be_target_pct < 0.0 || tm_config.be_target_pct >= 0.1) {
+      fail("trade_management.break_even.target_pct must be in [0.0, 0.1) (got " +
+           std::to_string(tm_config.be_target_pct) + ")");
+    }
+    if (tm_config.trailing_trigger_pct <= 0.0 || tm_config.trailing_trigger_pct >= 0.1) {
+      fail("trade_management.trailing.trigger_pct must be in (0.0, 0.1) (got " +
+           std::to_string(tm_config.trailing_trigger_pct) + ")");
+    }
+    if (tm_config.trailing_dist_pct <= 0.0 || tm_config.trailing_dist_pct >= 0.1) {
+      fail("trade_management.trailing.distance_pct must be in (0.0, 0.1) (got " +
+           std::to_string(tm_config.trailing_dist_pct) + ")");
+    }
+    if (tm_config.trailing_dist_pct >= tm_config.trailing_trigger_pct) {
+      fail("trade_management.trailing.distance_pct (" + std::to_string(tm_config.trailing_dist_pct) +
+           ") must be < trade_management.trailing.trigger_pct (" +
+           std::to_string(tm_config.trailing_trigger_pct) + ")");
+    }
+    if (tm_config.scale_out_trigger_pct <= 0.0 || tm_config.scale_out_trigger_pct >= 0.1) {
+      fail("trade_management.scale_out.trigger_pct must be in (0.0, 0.1) (got " +
+           std::to_string(tm_config.scale_out_trigger_pct) + ")");
+    }
+    if (tm_config.scale_out_fraction < 0.1 || tm_config.scale_out_fraction > 0.9) {
+      fail("trade_management.scale_out.fraction must be in [0.1, 0.9] (got " +
+           std::to_string(tm_config.scale_out_fraction) + ")");
+    }
+
+    // --- components ---
+    if (triggers.empty()) {
+      fail("triggers must not be empty (at least one trigger is required)");
+    }
+    for (const auto& t : triggers) {
+      if (t.name.empty()) {
+        fail("triggers contains an entry with an empty name");
+      }
+    }
+    for (const auto& f : filters) {
+      if (f.name.empty()) {
+        fail("filters contains an entry with an empty name");
+      }
+    }
+    for (const auto& r : risk_modules) {
+      if (r.name.empty()) {
+        fail("risk.modules contains an entry with an empty name");
+      }
+    }
+  }
+
   // parse json to struct
   static AppConfig Load(const json& j) {
     AppConfig cfg;
@@ -229,6 +332,9 @@ struct AppConfig {
         cfg.tm_config.scale_out_fraction = tm["scale_out"].value("fraction", 0.5);
       }
     }
+
+    // fail fast: abort before any EngineInstance is built
+    cfg.Validate();
 
     return cfg;
   }
