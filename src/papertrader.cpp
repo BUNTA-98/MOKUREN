@@ -1,9 +1,11 @@
 #include "papertrader.hpp"
 #include <cmath>
 
-PaperTrader::PaperTrader(double sl_pct, double tp_pct, double max_dl, double slip, double taker_fee)
-    : max_daily_loss_(max_dl), stop_loss_pct(sl_pct), take_profit_pct(tp_pct), 
-      taker_fee_pct(taker_fee), slippage(slip) {}
+PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee)
+    : max_daily_loss_(max_dl), slippage(slip), taker_fee_pct(taker_fee) {
+  balance = 10000.0;
+  peak_balance_ = 10000.0;
+}
 
 TradeSignal PaperTrader::GetCurrentPosition() const {
   TradeSignal sig;
@@ -38,11 +40,11 @@ void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
   UpdateDay(current_time);
   if (position_size == 0.0) return;
 
-  // track price extremes for trailing stop
+  // track price extremes for trail
   if (current_price > highest_seen_price_) highest_seen_price_ = current_price;
   if (current_price < lowest_seen_price_ || lowest_seen_price_ == 0.0) lowest_seen_price_ = current_price;
 
-  // calculate floating equity
+  // calc float equity
   double actual_exit_price = (position_direction_ == SignalDirection::BUY) ? (current_price * (1.0 - slippage)) : (current_price * (1.0 + slippage));
   double gross_profit = (position_direction_ == SignalDirection::BUY) ? (actual_exit_price - entry_price) * position_size : (entry_price - actual_exit_price) * position_size;
   double exit_fee = (actual_exit_price * position_size) * taker_fee_pct;
@@ -56,13 +58,13 @@ void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
     return;
   }
 
-  // evaluate partial scale out
+  // eval partial scale out
   if (enable_scale_out_ && !has_scaled_out_) {
       bool hit_scale_long = (position_direction_ == SignalDirection::BUY && current_price >= entry_price * (1.0 + scale_out_trigger_pct_));
       bool hit_scale_short = (position_direction_ == SignalDirection::SELL && current_price <= entry_price * (1.0 - scale_out_trigger_pct_));
       
       if (hit_scale_long || hit_scale_short) {
-          ClosePartialPosition(current_price, scale_out_fraction_, "scale_out", current_time);
+          ClosePartial(scale_out_fraction_, current_price, current_time, "scale_out");
           has_scaled_out_ = true;
           current_sl_ = (position_direction_ == SignalDirection::BUY) ? entry_price * (1.0 + be_target_pct_) : entry_price * (1.0 - be_target_pct_);
           sl_moved_to_be_ = true;
@@ -70,7 +72,7 @@ void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
       }
   }
 
-  // evaluate long trade management
+  // eval long trade mgmt
   if (position_direction_ == SignalDirection::BUY) {
     if (!sl_moved_to_be_ && current_price >= entry_price * (1.0 + be_trigger_pct_)) {
       current_sl_ = entry_price * (1.0 + be_target_pct_);
@@ -89,7 +91,7 @@ void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
     if (current_price <= current_sl_) ClosePosition(current_price, sl_moved_to_be_ ? "trail/be" : "sl", current_time);
     else if (current_price >= current_tp_) ClosePosition(current_price, "tp", current_time);
       
-  // evaluate short trade management
+  // eval short trade mgmt
   } else if (position_direction_ == SignalDirection::SELL) {
     if (!sl_moved_to_be_ && current_price <= entry_price * (1.0 - be_trigger_pct_)) {
       current_sl_ = entry_price * (1.0 - be_target_pct_);
@@ -128,11 +130,11 @@ void PaperTrader::ProcessSignal(TradeSignal signal, double fill_price, int64_t c
     lowest_seen_price_ = fill_price;
     current_stop_history_.clear(); 
 
-    // simulate fill with slippage applied to the provided execution price
+    // apply simulated slippage
     if (position_direction_ == SignalDirection::BUY) {
       entry_price = fill_price * (1.0 + slippage);
       
-      // dynamically shift sl/tp distances to match the actual slipped entry
+      // shift sl/tp relative to slipped entry
       double sl_dist_pct = (signal.entry_price - signal.stop_loss) / signal.entry_price;
       double tp_dist_pct = (signal.take_profit - signal.entry_price) / signal.entry_price;
       current_sl_ = entry_price * (1.0 - sl_dist_pct);
@@ -146,7 +148,7 @@ void PaperTrader::ProcessSignal(TradeSignal signal, double fill_price, int64_t c
       current_tp_ = entry_price * (1.0 - tp_dist_pct);
     }
 
-    // deduct entry fees upfront
+    // deduct fees
     double entry_fee = (entry_price * position_size) * taker_fee_pct;
     current_entry_fee_ = entry_fee; 
     balance -= entry_fee;
@@ -179,7 +181,7 @@ void PaperTrader::UpdateDay(int64_t current_time) {
   }
 }
 
-void PaperTrader::ClosePartialPosition(double current_price, double fraction, const std::string &reason, int64_t current_time) {
+void PaperTrader::ClosePartial(double fraction, double current_price, int64_t current_time, const std::string &reason) {
     if (position_size <= 0.0) return;
     
     double close_volume = position_size * fraction;
@@ -205,7 +207,7 @@ void PaperTrader::ClosePartialPosition(double current_price, double fraction, co
     current_entry_fee_ -= partial_entry_fee;
     double true_trade_pnl = net_profit - partial_entry_fee;
 
-    // save log struct
+    // save log record
     TradeRecord rec;
     rec.entry_time = entry_time_;
     rec.exit_time = current_time;
@@ -246,7 +248,7 @@ void PaperTrader::ClosePosition(double current_price, const std::string &reason,
 
     double true_trade_pnl = net_profit - current_entry_fee_;
 
-    // save final log struct
+    // save final log record
     TradeRecord rec;
     rec.entry_time = entry_time_;
     rec.exit_time = current_time;

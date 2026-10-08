@@ -7,28 +7,28 @@ TEST_CASE("trigger verification suite", "[triggers]") {
     std::vector<Bar> mock_history;
     Bar mock_live, mock_htf;
     SessionMetrics mock_session;
-    L2Snapshot mock_l2;
+    L2Snapshot mock_l2{}; // 0-initialisierung für die neuen c-arrays
     L2RingBuffer mock_l2_history;
 
     SECTION("spoofhunter detects pulled l2 limit walls") {
         SpoofHunterTrigger hunter(500, 30.0, 0.9);
 
         // t=0: massive fake ask wall appears
-        L2Snapshot snap1;
+        L2Snapshot snap1{};
         snap1.timestamp = 1000;
-        snap1.best_ask_qty = 50.0;
+        snap1.asks[0].qty = 50.0; // NEU: nutzt das aggregations-array
         mock_l2_history.push(snap1);
 
         // t=250: wall still active
-        L2Snapshot snap2;
+        L2Snapshot snap2{};
         snap2.timestamp = 1250;
-        snap2.best_ask_qty = 50.0;
+        snap2.asks[0].qty = 50.0;
         mock_l2_history.push(snap2);
 
         // t=500: wall suddenly pulled (drops to 1.0 btc)
-        L2Snapshot current_l2;
+        L2Snapshot current_l2{};
         current_l2.timestamp = 1500;
-        current_l2.best_ask_qty = 1.0; 
+        current_l2.asks[0].qty = 1.0; 
 
         MarketContext ctx{mock_history, mock_live, mock_htf, mock_session, current_l2, mock_l2_history};
 
@@ -36,12 +36,12 @@ TEST_CASE("trigger verification suite", "[triggers]") {
         REQUIRE(sig.direction == SignalDirection::BUY);
 
         // t=500: test bid spoofing (drops to 2.0 btc)
-        L2Snapshot current_l2_bid;
+        L2Snapshot current_l2_bid{};
         current_l2_bid.timestamp = 1500;
-        current_l2_bid.best_bid_qty = 2.0;
+        current_l2_bid.bids[0].qty = 2.0; // NEU: nutzt das aggregations-array
 
-        snap1.best_ask_qty = 0.0;
-        snap1.best_bid_qty = 40.0;
+        snap1.asks[0].qty = 0.0;
+        snap1.bids[0].qty = 40.0;
         mock_l2_history.push(snap1); // overwrite history for bid test
 
         MarketContext ctx_bid{mock_history, mock_live, mock_htf, mock_session, current_l2_bid, mock_l2_history};
@@ -54,7 +54,7 @@ TEST_CASE("trigger verification suite", "[triggers]") {
         StackedImbalanceTrigger trigger(3.0, 2); 
         
         Bar bar;
-        PriceLevel l0, l1, l2; // FIX: changed from FootprintLevel to PriceLevel
+        PriceLevel l0, l1, l2; 
         
         // setup buy imbalance (upper ask is 3x larger than lower bid)
         l0.price = 100.0; l0.bid_volume = 2.0; l0.ask_volume = 0.0;
@@ -92,7 +92,7 @@ TEST_CASE("trigger verification suite", "[triggers]") {
         bar.close = 105.0; 
         bar.low = 98.0;
         
-        PriceLevel l0; // FIX: changed from FootprintLevel to PriceLevel
+        PriceLevel l0; 
         l0.price = 100.0;
         l0.ask_volume = 10.0;
         l0.bid_volume = 80.0; // net delta = -70
@@ -132,7 +132,7 @@ TEST_CASE("trigger verification suite", "[triggers]") {
         Bar bar;
         bar.tick_size = 1.0;
         bar.open = 100.0; bar.close = 105.0; bar.low = 98.0;
-        PriceLevel l0; // FIX: changed from FootprintLevel to PriceLevel
+        PriceLevel l0; 
         l0.price = 100.0; l0.ask_volume = 10.0; l0.bid_volume = 80.0; 
         bar.footprint = {l0};
         mock_history.push_back(bar);

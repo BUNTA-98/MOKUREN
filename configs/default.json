@@ -7,7 +7,7 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/BTCUSDT-2024-04",
+    "dataset": "data/2026/woche",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -79,6 +79,11 @@
         "name": "SinglePositionLock"
       },
       {
+        "active": true,
+        "max_stop_pct": 0.015,
+        "name": "MaxStopDistanceLock"
+      },
+      {
         "active": false,
         "max_leverage": 10.0,
         "name": "MaxLeverageLock"
@@ -90,7 +95,7 @@
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_price_pct": 0.004,
+    "sl_price_pct": 0.01,
     "tp_r": 3.0
   },
   "trade_management": {
@@ -113,17 +118,17 @@
   "triggers": [
     {
       "active": false,
-      "delta": 1.6,
+      "delta": 1.5,
       "name": "DeltaAbsorption"
     },
     {
-      "active": false,
-      "levels": 6.0,
+      "active": true,
+      "levels": 1.0,
       "name": "StackedImbalance",
-      "ratio": 3.0
+      "ratio": 2.0
     },
     {
-      "active": true,
+      "active": false,
       "drop_threshold": {
         "max": 0.9,
         "min": 0.6,

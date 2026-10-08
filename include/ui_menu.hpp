@@ -134,7 +134,7 @@ private:
         options.push_back(folder);
         try {
             if (fs::exists(folder)) {
-                for (const auto& entry : fs::directory_iterator(folder)) {
+                for (const auto& entry : fs::recursive_directory_iterator(folder)) {
                     if (only_dirs) {
                         if (entry.is_directory()) {
                             options.push_back(entry.path().string());

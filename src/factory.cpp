@@ -8,8 +8,14 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
   
   // pass fees and slippage to papertrader constructor
-  inst.ptrader = std::make_unique<PaperTrader>(cfg.sl_pct, cfg.tp_pct, cfg.max_daily_loss, cfg.slippage_pct, cfg.taker_fee_pct);
-  inst.pos_manager = std::make_unique<PositionManager>(inst.ptrader.get());
+  inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss, cfg.slippage_pct, cfg.taker_fee_pct);
+  
+  // wire trade management toggles (enable_scale_out & fraction)
+  inst.pos_manager = std::make_unique<PositionManager>(
+      inst.ptrader.get(), 
+      cfg.tm_config.enable_scale_out, 
+      cfg.tm_config.scale_out_fraction
+  );
 
   // 1. build entry triggers
   std::vector<ComponentConfig> active_triggers;
@@ -129,6 +135,9 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
 
     if (r.name == "SinglePositionLock") {
       inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(inst.ptrader.get()));
+    } else if (r.name == "MaxStopDistanceLock") {
+      double max_pct = r.params.value("max_stop_pct", 0.015);
+      inst.risk_modules.push_back(std::make_unique<MaxStopDistanceLock>(max_pct));
     } else if (r.name == "MaxLeverageLock") {
       double max_lev = r.params.value("max_leverage", 10.0);
       inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(inst.ptrader.get(), max_lev));

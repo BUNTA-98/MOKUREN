@@ -4,9 +4,10 @@
 #include <string>
 #include <vector>
 
+// simulated broker for backtesting and execution logic
 class PaperTrader : public IBroker {
 public:
-  PaperTrader(double sl_pct = 0.005, double tp_pct = 0.01, double max_dl = 400.0, double slip = 0.0002, double taker_fee = 0.0004);
+  PaperTrader(double max_dl = 400.0, double slip = 0.0002, double taker_fee = 0.0004);
 
   // basic state getters
   double GetBalance() const override { return balance; }
@@ -14,6 +15,9 @@ public:
   double GetPositionSize() const { return position_size; }
   void UpdateStopLoss(double new_sl) override { current_sl_ = new_sl; }
   TradeSignal GetCurrentPosition() const override;
+
+  // interface implementation for partial closes
+  void ClosePartial(double fraction, double current_price, int64_t current_time, const std::string& reason) override;
 
   // performance metric getters
   int GetTradesWon() const { return trades_won; }
@@ -40,12 +44,11 @@ private:
   // internal helpers
   void UpdateDrawdown(double current_equity);
   void UpdateDay(int64_t current_time);
-  void ClosePartialPosition(double current_price, double fraction, const std::string &reason, int64_t current_time);
   void ClosePosition(double current_price, const std::string &reason, int64_t current_time);
 
   // account state
-  double balance = 10000.0;
-  double peak_balance_ = 10000.0;
+  double balance;
+  double peak_balance_;
   double max_drawdown_pct_ = 0.0;
   
   // position state
@@ -84,9 +87,7 @@ private:
   std::vector<StopEvent> current_stop_history_; 
 
   // static config constraints
-  double stop_loss_pct;
-  double take_profit_pct;
-  double taker_fee_pct;
   double slippage;         
+  double taker_fee_pct;
   double total_fees_paid = 0.0;  
 };

@@ -21,7 +21,7 @@ public:
         AppConfig cfg = AppConfig::Load(winning_config);
         EngineInstance eng = StrategyFactory::Build(cfg);
 
-        // inject trade management config into paper trader
+        // map tm config to paper trader
         auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
         if (pt) {
             pt->ApplyManagementConfig(
@@ -35,13 +35,14 @@ public:
         Bar htf_bar;
 
         for (const auto &trade : all_trades) {
-            eng.pos_manager->Update(trade.price);
+            // pass ts to pos manager
+            eng.pos_manager->Update(trade.price, trade.timestamp);
             eng.ptrader->CheckRisk(trade.price, trade.timestamp);
 
             bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
             eng.htf_aggregator->ProcessTrade(htf_bar, trade);
             
-            // create context with all required buffers and metrics
+            // build market context
             MarketContext context{
                 eng.aggregator->GetHistory(), 
                 live_bar, 
@@ -85,7 +86,7 @@ public:
             ti.exit_price = t.exit_price;
             ti.pnl = t.net_profit;
             
-            // find entry candle
+            // find entry idx
             auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
                 [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
                 
@@ -96,7 +97,7 @@ public:
                 ti.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
             }
 
-            // find exit candle
+            // find exit idx
             auto exit_it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.exit_time, 
                 [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
                 

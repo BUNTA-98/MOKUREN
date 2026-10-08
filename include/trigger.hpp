@@ -6,7 +6,7 @@
 #include <vector>
 #include <cmath>
 
-// base interface for all triggers
+// base interface für alle trigger
 class ITrigger {
 public:
   virtual ~ITrigger() = default;
@@ -16,17 +16,18 @@ public:
   }
 };
 
-// detects suddenly pulled limit orders (spoofing) using the l2 ring buffer
+// erkennt plötzlich gelöschte limit-orders (spoofing) über den l2 ring buffer
 class SpoofHunterTrigger : public ITrigger {
 private:
   int lookback_ms_;
   double min_wall_qty_;
-  double drop_threshold_; 
+  double drop_threshold_;
+  int depth_levels_ = 5;
 
 public:
-  // lookback_ms: how far back to look (e.g. 500ms)
-  // min_wall_qty: minimum size of the fake wall (e.g. 30.0 btc)
-  // drop_threshold: how much of the wall must disappear (0.9 = 90%)
+  // lookback_ms: wie weit wir zurückschauen (z.b. 500ms)
+  // min_wall_qty: mindestgröße der fake-wand (z.b. 30.0 btc)
+  // drop_threshold: wie viel der wand verschwinden muss (0.9 = 90%)
   SpoofHunterTrigger(int lookback_ms = 500, double min_wall_qty = 30.0, double drop_threshold = 0.9)
       : lookback_ms_(lookback_ms), min_wall_qty_(min_wall_qty), drop_threshold_(drop_threshold) {}
 
@@ -37,38 +38,57 @@ public:
   TradeSignal EvaluateTick(const MarketContext& context) override {
     TradeSignal signal;
     
-    // get live orderbook state
+    // live orderbuch-status abgreifen
     const auto& current_l2 = context.latest_l2;
     if (current_l2.timestamp == 0) return signal;
 
-    // search ring buffer for correct snapshot in the past
+    // ring buffer nach dem passenden snapshot in der vergangenheit durchsuchen
     const L2Snapshot* past_l2 = nullptr;
     for (size_t i = 0; i < context.l2_history.count; ++i) {
         const auto* snap = context.l2_history.get_history(i);
         
-        // stop as soon as we found a snapshot that is old enough
+        // stop sobald wir einen snapshot finden, der alt genug ist
         if (snap && (current_l2.timestamp - snap->timestamp) >= lookback_ms_) {
             past_l2 = snap;
             break;
         }
     }
 
-    // no valid history found yet (buffer filling up)
+    // noch keine valide historie gefunden (buffer füllt sich noch)
     if (!past_l2) return signal;
 
-    // check ask spoofing (fake sell wall pulled -> price shoots up -> buy signal)
-    if (past_l2->best_ask_qty >= min_wall_qty_) {
-        double drop_limit = past_l2->best_ask_qty * (1.0 - drop_threshold_);
-        if (current_l2.best_ask_qty <= drop_limit) {
+    // aggregierte orderbuch-tiefe vorbereiten
+    double past_bid_qty = 0.0, past_ask_qty = 0.0;
+    double current_bid_qty = 0.0, current_ask_qty = 0.0;
+    
+    // out-of-bounds sicherheitscheck mit der neuen konstanten MAX_L2_DEPTH
+    int check_depth = std::min(depth_levels_, MAX_L2_DEPTH);
+
+    // summiere historien-volumen der top-level
+    for (int i = 0; i < check_depth; ++i) {
+        past_bid_qty += past_l2->bids[i].qty;
+        past_ask_qty += past_l2->asks[i].qty;
+    }
+
+    // summiere aktuelles volumen der top-level
+    for (int i = 0; i < check_depth; ++i) {
+        current_bid_qty += current_l2.bids[i].qty;
+        current_ask_qty += current_l2.asks[i].qty;
+    }
+
+    // check ask spoofing (gestaffelte sell wall gelöscht -> preis schießt hoch -> buy signal)
+    if (past_ask_qty >= min_wall_qty_) {
+        double drop_limit = past_ask_qty * (1.0 - drop_threshold_);
+        if (current_ask_qty <= drop_limit) {
             signal.direction = SignalDirection::BUY;
             return signal;
         }
     }
 
-    // check bid spoofing (fake buy wall pulled -> price drops -> sell signal)
-    if (past_l2->best_bid_qty >= min_wall_qty_) {
-        double drop_limit = past_l2->best_bid_qty * (1.0 - drop_threshold_);
-        if (current_l2.best_bid_qty <= drop_limit) {
+    // check bid spoofing (gestaffelte buy wall gelöscht -> preis droppt -> sell signal)
+    if (past_bid_qty >= min_wall_qty_) {
+        double drop_limit = past_bid_qty * (1.0 - drop_threshold_);
+        if (current_bid_qty <= drop_limit) {
             signal.direction = SignalDirection::SELL;
             return signal;
         }
@@ -78,7 +98,7 @@ public:
   }
 };
 
-// detects stacked footprint imbalances
+// erkennt gestapelte ungleichgewichte (stacked imbalances) im footprint
 class StackedImbalanceTrigger : public ITrigger {
 private:
   double ratio_threshold;
@@ -94,7 +114,7 @@ public:
 
     if (bar.footprint.size() < 2) return TradeSignal{};
 
-    // auto-detect tick size from footprint data
+    // auto-detect tick size aus footprint-daten
     double real_tick = 999999.0;
     for (size_t i = 1; i < bar.footprint.size(); i++) {
         double diff = bar.footprint[i].price - bar.footprint[i-1].price;
@@ -111,7 +131,7 @@ public:
       const auto &upper = bar.footprint[i];
       const auto &lower = bar.footprint[i - 1];
 
-      // dynamic gap check (reset if price jumps)
+      // dynamischer gap-check (reset wenn der preis springt)
       if (upper.price == 0.0 || lower.price == 0.0 || 
           (upper.price - lower.price) > (real_tick * 1.5)) {
         current_buy_stacked = 0;
@@ -152,7 +172,7 @@ public:
   }
 };
 
-// detects absorption (price moves against heavy aggressive flow)
+// erkennt absorption (preis bewegt sich gegen massiven aggressiven orderflow)
 class DeltaAbsorptionTrigger : public ITrigger {
 private:
   double min_delta_threshold_;
@@ -166,28 +186,28 @@ public:
 
     double total_delta = 0.0;
     
-    // calc net delta from footprint
+    // netto-delta aus dem footprint berechnen
     for (const auto &level : bar.footprint) {
       if (level.price > 0.0) {
         total_delta += (level.ask_volume - level.bid_volume);
       }
     }
 
-    // buy signal: heavy selling pressure but candle closes green
+    // buy signal: massiver verkaufsdruck aber kerze schließt grün
     if (total_delta <= -min_delta_threshold_ && bar.close > bar.open) {
       TradeSignal ticket;
       ticket.direction = SignalDirection::BUY;
       ticket.entry_price = bar.close; 
       ticket.stop_loss = bar.low - (bar.tick_size * 2);
 
-      // basic 2:1 risk reward
+      // simples 2:1 risk reward
       double risk = ticket.entry_price - ticket.stop_loss;
       ticket.take_profit = ticket.entry_price + (risk * 2);
 
       return ticket;
     }
 
-    // sell signal: heavy buying pressure but candle closes red
+    // sell signal: massiver kaufdruck aber kerze schließt rot
     if (total_delta >= min_delta_threshold_ && bar.close < bar.open) {
       return TradeSignal{SignalDirection::SELL};
     }
@@ -196,7 +216,7 @@ public:
   }
 };
 
-// logical or block (first valid signal wins)
+// logischer or-block (erstes valides signal gewinnt)
 class OR_Trigger : public ITrigger {
 private:
   std::vector<ITrigger *> triggers_;
@@ -224,7 +244,7 @@ public:
   }
 };
 
-// logical and block (requires unanimous consensus)
+// logischer and-block (erfordert einstimmigen konsens aller sub-trigger)
 class AND_Trigger : public ITrigger {
 private:
   std::vector<ITrigger *> triggers_;
@@ -235,11 +255,11 @@ public:
   TradeSignal EvaluateCandle(const MarketContext &context) override {
     if (triggers_.empty()) return TradeSignal{};
 
-    // get baseline consensus from first trigger
+    // basis-konsens vom ersten trigger einholen
     TradeSignal consensus = triggers_[0]->EvaluateCandle(context);
     if (consensus.direction == SignalDirection::NONE) return TradeSignal{};
 
-    // verify consensus across remaining triggers
+    // konsens über restliche trigger verifizieren
     for (size_t i = 1; i < triggers_.size(); ++i) {
       if (triggers_[i]->EvaluateCandle(context).direction != consensus.direction) {
         return TradeSignal{}; 

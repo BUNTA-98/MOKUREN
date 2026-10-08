@@ -3,12 +3,15 @@
 #include "strategy.hpp"
 #include <vector>
 
+// base interface for all risk modules
 class IRiskModule {
 public:
   virtual ~IRiskModule() = default;
+  // returns true if trade is safe to execute
   virtual bool CheckRisk(const TradeSignal &signal, int64_t current_time) = 0;
 };
 
+// blocks signals if a trade is already active
 class SinglePositionLock : public IRiskModule {
 private:
   IBroker* broker_;
@@ -22,6 +25,7 @@ public:
   }
 };
 
+// blocks trading if daily loss limit is hit
 class MaxDrawdownLock : public IRiskModule {
 private:
   IBroker* broker_;
@@ -37,6 +41,7 @@ public:
   }
 };
 
+// protects margin by limiting total leverage
 class MaxLeverageLock : public IRiskModule {
 private:
   IBroker* broker_;
@@ -55,6 +60,30 @@ public:
   }
 };
 
+// blocks trades with excessively wide structural stops
+class MaxStopDistanceLock : public IRiskModule {
+private:
+  double max_stop_pct_; // hard config limit (e.g. 0.02 for 2%)
+
+public:
+  MaxStopDistanceLock(double max_stop_pct) : max_stop_pct_(max_stop_pct) {}
+
+  bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
+    // reject if no stop is set (suicide)
+    if (signal.entry_price == 0.0 || signal.stop_loss == 0.0) return false;
+    
+    double stop_distance = std::abs(signal.entry_price - signal.stop_loss);
+    double stop_pct = stop_distance / signal.entry_price;
+    
+    // reject if structural stop exceeds config limit
+    if (stop_pct > max_stop_pct_) {
+      return false;
+    }
+    return true;
+  }
+};
+
+// enforces cooldown after closing a trade to prevent revenge trading
 class AntiRevengeLock : public IRiskModule {
 private:
   IBroker* broker_;
@@ -76,6 +105,7 @@ public:
   }
 };
 
+// runs signal through all active risk modules
 class RiskManager {
 private:
   std::vector<IRiskModule *> modules_;
@@ -88,9 +118,9 @@ public:
 
     for (auto *module : modules_) {
       if (!module->CheckRisk(signal, current_time)) {
-        return TradeSignal{}; 
+        return TradeSignal{}; // signal rejected by firewall
       }
     }
-    return signal; 
+    return signal; // all checks passed
   }
 };

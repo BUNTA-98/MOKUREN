@@ -19,9 +19,8 @@ private:
     size_t current_idx = 0;
     bool use_15min_tf = false;
     
-    // --- NEU: State für den Chart Toggle ---
     bool view_footprint = false; 
-    // ---------------------------------------
+    bool show_quote_volume = false; // NEU: Toggle fuer Base (BTC) / Quote (USD)
 
     const std::vector<Bar>& GetActiveHistory() const { return use_15min_tf ? history_15m : history_1m; }
     double GetLevelDelta(const PriceLevel& lvl) const { return lvl.ask_volume - lvl.bid_volume; }
@@ -65,6 +64,11 @@ public:
         snprintf(progress_buf, sizeof(progress_buf), "CANDLE: %zu / %zu", current_idx + 1, history.size());
         ncplane_putstr_yx(stdplane, 11, 50, progress_buf);
 
+        if (view_footprint) {
+            UITheme::StyleDataValue(stdplane);
+            ncplane_putstr_yx(stdplane, 11, 72, show_quote_volume ? "[ VOL: USD ]" : "[ VOL: BASE ]");
+        }
+
         // aktiven Trade suchen
         const TradeInfo* active_trade = nullptr;
         for (const auto& t : trades) {
@@ -107,8 +111,11 @@ public:
             print_stat("HIGH  :", bar.high);
             print_stat("LOW   :", bar.low);
             print_stat("CLOSE :", bar.close);
-            print_stat("VOL   :", bar.total_volume);
-            print_stat("DELTA :", bar.cumulative_delta, true);
+            
+            double total_vol_disp = show_quote_volume ? (bar.total_volume * bar.poc_price) : bar.total_volume;
+            double total_delta_disp = show_quote_volume ? (bar.cumulative_delta * bar.poc_price) : bar.cumulative_delta;
+            print_stat("VOL   :", total_vol_disp);
+            print_stat("DELTA :", total_delta_disp, true);
 
             stat_y += 2;
             UITheme::StyleTextMuted(stdplane);
@@ -166,6 +173,24 @@ public:
             ncplane_putstr_yx(stdplane, chart_y, chart_x, "   PRICE       BID | ASK       DELTA    VOLUME");
             ncplane_putstr_yx(stdplane, chart_y + 1, chart_x, "--------------------------------------------------------");
 
+            auto format_vol = [](double v) -> std::string {
+                char b[32];
+                if (v >= 1000000.0) snprintf(b, sizeof(b), "%5.2fM", v / 1000000.0);
+                else if (v >= 1000.0) snprintf(b, sizeof(b), "%5.1fK", v / 1000.0);
+                else snprintf(b, sizeof(b), "%8.3f", v);
+                return std::string(b);
+            };
+
+            auto format_delta = [](double v) -> std::string {
+                char b[32];
+                double abs_v = std::abs(v);
+                char sign = v > 0 ? '+' : (v < 0 ? '-' : ' ');
+                if (abs_v >= 1000000.0) snprintf(b, sizeof(b), "%c%4.2fM", sign, abs_v / 1000000.0);
+                else if (abs_v >= 1000.0) snprintf(b, sizeof(b), "%c%4.1fK", sign, abs_v / 1000.0);
+                else snprintf(b, sizeof(b), "%+8.3f", v);
+                return std::string(b);
+            };
+
             int row = 0;
             for (auto it = bar.footprint.rbegin(); it != bar.footprint.rend(); ++it) {
                 int current_y = chart_y + 2 + row;
@@ -178,6 +203,12 @@ public:
                 
                 bool bid_imbalance = (bid >= ask * 3.0 && bid > 0.0001);
                 bool ask_imbalance = (ask >= bid * 3.0 && ask > 0.0001);
+
+                if (show_quote_volume) {
+                    bid *= price;
+                    ask *= price;
+                    delta *= price;
+                }
 
                 if (active_trade) {
                     if (active_trade->candle_idx == current_idx && std::abs(price - active_trade->entry_price) < 0.01) {
@@ -202,25 +233,25 @@ public:
                 ncplane_putstr_yx(stdplane, current_y, chart_x, buf);
 
                 (bid_imbalance) ? UITheme::StyleBidImbalance(stdplane) : UITheme::StyleBid(stdplane);
-                snprintf(buf, sizeof(buf), "%8.3f", bid);
+                snprintf(buf, sizeof(buf), "%8s", format_vol(bid).c_str());
                 ncplane_putstr_yx(stdplane, current_y, chart_x + 9, buf);
 
                 UITheme::StyleBackground(stdplane); UITheme::StyleTextMuted(stdplane);
                 ncplane_putstr_yx(stdplane, current_y, chart_x + 17, " | ");
 
                 (ask_imbalance) ? UITheme::StyleAskImbalance(stdplane) : UITheme::StyleAsk(stdplane);
-                snprintf(buf, sizeof(buf), "%-8.3f", ask);
+                snprintf(buf, sizeof(buf), "%-8s", format_vol(ask).c_str());
                 ncplane_putstr_yx(stdplane, current_y, chart_x + 20, buf);
 
                 UITheme::StyleBackground(stdplane);
                 if (delta > 0) UITheme::StyleDataValue(stdplane);
                 else if (delta < 0) UITheme::StyleAlert(stdplane);
                 else UITheme::StyleTextMuted(stdplane);
-                snprintf(buf, sizeof(buf), "[%+8.3f]", delta);
+                snprintf(buf, sizeof(buf), "[%8s]", format_delta(delta).c_str());
                 ncplane_putstr_yx(stdplane, current_y, chart_x + 29, buf);           
                 
                 UITheme::StyleVolumeBar(stdplane);
-                int bar_len = (max_lvl_vol > 0) ? std::round(((bid + ask) / max_lvl_vol) * 12) : 0;
+                int bar_len = (max_lvl_vol > 0) ? std::round(((it->bid_volume + it->ask_volume) / max_lvl_vol) * 12) : 0;
                 std::string vol_bar = ""; for(int i=0; i<bar_len; ++i) vol_bar += "█";
                 ncplane_putstr_yx(stdplane, current_y, chart_x + 39, vol_bar.c_str());
 
@@ -231,7 +262,6 @@ public:
         // ANSICHT 2: 2D MACRO PRICE CHART
         // ==========================================
         else {
-            // horizontale metrics bar
             std::time_t ts = bar.timestamp_start / 1000;
             std::tm* tm = std::localtime(&ts);
             char info_buf[256];
@@ -271,7 +301,6 @@ public:
                 if (max_p == min_p) { max_p += 1; min_p -= 1; }
                 double price_step = (max_p - min_p) / chart_h;
                 
-                // Y-Axis rendern
                 UITheme::StyleTextMuted(stdplane);
                 for (int y = 0; y < chart_h; y++) {
                     double p = max_p - (y * price_step);
@@ -279,7 +308,6 @@ public:
                     ncplane_putstr_yx(stdplane, chart_y_start + y, chart_w + 5, p_buf);
                 }
                 
-                // OHLC Kerzen rendern
                 for (int i = 0; i < visible_count; i++) {
                     int c_idx = start_idx + i;
                     const auto& b = history[c_idx];
@@ -303,13 +331,11 @@ public:
                         else ncplane_putstr_yx(stdplane, y, x, "│");
                     }
                     
-                    // aktiven Cursor markieren
                     if (c_idx == current_idx) {
                         UITheme::StyleCursorActive(stdplane);
                         ncplane_putstr_yx(stdplane, chart_y_start + chart_h, x, "^");
                     }
                     
-                    // Trade Entry/Exit Markierungen in den Chart zeichnen
                     for (const auto& t : trades) {
                         if (t.candle_idx == c_idx) {
                             if (t.is_long) { UITheme::StyleDataValue(stdplane); ncplane_putstr_yx(stdplane, y_low + 1, x, "L"); }
@@ -335,8 +361,13 @@ public:
         ncplane_putstr_yx(stdplane, dimy - 2, 25, "[T] TIMEFRAME");
         ncplane_putstr_yx(stdplane, dimy - 2, 42, "[n / N] JUMP TO TRADE");
         
+        if (view_footprint) {
+            UITheme::StyleDataValue(stdplane);
+            ncplane_putstr_yx(stdplane, dimy - 2, 65, "[V] USD/BTC");
+        }
+        
         UITheme::StyleAlert(stdplane);
-        ncplane_putstr_yx(stdplane, dimy - 2, dimx - 30, "[ENTER] TOGGLE CHART/FOOTPRINT");
+        ncplane_putstr_yx(stdplane, dimy - 2, dimx - 30, "[ENTER] TOGGLE CHART");
     }
 
     void HandleInput(uint32_t key) override {
@@ -345,11 +376,12 @@ public:
 
         if (key == NCKEY_LEFT && current_idx > 0) current_idx--;
         else if (key == NCKEY_RIGHT && current_idx < history.size() - 1) current_idx++;
-        // --- NEU: Toggle zwischen Makro-Chart und Footprint ---
         else if (key == NCKEY_ENTER) {
             view_footprint = !view_footprint;
         }
-        // ------------------------------------------------------
+        else if (key == 'v' || key == 'V') {
+            show_quote_volume = !show_quote_volume;
+        }
         else if (key == 't' || key == 'T') {
             use_15min_tf = !use_15min_tf;
             if (current_idx >= GetActiveHistory().size()) {

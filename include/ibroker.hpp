@@ -20,9 +20,10 @@ struct TradeRecord {
   double exit_price;
   double net_profit;
   std::string exit_reason;
-  std::vector<StopEvent> stop_events; // <--- NEU: speichert trailing history
+  std::vector<StopEvent> stop_events;
 };
 
+// broker interface for execution
 class IBroker {
 public:
     virtual ~IBroker() = default;
@@ -31,6 +32,9 @@ public:
     virtual bool HasOpenPosition() const = 0;
     virtual TradeSignal GetCurrentPosition() const = 0;
     virtual void UpdateStopLoss(double new_sl) = 0;
+    
+    // trigger partial exits for scale outs
+    virtual void ClosePartial(double fraction, double current_price, int64_t current_time, const std::string& reason) = 0;
     
     // required for risk manager and engine state synchronization
     virtual double GetNetProfit() const = 0;
