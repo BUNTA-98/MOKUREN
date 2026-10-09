@@ -7,7 +7,7 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/woche",
+    "dataset": "data/2026/2026-06",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -20,8 +20,14 @@
   },
   "filters": [
     {
-      "active": false,
-      "lookback": 1440,
+      "active": true,
+      "lookback": {
+        "max": 300.0,
+        "min": 10.0,
+        "mode": "range",
+        "step": 10.0,
+        "val": 10.0
+      },
       "name": "MacroTrend"
     },
     {
@@ -89,13 +95,13 @@
         "name": "MaxLeverageLock"
       },
       {
-        "active": false,
+        "active": true,
         "cooldown_ms": 1800000,
         "name": "AntiRevengeLock"
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_price_pct": 0.01,
+    "sl_price_pct": 0.005,
     "tp_r": 3.0
   },
   "trade_management": {

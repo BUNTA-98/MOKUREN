@@ -1,6 +1,7 @@
 #include "logger.hpp"
 
 #include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/stdout_sinks.h>
 
 #include <filesystem>
 #include <mutex>
@@ -28,12 +29,16 @@ void InitLogger(const std::string& log_path, spdlog::level::level_enum level) {
     // dedicated async thread pool for non-blocking logging
     spdlog::init_thread_pool(kQueueSize, kWorkerThreads);
 
-    auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+    auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
         log_path, kMaxFileSize, kMaxFiles, /*rotate_on_open=*/false);
+
+    std::vector<spdlog::sink_ptr> sinks {console_sink, file_sink};
 
     g_logger = std::make_shared<spdlog::async_logger>(
         "engine_audit",
-        sink,
+        sinks.begin(),
+        sinks.end(),
         spdlog::thread_pool(),
         spdlog::async_overflow_policy::overrun_oldest);
 
