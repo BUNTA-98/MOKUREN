@@ -1,0 +1,16 @@
+[Unit]
+Description=Mokuren Trading Engine (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bunta/src/kaito
+ExecStart=/home/bunta/src/kaito/build/mokuren --live --config=/home/bunta/src/kaito/configs/%i.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
