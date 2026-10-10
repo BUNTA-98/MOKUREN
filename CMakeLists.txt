@@ -16,6 +16,9 @@ endif()
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
+# hiredis (redis pub/sub for live event broadcasting)
+pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
+
 include(FetchContent)
 
 # json lib
@@ -64,6 +67,7 @@ target_link_libraries(mokuren PRIVATE
   PkgConfig::NOTCURSES
   spdlog::spdlog
   ixwebsocket
+  PkgConfig::HIREDIS
 )
 
 # --- test environment ---
@@ -98,4 +102,5 @@ target_link_libraries(engine_tests PRIVATE
   nlohmann_json::nlohmann_json
   spdlog::spdlog
   ixwebsocket
+  PkgConfig::HIREDIS
 )

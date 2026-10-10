@@ -29,6 +29,7 @@ public:
   double GetNetProfit() const { return balance - 10000.0; }
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
   const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
+  double GetLastClosedSize() const override { return last_closed_size_; }
   double GetWinrate() const;
 
   // inject active trade management config
@@ -60,6 +61,7 @@ private:
   double current_tp_ = 0.0;
   int64_t entry_time_ = 0;
   double current_entry_fee_ = 0.0; 
+  double last_closed_size_ = 0.0;
 
   // trade management state
   bool sl_moved_to_be_ = false;

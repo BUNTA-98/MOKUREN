@@ -256,6 +256,9 @@ void PaperTrader::ClosePosition(double current_price, const std::string &reason,
     current_daily_pnl_ += net_profit; 
     UpdateDrawdown(balance);
 
+    // remember the closed volume for the live event broadcaster.
+    last_closed_size_ = position_size;
+
     if (net_profit > 0) trades_won++;
     else if (net_profit < 0) trades_lost++;
     else trades_be++;

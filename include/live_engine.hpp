@@ -3,12 +3,14 @@
 #include "factory.hpp"
 #include "live_streamer.hpp"
 #include "logger.hpp"
+#include "redis_publisher.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 // orchestrates a live forward-test run:
@@ -30,7 +32,10 @@ public:
 
   LiveOrchestrator(EngineInstance engine,
                    std::unique_ptr<IMarketStreamer> streamer,
-                   double sl_pct, double tp_pct);
+                   double sl_pct, double tp_pct,
+                   std::string redis_host = "127.0.0.1",
+                   int redis_port = 6379,
+                   std::string symbol = "BTCUSDT");
   ~LiveOrchestrator();
 
   // non-copyable / non-movable (owns threads and a unique engine).
@@ -54,6 +59,11 @@ private:
   void OnTrade(const TradeEvent& t);
   void OnL2(const L2Snapshot& s);
 
+  // publish a structured json event to the redis pub/sub channel.
+  // action is e.g. "TRADE_OPEN" or "POSITION_CLOSED".
+  void PublishEvent(const char* action, double price, double size,
+                    int64_t timestamp);
+
   // worker thread entry point: drains the queue and feeds the engine.
   void WorkerLoop();
 
@@ -75,6 +85,12 @@ private:
   // risk parameters mirrored from the backtest config (cfg.sl_pct / cfg.tp_pct).
   double sl_pct_ = 0.004;
   double tp_pct_ = 0.012;
+
+  // symbol used in broadcast events (e.g. "BTCUSDT").
+  std::string symbol_;
+
+  // non-blocking redis pub/sub broadcaster for live events.
+  std::unique_ptr<RedisPublisher> redis_publisher_;
 
   // bounded event queue guarded by mutex_/cv_.
   std::deque<Event> queue_;

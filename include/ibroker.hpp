@@ -39,4 +39,8 @@ public:
     // required for risk manager and engine state synchronization
     virtual double GetNetProfit() const = 0;
     virtual const std::vector<TradeRecord>& GetTradeHistory() const = 0;
+
+    // size of the most recently closed position (0.0 if none yet).
+    // used by the live event broadcaster to report closed volume.
+    virtual double GetLastClosedSize() const = 0;
 };

@@ -2,17 +2,41 @@
 
 #include "market_context.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <utility>
 
 LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
                                    std::unique_ptr<IMarketStreamer> streamer,
-                                   double sl_pct, double tp_pct)
+                                   double sl_pct, double tp_pct,
+                                   std::string redis_host, int redis_port,
+                                   std::string symbol)
     : engine_(std::move(engine)),
       streamer_(std::move(streamer)),
       sl_pct_(sl_pct),
-      tp_pct_(tp_pct) {
-  LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={})",
-           kMaxQueueDepth, sl_pct_, tp_pct_);
+      tp_pct_(tp_pct),
+      symbol_(std::move(symbol)) {
+  LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={} symbol={})",
+           kMaxQueueDepth, sl_pct_, tp_pct_, symbol_);
+
+  // start the async broadcaster. it owns its own worker thread and
+  // never blocks the trading loop.
+  redis_publisher_ = std::make_unique<RedisPublisher>(
+      std::move(redis_host), redis_port, "mokuren:events");
+}
+
+void LiveOrchestrator::PublishEvent(const char* action, double price,
+                                    double size, int64_t timestamp) {
+  if (!redis_publisher_) return;
+
+  nlohmann::json ev;
+  ev["timestamp"] = timestamp;
+  ev["action"] = action;
+  ev["price"] = price;
+  ev["size"] = size;
+  ev["symbol"] = symbol_;
+
+  redis_publisher_->Publish(ev.dump());
 }
 
 LiveOrchestrator::~LiveOrchestrator() {
@@ -41,6 +65,15 @@ bool LiveOrchestrator::Start() {
   streamer_->SetTradeCallback([this](const TradeEvent& t) { OnTrade(t); });
   streamer_->SetL2Callback([this](const L2Snapshot& s) { OnL2(s); });
 
+  // startup ping: lets us verify the redis integration without waiting
+  // for the first trade to arrive.
+  if (redis_publisher_) {
+    nlohmann::json ping;
+    ping["action"] = "SYSTEM_STARTUP";
+    ping["msg"] = "Engine online";
+    redis_publisher_->Publish(ping.dump());
+  }
+
   LOG_INFO("LiveOrchestrator: starting worker thread");
   worker_ = std::thread(&LiveOrchestrator::WorkerLoop, this);
 
@@ -54,6 +87,15 @@ bool LiveOrchestrator::Start() {
 void LiveOrchestrator::Stop() {
   if (!running_.exchange(false, std::memory_order_acq_rel)) {
     return; // already stopped
+  }
+
+  // shutdown ping: emitted before we tear anything down so the event
+  // is guaranteed to be queued while the publisher is still alive.
+  if (redis_publisher_) {
+    nlohmann::json ping;
+    ping["action"] = "SYSTEM_SHUTDOWN";
+    ping["msg"] = "Engine offline";
+    redis_publisher_->Publish(ping.dump());
   }
 
   LOG_INFO("LiveOrchestrator: stopping market streamer");
@@ -90,11 +132,23 @@ void LiveOrchestrator::Stop() {
     if (final_price > 0.0) {
       LOG_INFO("LiveOrchestrator: force-closing open position at {}",
                final_price);
+      bool was_open = engine_.ptrader->HasOpenPosition();
       engine_.ptrader->CloseOpenPositionAtEnd(final_price,
                                               live_bar_.timestamp_start);
+      if (was_open) {
+        PublishEvent("POSITION_CLOSED", final_price,
+                     engine_.ptrader->GetLastClosedSize(),
+                     live_bar_.timestamp_start);
+      }
     } else {
       LOG_WARN("LiveOrchestrator: no valid price to force-close position");
     }
+  }
+
+  // block until the shutdown ping (and any other queued events) have
+  // actually been written to redis before we return.
+  if (redis_publisher_) {
+    redis_publisher_->Flush();
   }
 
   LOG_INFO("LiveOrchestrator: stopped (dropped={})",
@@ -186,7 +240,15 @@ void LiveOrchestrator::WorkerLoop() {
                 static_cast<int>(final_sig.direction), final_sig.entry_price,
                 final_sig.stop_loss, final_sig.take_profit, final_sig.volume,
                 ts);
+
+      bool was_open = engine_.ptrader->HasOpenPosition();
       engine_.ptrader->ProcessSignal(final_sig, exec_price, ts);
+      bool is_open = engine_.ptrader->HasOpenPosition();
+
+      // broadcast a trade-open event when a new position is established.
+      if (!was_open && is_open) {
+        PublishEvent("TRADE_OPEN", final_sig.entry_price, final_sig.volume, ts);
+      }
     }
   };
 
@@ -238,7 +300,17 @@ void LiveOrchestrator::WorkerLoop() {
 
         // 2. papertrader risk check (sl/tp/trail/scale-out triggers).
         if (engine_.ptrader) {
+          bool was_open = engine_.ptrader->HasOpenPosition();
           engine_.ptrader->CheckRisk(ev.trade.price, ev.trade.timestamp);
+          bool is_open = engine_.ptrader->HasOpenPosition();
+
+          // broadcast a position-closed event when the risk check
+          // (sl/tp/trail/scale-out) fully closes the position.
+          if (was_open && !is_open) {
+            PublishEvent("POSITION_CLOSED", ev.trade.price,
+                         engine_.ptrader->GetLastClosedSize(),
+                         ev.trade.timestamp);
+          }
         }
 
         // 3. build the live bar (and htf bar) from the trade.
