@@ -14,10 +14,10 @@
 // forwards parsed events to the registered callbacks.
 class BinanceDataStreamer : public IMarketStreamer {
 public:
-  // default stream: btcusdt aggTrade + depth@100ms on binance futures.
+  // default stream: btcusdt aggTrade + bookTicker (top-of-book) on binance futures.
   explicit BinanceDataStreamer(
       const std::string& url =
-          "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@depth@100ms");
+          "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker");
 
   ~BinanceDataStreamer() override;
 

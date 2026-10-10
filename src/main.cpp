@@ -2,6 +2,8 @@
 #include "ui_manager.hpp"
 #include "binance_streamer.hpp"
 #include "live_engine.hpp"
+#include "config_parser.hpp"
+#include "factory.hpp"
 
 #include <ixwebsocket/IXNetSystem.h>
 
@@ -35,15 +37,29 @@ void RunBacktest() {
 }
 
 // headless live forward-test: streams binance data into the orchestrator.
-// the engine instance is intentionally left empty for now so we can
-// verify the websocket data flow via TRACE logs without running the
-// full strategy pipeline.
-void RunLive() {
+// loads the strategy pipeline from a json config file so websocket events
+// flow through Aggregator -> AlphaEngine -> PaperTrader instead of being dropped.
+void RunLive(const std::string& config_path) {
   std::signal(SIGINT, HandleSigint);
 
-  LOG_INFO("live mode: connecting to binance streamer");
+  LOG_INFO("live mode: loading config from '{}'", config_path);
 
-  EngineInstance engine; // dummy: all pointers null, WorkerLoop null-checks them
+  std::ifstream cfg_file(config_path);
+  if (!cfg_file.is_open()) {
+    throw std::runtime_error("failed to open config file: " + config_path);
+  }
+
+  json cfg_json;
+  cfg_file >> cfg_json;
+
+  // collapse grid definitions ({"min","max","step","val"}) into their scalar
+  // "val" so the factory only sees plain numbers. the backtest path keeps the
+  // original grid objects for GridScanner.
+  FlattenGrids(cfg_json);
+
+  AppConfig cfg = AppConfig::Load(cfg_json);
+  EngineInstance engine = StrategyFactory::Build(cfg);
+
   auto streamer = std::make_unique<BinanceDataStreamer>();
 
   LiveOrchestrator orchestrator(std::move(engine), std::move(streamer), 0.01, 0.01);
@@ -69,21 +85,29 @@ void RunLive() {
 int main(int argc, char** argv) {
   ix::initNetSystem();
 
-  mokuren::InitLogger();
-  spdlog::set_level(spdlog::level::trace);
-  LOG_INFO("engine starting up");
-
   bool live_mode = false;
+  std::string config_path;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--live") == 0) {
       live_mode = true;
+    } else if (std::strncmp(argv[i], "--config=", 9) == 0) {
+      config_path = argv[i] + 9;
     }
   }
+
+  if (live_mode && config_path.empty()) {
+    std::cerr << "error: --live requires --config=<path> (e.g. --config=configs/btc_scalp_v1.json)\n";
+    return 1;
+  }
+
+  mokuren::InitLogger("logs/engine.log", spdlog::level::info, live_mode);
+  spdlog::set_level(spdlog::level::trace);
+  LOG_INFO("engine starting up");
 
   int exit_code = 0;
   try {
     if (live_mode) {
-      RunLive();
+      RunLive(config_path);
     } else {
       RunBacktest();
     }

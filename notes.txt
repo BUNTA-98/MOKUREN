@@ -1,0 +1,2 @@
+//backtesting
+- eta für backtests aber ohne performance einbußen

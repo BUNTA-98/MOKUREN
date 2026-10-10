@@ -17,7 +17,7 @@ constexpr size_t kMaxFileSize = 10 * 1024 * 1024; // 10 MB
 constexpr size_t kMaxFiles = 5;
 } // namespace
 
-void InitLogger(const std::string& log_path, spdlog::level::level_enum level) {
+void InitLogger(const std::string& log_path, spdlog::level::level_enum level, bool enable_console) {
   std::call_once(g_init_flag, [&]() {
     // ensure the log directory exists
     std::filesystem::path p(log_path);
@@ -29,11 +29,13 @@ void InitLogger(const std::string& log_path, spdlog::level::level_enum level) {
     // dedicated async thread pool for non-blocking logging
     spdlog::init_thread_pool(kQueueSize, kWorkerThreads);
 
-    auto console_sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
     auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
         log_path, kMaxFileSize, kMaxFiles, /*rotate_on_open=*/false);
 
-    std::vector<spdlog::sink_ptr> sinks {console_sink, file_sink};
+    std::vector<spdlog::sink_ptr> sinks {file_sink};
+    if (enable_console) {
+      sinks.push_back(std::make_shared<spdlog::sinks::stdout_sink_mt>());
+    }
 
     g_logger = std::make_shared<spdlog::async_logger>(
         "engine_audit",

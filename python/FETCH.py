@@ -83,10 +83,13 @@ def main():
 
     dates = get_date_range(start, end)
     
-    # Wir laden nur die Trades, da Binance kein tiefes Orderbuch kostenlos liefert
-    download_and_merge(symbol, dates, "trades", "trades.csv")
+    # 1. Trades laden (aggTrades sind der Standard für professionelle Backtests)
+    download_and_merge(symbol, dates, "aggTrades", f"{symbol}-aggTrades-merged.csv")
+    
+    # 2. L2 Top-of-Book (Orderbuch) laden
+    download_and_merge(symbol, dates, "bookTicker", f"{symbol}-bookTicker-merged.csv")
 
-    print("\n[OK] Trades erfolgreich heruntergeladen und zusammengefuehrt.")
+    print("\n[OK] aggTrades und bookTicker (L2) erfolgreich heruntergeladen und zusammengefuehrt.")
 
 if __name__ == "__main__":
     main()

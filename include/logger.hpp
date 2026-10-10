@@ -12,8 +12,9 @@ namespace mokuren {
 
 // initializes the global async logger writing to logs/engine_audit.log.
 // safe to call multiple times (subsequent calls are no-ops).
-void InitLogger(const std::string& log_path = "logs/engine_audit.log",
-                spdlog::level::level_enum level = spdlog::level::trace);
+void InitLogger(const std::string& log_path = "logs/engine.log",
+                spdlog::level::level_enum level = spdlog::level::info,
+                bool enable_console = false);
 
 // flushes and shuts down the async thread pool. call before exit.
 void ShutdownLogger();

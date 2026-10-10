@@ -72,7 +72,7 @@ void BinanceDataStreamer::OnMessage(const std::string& payload) {
   try {
     if (stream.find("@aggTrade") != std::string::npos) {
       HandleAggTrade(data);
-    } else if (stream.find("@depth") != std::string::npos) {
+    } else if (stream.find("@bookTicker") != std::string::npos) {
       HandleDepth(data);
     }
   } catch (const std::exception& e) {
@@ -95,36 +95,25 @@ void BinanceDataStreamer::HandleAggTrade(const nlohmann::json& data) {
 }
 
 void BinanceDataStreamer::HandleDepth(const nlohmann::json& data) {
-  const auto& bids = data.at("b");
-  const auto& asks = data.at("a");
-
-  if (bids.empty() || asks.empty()) {
-    return;
-  }
-
+  // @bookTicker payload: { "u":.., "s":"BTCUSDT", "b":"bid px", "B":"bid qty",
+  //                        "a":"ask px", "A":"ask qty", "T":.., "E":.. }
+  // note: "b"/"a" are the best bid/ask *prices* (strings), not arrays.
   L2Snapshot snap{};
   std::memset(&snap, 0, sizeof(L2Snapshot));
 
   snap.timestamp = data.at("E").get<int64_t>();
 
   // top of book (level 1)
-  snap.best_bid_price = std::stod(bids[0][0].get<std::string>());
-  snap.best_bid_qty   = std::stod(bids[0][1].get<std::string>());
-  snap.best_ask_price = std::stod(asks[0][0].get<std::string>());
-  snap.best_ask_qty   = std::stod(asks[0][1].get<std::string>());
+  snap.best_bid_price = std::stod(data.at("b").get<std::string>());
+  snap.best_bid_qty   = std::stod(data.at("B").get<std::string>());
+  snap.best_ask_price = std::stod(data.at("a").get<std::string>());
+  snap.best_ask_qty   = std::stod(data.at("A").get<std::string>());
 
-  // fill the aggregated depth arrays up to MAX_L2_DEPTH
-  const size_t bid_depth = std::min<size_t>(bids.size(), MAX_L2_DEPTH);
-  for (size_t i = 0; i < bid_depth; ++i) {
-    snap.bids[i].price = std::stod(bids[i][0].get<std::string>());
-    snap.bids[i].qty   = std::stod(bids[i][1].get<std::string>());
-  }
-
-  const size_t ask_depth = std::min<size_t>(asks.size(), MAX_L2_DEPTH);
-  for (size_t i = 0; i < ask_depth; ++i) {
-    snap.asks[i].price = std::stod(asks[i][0].get<std::string>());
-    snap.asks[i].qty   = std::stod(asks[i][1].get<std::string>());
-  }
+  // bookTicker only carries level 1, so the depth arrays stay zeroed.
+  snap.bids[0].price = snap.best_bid_price;
+  snap.bids[0].qty   = snap.best_bid_qty;
+  snap.asks[0].price = snap.best_ask_price;
+  snap.asks[0].qty   = snap.best_ask_qty;
 
   LOG_INFO("LIVE L2   | Best Bid: {:.2f} ({:.4f}) | Best Ask: {:.2f} ({:.4f})", snap.best_bid_price, snap.best_bid_qty, snap.best_ask_price, snap.best_ask_qty);
 
