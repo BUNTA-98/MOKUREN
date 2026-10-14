@@ -99,8 +99,7 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
     fs::path path = dataset_path;
     fs::path csv_file = path / "trades.csv";
     
-    // V3 zwingt die Engine, den alten Cache komplett zu ignorieren!
-    fs::path cache_path = path / "trades_cache_v3.bin"; 
+    fs::path cache_path = path / "trades_cache.bin"; 
 
     // try load bin cache
     if (fs::exists(cache_path)) {

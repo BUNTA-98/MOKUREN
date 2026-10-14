@@ -1,2 +1,17 @@
-//backtesting
+
 - eta für backtests aber ohne performance einbußen
+- htf & ltf candles intervall in config (is schon glaub ich aber ma in sekunden ändern)
+- volume profile
+- sprung auf equity curve nich auf tradelog, dann sprung von tradelog auf die 
+  trade entry kerze
+- top 10 runs temporär speichern dass nich neu durchgejagt werden muss ODER loading symbol (braille)
+- quit mokuren mit escappe, quit grid search mit q aber behalte VOLLSTÄNDIGE runs 
+- scrollable footprint
+- iceberg detector/umbau auf depth
+- save config from ui, with name check so no overwrite
+- ordnerstruktur /core /ui /dashboard /live
+- variable account size 
+- beisst sich sl_pct nicht mit der strat falls diese einen sl setzt? wir haben ja dynamic
+  position size
+- mehr unit tests 
+

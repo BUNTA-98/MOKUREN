@@ -68,7 +68,6 @@ size_t CSVLoader::ProcessBinanceCSV(const std::string &filepath,
         trade.price = std::stod(col[idx_price]);
         trade.quantity = std::stod(col[idx_qty]);
         
-        // HIER WAR DER FEHLER: Kein "/ 1000" mehr! Binance-Daten sind bereits in Millisekunden.
         trade.timestamp = std::stoll(col[idx_time]); 
 
         const std::string& m_str = col[idx_maker];

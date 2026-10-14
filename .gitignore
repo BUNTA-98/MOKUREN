@@ -11,3 +11,4 @@ logs/
 .aider*
 .env
 live_debug.log
+notes.txt
