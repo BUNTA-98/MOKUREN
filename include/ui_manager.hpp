@@ -29,8 +29,10 @@ private:
     PageID current_page_id = PageID::CONFIG; 
     std::unique_ptr<UIPage> current_page;
     
-    // hold active config path across page switches
-    std::string active_config_path = "configs/default.json";
+    // hold active config path across page switches. empty until the config
+    // page reports its selection, so we never silently fall back to a
+    // hardcoded profile.
+    std::string active_config_path;
 
     void DrawGlobalHeader() {
         unsigned int dimy, dimx;
@@ -90,7 +92,8 @@ private:
     }
 
     void SwitchPage(PageID new_page) {
-        // capture active config before config page is destroyed
+        // capture active config before config page is destroyed. this is the
+        // single source of truth for which profile the scanner/backtest runs.
         if (current_page_id == PageID::CONFIG && current_page) {
             if (auto* p_config = dynamic_cast<PageConfig*>(current_page.get())) {
                 active_config_path = p_config->GetActiveConfigPath();
@@ -100,20 +103,37 @@ private:
         current_page_id = new_page;
         
         if (new_page == PageID::CONFIG) {
-            current_page = std::make_unique<PageConfig>(); 
+            auto p_config = std::make_unique<PageConfig>();
+            // restore the previously selected profile so navigating back from
+            // the scanner does not silently reset to configs/default.json.
+            // if no profile was ever selected, fall back to the constructor's
+            // default (configs/default.json) rather than leaving it unset.
+            if (!active_config_path.empty()) {
+                p_config->SetActiveConfigPath(active_config_path);
+            } else {
+                active_config_path = p_config->GetActiveConfigPath();
+            }
+            current_page = std::move(p_config);
         } 
         else if (new_page == PageID::SCANNER) { 
-            // pass the captured path to the scanner
+            // pass the captured path to the scanner. if it is empty the config
+            // page was never visited, which is a programming error rather than
+            // a reason to silently load a default profile.
+            if (active_config_path.empty()) {
+                throw std::runtime_error("scanner launched without an active config profile");
+            }
             current_page = std::make_unique<UIScanner>(&state, &engine, active_config_path, 
                 [this](const UIResult& winning_run) { 
                     
-                    std::string data_path = "binance/monthly/DEFAULT.csv"; 
-                    
+                    // data path is resolved from the winning run's config. no
+                    // hardcoded fallback: if the config carries no dataset we
+                    // surface the error rather than replaying the wrong file.
+                    std::string data_path;
                     std::function<void(const nlohmann::json&)> find_path = [&](const nlohmann::json& node) {
                         if (node.is_object()) {
                             for (auto& [k, v] : node.items()) {
-                                if (v.is_string() && (k == "filepath" || k == "data_path")) {
-                                    data_path = v.get<std::string>(); 
+                                if (v.is_string() && (k == "filepath" || k == "data_path" || k == "dataset")) {
+                                    data_path = v.get<std::string>();
                                 } else { find_path(v); }
                             }
                         } else if (node.is_array()) {
@@ -121,6 +141,9 @@ private:
                         }
                     };
                     find_path(winning_run.full_config);
+                    if (data_path.empty()) {
+                        throw std::runtime_error("winning run has no dataset path in its config");
+                    }
 
                     // automatic wfa stitching or standard grid replay
                     if (winning_run.params_str.find("WFA_Mode") != std::string::npos && !winning_run.wfa_configs.empty()) {
@@ -204,8 +227,21 @@ public:
                 SwitchPage(static_cast<PageID>(next_id));
             }
             // --- NEU: Fängt S und W im Config Menü ab und routet sie durch ---
+            // capture the selected profile *before* switching pages so the
+            // scanner is constructed with the exact config the user picked.
             else if (!is_editing && (key == 's' || key == 'S' || key == 'w' || key == 'W') && current_page_id == PageID::CONFIG) {
+                if (current_page) {
+                    if (auto* p_config = dynamic_cast<PageConfig*>(current_page.get())) {
+                        active_config_path = p_config->GetActiveConfigPath();
+                    }
+                }
                 SwitchPage(PageID::SCANNER);
+                // arm the scanner's one-shot autostart, then deliver the key.
+                // the scanner consumes the flag inside HandleInput so the scan
+                // is initialized exactly once even if OnEnter() also ran.
+                if (auto* scanner = dynamic_cast<UIScanner*>(current_page.get())) {
+                    scanner->ArmAutostart(key);
+                }
                 if (current_page) current_page->HandleInput(key);
             }
             // ----------------------------------------------------------------

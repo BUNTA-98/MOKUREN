@@ -50,13 +50,13 @@ TEST_CASE("Filter Verification Suite", "[filters]") {
         OrderbookImbalanceFilter filter(3.0); 
         MarketContext ctx{mock_history, mock_live, mock_htf, mock_session, mock_l2, mock_l2_history};
 
-        ctx.latest_l2.best_bid_qty = 30.0;
-        ctx.latest_l2.best_ask_qty = 10.0; 
+        mock_l2.best_bid_qty = 30.0;
+        mock_l2.best_ask_qty = 10.0; 
 
         REQUIRE(filter.AllowTrade(ctx, buy_signal) == true);   
         REQUIRE(filter.AllowTrade(ctx, sell_signal) == false); 
 
-        ctx.latest_l2.best_bid_qty = 20.0; 
+        mock_l2.best_bid_qty = 20.0; 
         REQUIRE(filter.AllowTrade(ctx, buy_signal) == false);  
     }
 

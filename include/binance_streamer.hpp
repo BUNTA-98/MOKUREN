@@ -9,15 +9,15 @@
 #include <atomic>
 #include <string>
 
-// live market data source for binance usdm futures.
-// connects to the combined websocket stream (aggTrade + depth) and
+// live market data source for binance spot.
+// connects to the combined websocket stream (aggTrade + bookTicker) and
 // forwards parsed events to the registered callbacks.
 class BinanceDataStreamer : public IMarketStreamer {
 public:
-  // default stream: btcusdt aggTrade + bookTicker (top-of-book) on binance futures.
+  // default stream: btcusdt aggTrade + bookTicker (top-of-book) on binance spot.
   explicit BinanceDataStreamer(
       const std::string& url =
-          "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker");
+          "wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade/btcusdt@bookTicker");
 
   ~BinanceDataStreamer() override;
 

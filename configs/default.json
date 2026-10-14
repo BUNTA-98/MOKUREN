@@ -22,7 +22,7 @@
     {
       "active": true,
       "lookback": {
-        "max": 2000.0,
+        "max": 2500.0,
         "min": 50.0,
         "mode": "range",
         "step": 50.0,
@@ -129,9 +129,9 @@
     },
     {
       "active": true,
-      "levels": 3.0,
+      "levels": 1.0,
       "name": "StackedImbalance",
-      "ratio": 3.0
+      "ratio": 2.0
     },
     {
       "active": false,

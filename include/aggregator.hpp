@@ -101,7 +101,12 @@ public:
   
   const std::vector<Bar> &GetHistory() const { return history; }
   SessionMetrics GetSessionMetrics() const { return current_metrics_; }
-  L2Snapshot GetLatestL2() const { return latest_l2_; }
+  // borrowed from the ring buffer (no second 200-byte copy kept around)
+  // and returned by reference so MarketContext binds without copying.
+  const L2Snapshot &GetLatestL2() const {
+    const L2Snapshot *s = l2_history_.get_history(0);
+    return s ? *s : EmptyL2();
+  }
   const L2RingBuffer &GetL2History() const { return l2_history_; }
   void FlushLastCandle(Bar &live_bar);
 
@@ -113,11 +118,19 @@ private:
 
   std::vector<Bar> history;
 
-  // static footprint workspace
-  PriceLevel live_workspace[MAX_GRID_LEVELS];
+  // static footprint workspace. zero-init on construction; the per-candle
+  // reset only clears the span we actually touched (see TrackTouched).
+  PriceLevel live_workspace[MAX_GRID_LEVELS]{};
   double base_price = 0.0;
   double lowest_price = 0.0;
   int active_levels = 0;
+
+  // narrowest [min,max] index range touched during the current candle.
+  // analyze / pack / reset walk only this range instead of the full
+  // MAX_GRID_LEVELS (5000 * 24 B ~= 117 KB) grid, which otherwise thrashes
+  // l1/l2 on every candle boundary.
+  int min_touched_idx_ = MAX_GRID_LEVELS;
+  int max_touched_idx_ = -1;
 
   // vwap state
   int64_t current_session_day_ = -1; 
@@ -125,27 +138,46 @@ private:
   double session_price_vol_ = 0.0;
   SessionMetrics current_metrics_;
 
-  // l2 state
-  L2Snapshot latest_l2_{};
+  // l2 state. the ring buffer is the single source of truth for the
+  // latest snapshot; a separate latest_l2_ copy just doubled the
+  // per-snapshot copy cost.
   L2RingBuffer l2_history_{}; // <--- NEU: Der Puffer im Arbeitsspeicher
 
-  // reset grid
+  // valid-but-empty snapshot returned before any l2 data has arrived.
+  static const L2Snapshot &EmptyL2() {
+    static const L2Snapshot empty{};
+    return empty;
+  }
+
+  // reset grid. only the slots touched during the previous candle are
+  // cleared; walking all MAX_GRID_LEVELS slots on every candle boundary
+  // was pure cache thrash.
   void ResetWorkspace() {
     base_price = 0.0;
     lowest_price = 0.0;
     active_levels = 0;
-    for (int i = 0; i < MAX_GRID_LEVELS; i++) {
-      live_workspace[i].price = 0.0;
-      live_workspace[i].bid_volume = 0.0;
-      live_workspace[i].ask_volume = 0.0;
+    if (max_touched_idx_ >= min_touched_idx_) {
+      for (int i = min_touched_idx_; i <= max_touched_idx_; i++) {
+        live_workspace[i].price = 0.0;
+        live_workspace[i].bid_volume = 0.0;
+        live_workspace[i].ask_volume = 0.0;
+      }
     }
+    min_touched_idx_ = MAX_GRID_LEVELS;
+    max_touched_idx_ = -1;
   }
 
-  // pack footprint for history
+  // widen the tracked touched-index range
+  void TrackTouched(int idx) {
+    if (idx < min_touched_idx_) min_touched_idx_ = idx;
+    if (idx > max_touched_idx_) max_touched_idx_ = idx;
+  }
+
+  // pack footprint for history. only the touched range is scanned.
   void PackFootprint(Bar &bar) {
     bar.footprint.clear();
     bar.footprint.reserve(active_levels);
-    for (int i = 0; i < MAX_GRID_LEVELS; i++) {
+    for (int i = min_touched_idx_; i <= max_touched_idx_; i++) {
       if (live_workspace[i].bid_volume > 0 || live_workspace[i].ask_volume > 0) {
         bar.footprint.push_back(live_workspace[i]);
       }

@@ -1,4 +1,5 @@
 #include "logger.hpp"
+#include "live_debug.hpp"
 #include "ui_manager.hpp"
 #include "binance_streamer.hpp"
 #include "live_engine.hpp"
@@ -70,6 +71,7 @@ void RunLive(const std::string& config_path) {
   }
 
   LOG_INFO("live mode: streaming (press ctrl-c to stop)");
+  LIVE_DBG("main: live loop entered, orchestrator started");
 
   while (!g_quit.load(std::memory_order_acquire)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -92,6 +94,8 @@ int main(int argc, char** argv) {
       live_mode = true;
     } else if (std::strncmp(argv[i], "--config=", 9) == 0) {
       config_path = argv[i] + 9;
+    } else if (std::strcmp(argv[i], "--debug") == 0) {
+      mokuren::debug::g_live_debug_enabled.store(true, std::memory_order_relaxed);
     }
   }
 

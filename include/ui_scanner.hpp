@@ -35,9 +35,34 @@ private:
 
     std::function<void(const UIResult&)> on_inspect; 
 
+    // set by OnEnter() when the page is (re)entered. consumed exactly once by
+    // HandleInput() so a scan is never started twice (e.g. OnEnter + the
+    // 's'/'w' key that triggered the page switch).
+    bool pending_autostart_ = false;
+    uint32_t pending_autostart_key_ = 0;
+
 public:
     UIScanner(EngineState* s, Mokuren* e, const std::string& cfg_path, std::function<void(const UIResult&)> inspect_cb) 
-        : state(s), engine(e), config_path(cfg_path), on_inspect(inspect_cb) {}
+        : state(s), engine(e), config_path(cfg_path), on_inspect(inspect_cb) {
+        if (config_path.empty()) {
+            throw std::runtime_error("UIScanner constructed without a config path");
+        }
+    }
+
+    void OnEnter() override {
+        // do NOT start the scan here. the page switch that brought us here may
+        // be followed by a HandleInput('s'/'w') in the same frame; we only arm
+        // the autostart and let HandleInput consume it once.
+        pending_autostart_ = false;
+    }
+
+    // called by UIManager right after the page switch that was triggered by an
+    // 's'/'w' keypress. records the key so HandleInput can start the scan
+    // exactly once and ignore any duplicate delivery in the same frame.
+    void ArmAutostart(uint32_t key) {
+        pending_autostart_ = true;
+        pending_autostart_key_ = key;
+    }
 
     void Render(struct ncplane* stdplane) override {
         unsigned int dimy, dimx;
@@ -442,6 +467,18 @@ public:
         }
 
         if ((key == 's' || key == 'S' || key == 'w' || key == 'W') && !state->is_running.load()) {
+            // consume the autostart flag if this key is the one that triggered
+            // the page switch, so a subsequent duplicate keypress in the same
+            // frame cannot start a second scan.
+            if (pending_autostart_) {
+                if (key != pending_autostart_key_) {
+                    // a different key arrived first; drop the stale autostart
+                    pending_autostart_ = false;
+                } else {
+                    pending_autostart_ = false;
+                }
+            }
+
             bool run_wfa = (key == 'w' || key == 'W'); 
             
             state->is_running = true;
@@ -456,26 +493,50 @@ public:
 
             EngineState* bg_state = state;
             Mokuren* bg_engine = engine;
+            // strictly the path handed to us by UIManager. no default fallback.
             std::string bg_config = config_path;
+            if (bg_config.empty()) {
+                state->SetStatus("ERR: no config path bound to scanner");
+                state->is_running = false;
+                return;
+            }
 
             std::thread([bg_state, bg_engine, bg_config, run_wfa]() {
-                std::string data_path = "binance/monthly/DEFAULT.csv"; 
+                // resolve the dataset from the *selected* config. no silent
+                // fallback to a hardcoded csv: if the config carries no path we
+                // abort the run and surface the error instead of scanning the
+                // wrong data.
+                std::string data_path;
                 try {
                     std::ifstream file(bg_config);
-                    if (file.is_open()) {
-                        json j = json::parse(file);
-                        std::function<void(const json&)> find_path = [&](const json& node) {
-                            if (node.is_object()) {
-                                for (auto& [k, v] : node.items()) {
-                                    if (v.is_string() && (k == "filepath" || k == "data_path")) {
-                                        data_path = v.get<std::string>(); 
-                                    } else { find_path(v); }
-                                }
-                            }
-                        };
-                        find_path(j);
+                    if (!file.is_open()) {
+                        bg_state->SetStatus("ERR: cannot open config " + bg_config);
+                        bg_state->is_running = false;
+                        return;
                     }
-                } catch (...) {}
+                    json j = json::parse(file);
+                    std::function<void(const json&)> find_path = [&](const json& node) {
+                        if (node.is_object()) {
+                            for (auto& [k, v] : node.items()) {
+                                if (v.is_string() && (k == "filepath" || k == "data_path" || k == "dataset")) {
+                                    data_path = v.get<std::string>();
+                                } else { find_path(v); }
+                            }
+                        } else if (node.is_array()) {
+                            for (auto& item : node) find_path(item);
+                        }
+                    };
+                    find_path(j);
+                } catch (const std::exception& e) {
+                    bg_state->SetStatus(std::string("ERR: bad config ") + e.what());
+                    bg_state->is_running = false;
+                    return;
+                }
+                if (data_path.empty()) {
+                    bg_state->SetStatus("ERR: no dataset in " + bg_config);
+                    bg_state->is_running = false;
+                    return;
+                }
 
                 auto status_cb = [bg_state](const std::string& status) { bg_state->SetStatus(status); };
                 auto progress_cb = [bg_state](int current, int total) { bg_state->current_permutation = current; bg_state->total_permutations = total; };

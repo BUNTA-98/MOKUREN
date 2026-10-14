@@ -1,6 +1,7 @@
 #pragma once
 #include "aggregator.hpp"
 #include "filter.hpp"
+#include "live_debug.hpp"
 #include "market_context.hpp"
 #include "trigger.hpp"
 #include <algorithm>
@@ -30,10 +31,19 @@ public:
 
   // evaluate standard indicator triggers on candle close
   TradeSignal OnCandleClose(const MarketContext &context) override {
-    if (!trigger_) return TradeSignal{};
+    LIVE_DBG("strategy: OnCandleClose ENTER live_bar_ts={} close={} vol={} history_size={}",
+             context.live_bar.timestamp_start, context.live_bar.close,
+             context.live_bar.total_volume, context.history.size());
+
+    if (!trigger_) {
+      LIVE_DBG("strategy: OnCandleClose ABORT - trigger_ is null");
+      return TradeSignal{};
+    }
 
     // check if trigger found a setup
     TradeSignal signal = trigger_->EvaluateCandle(context);
+    LIVE_DBG("strategy: OnCandleClose trigger result direction={}",
+             static_cast<int>(signal.direction));
     if (signal.direction == SignalDirection::NONE) return TradeSignal{};
 
     // all filters must allow the trade (early exit saves cpu)
@@ -48,9 +58,17 @@ public:
 
   // evaluate hft orderbook triggers on every l2 update
   TradeSignal OnTickUpdate(const MarketContext &context) override {
-    if (!trigger_) return TradeSignal{};
+    LIVE_DBG("strategy: OnTickUpdate ENTER live_bar_ts={} close={}",
+             context.live_bar.timestamp_start, context.live_bar.close);
+
+    if (!trigger_) {
+      LIVE_DBG("strategy: OnTickUpdate ABORT - trigger_ is null");
+      return TradeSignal{};
+    }
 
     TradeSignal signal = trigger_->EvaluateTick(context);
+    LIVE_DBG("strategy: OnTickUpdate trigger result direction={}",
+             static_cast<int>(signal.direction));
     if (signal.direction == SignalDirection::NONE) return TradeSignal{};
 
     for (auto *filter : filters_) {

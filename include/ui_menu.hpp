@@ -303,6 +303,17 @@ private:
 public:
     std::string GetActiveConfigPath() const { return config_path; }
 
+    // restore a previously selected config profile. must be called before
+    // OnEnter()/Render() so the flattened menu reflects the right file.
+    void SetActiveConfigPath(const std::string& path) {
+        if (path.empty()) return;
+        // always reload: even if the path string matches, the on-disk file may
+        // have changed (e.g. the user edited it in another profile), and we
+        // want the menu to reflect the persisted state on re-entry.
+        config_path = path;
+        LoadConfigSmart(false);
+    }
+
     PageConfig() { 
         fs::create_directories("configs"); 
         fs::create_directories("data"); // Stellt sicher, dass das HFT-Data-Dir existiert
@@ -314,7 +325,8 @@ public:
     }
 
     void OnEnter() override { 
-        LoadConfigSmart(true); 
+        // config is already loaded by the constructor or SetActiveConfigPath.
+        // reloading here would reset cursors and re-read from disk unnecessarily.
     }
 
     void Render(struct ncplane* stdplane) override {

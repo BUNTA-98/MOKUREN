@@ -23,11 +23,15 @@ public:
   // (e.g. a stalled strategy) causing unbounded memory growth.
   static constexpr size_t kMaxQueueDepth = 65536;
 
-  // a single queued item: either a trade or an l2 snapshot.
+  // a single queued item: either a trade or an l2 snapshot. the two
+  // payloads are unioned so each queue entry does not pay for a full
+  // TradeEvent *and* a full 200-byte L2Snapshot at the same time.
   struct Event {
-    enum class Type { TRADE, L2 } type;
-    TradeEvent trade{};
-    L2Snapshot l2{};
+    enum class Type { TRADE, L2 } type = Type::TRADE;
+    union {
+      TradeEvent trade;
+      L2Snapshot l2;
+    };
   };
 
   LiveOrchestrator(EngineInstance engine,

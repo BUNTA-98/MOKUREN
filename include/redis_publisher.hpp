@@ -1,12 +1,16 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 // forwards a stream of JSON strings to a redis pub/sub channel.
 //
@@ -45,6 +49,24 @@ public:
   // not lost when the publisher is destroyed.
   void Flush();
 
+  // enqueue the trade event json for BOTH the pub/sub channel (the existing
+  // "mokuren:events" PUBLISH) and the persistent "mokuren:trades" stream
+  // (XADD). never blocks on network i/o. returns false if either enqueue
+  // was dropped due to queue overflow.
+  bool PublishTradeEvent(const std::string& json_payload);
+
+  // append a single price tick to the "mokuren:ticker" stream (XADD).
+  // throttled to at most one write per kTickerThrottleMs. never blocks;
+  // returns false if the tick was throttled or dropped.
+  bool PublishTicker(const std::string& symbol, double price,
+                     int64_t timestamp_ms);
+
+  // redis stream keys used for grafana persistence.
+  static constexpr const char* kTradeStream = "mokuren:trades";
+  static constexpr const char* kTickerStream = "mokuren:ticker";
+  // minimum spacing between two ticker writes.
+  static constexpr int64_t kTickerThrottleMs = 1000;
+
 private:
   // worker thread entry point: connects, then drains the queue.
   void WorkerLoop();
@@ -52,8 +74,26 @@ private:
   // (re)establish the redis connection. returns true on success.
   bool EnsureConnected();
 
-  // publish a single payload. returns false on connection error.
+  // a single unit of work for the background worker thread.
+  struct OutboundMessage {
+    enum class Kind { PubSub, XAdd };
+    Kind kind = Kind::PubSub;
+    std::string target;  // pub/sub channel (PubSub) or stream key (XAdd)
+    std::string payload; // pub/sub payload (unused for XAdd)
+    // field/value pairs for XAdd messages.
+    std::vector<std::pair<std::string, std::string>> fields;
+  };
+
+  // push a message onto the bounded queue. caller must hold mutex_.
+  // returns false if the queue was full and the message was dropped.
+  bool EnqueueLocked(OutboundMessage&& msg);
+
+  // publish a single payload to the pub/sub channel.
   bool PublishRaw(const std::string& json_payload);
+
+  // append a single entry to a stream. returns false on connection error.
+  bool XAddRaw(const std::string& stream,
+               const std::vector<std::pair<std::string, std::string>>& fields);
 
   std::string host_;
   int port_;
@@ -63,9 +103,12 @@ private:
   // header does not need to pull in hiredis.
   void* redis_ctx_ = nullptr;
 
-  std::queue<std::string> queue_;
+  std::queue<OutboundMessage> queue_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
+
+  // timestamp of the last accepted ticker write (guarded by mutex_).
+  std::chrono::steady_clock::time_point last_ticker_time_{};
 
   // signalled by the worker after it finishes publishing an item.
   // used by Flush() to wait until the queue is fully drained.

@@ -1,5 +1,6 @@
 #include "live_engine.hpp"
 
+#include "live_debug.hpp"
 #include "market_context.hpp"
 
 #include <nlohmann/json.hpp>
@@ -36,7 +37,9 @@ void LiveOrchestrator::PublishEvent(const char* action, double price,
   ev["size"] = size;
   ev["symbol"] = symbol_;
 
-  redis_publisher_->Publish(ev.dump());
+  // fan out to BOTH the existing pub/sub channel (telegram bot) and the
+  // persistent "mokuren:trades" stream (grafana). identical json payload.
+  redis_publisher_->PublishTradeEvent(ev.dump());
 }
 
 LiveOrchestrator::~LiveOrchestrator() {
@@ -156,17 +159,34 @@ void LiveOrchestrator::Stop() {
 }
 
 void LiveOrchestrator::OnTrade(const TradeEvent& t) {
+  LIVE_DBG("orchestrator: OnTrade callback ts={} price={} qty={}",
+           t.timestamp, t.price, t.quantity);
+
+  // throttled live price ticker for grafana. non-blocking: the call only
+  // enqueues (subject to the ~1000ms throttle) and returns immediately.
+  if (redis_publisher_) {
+    redis_publisher_->PublishTicker(symbol_, t.price, t.timestamp);
+  }
+
   Event ev;
   ev.type = Event::Type::TRADE;
   ev.trade = t;
-  Push(std::move(ev));
+  bool ok = Push(std::move(ev));
+  if (!ok) {
+    LIVE_DBG("orchestrator: OnTrade DROPPED (queue full) ts={}", t.timestamp);
+  }
 }
 
 void LiveOrchestrator::OnL2(const L2Snapshot& s) {
+  LIVE_DBG("orchestrator: OnL2 callback ts={} bid={} ask={}",
+           s.timestamp, s.best_bid_price, s.best_ask_price);
   Event ev;
   ev.type = Event::Type::L2;
   ev.l2 = s;
-  Push(std::move(ev));
+  bool ok = Push(std::move(ev));
+  if (!ok) {
+    LIVE_DBG("orchestrator: OnL2 DROPPED (queue full) ts={}", s.timestamp);
+  }
 }
 
 bool LiveOrchestrator::Push(Event&& ev) {
@@ -254,6 +274,8 @@ void LiveOrchestrator::WorkerLoop() {
 
   Event ev;
   while (Pop(ev)) {
+    LIVE_DBG("orchestrator: worker popped event type={}",
+             ev.type == Event::Type::TRADE ? "TRADE" : "L2");
     switch (ev.type) {
       case Event::Type::L2: {
         // feed both aggregators with the snapshot.
@@ -262,6 +284,14 @@ void LiveOrchestrator::WorkerLoop() {
         }
         if (engine_.htf_aggregator) {
           engine_.htf_aggregator->ProcessL2(ev.l2);
+        }
+
+        // guard: the bar must already be initialized by a real trade.
+        // evaluating with a 0.0 close feeds garbage into the strategy.
+        if (live_bar_.close == 0.0) {
+          LIVE_DBG("orchestrator: skipping tick alpha, live_bar_ not "
+                   "initialized (close=0.0)");
+          break;
         }
 
         // tick-level alpha evaluation (mirrors backtest l2 catch-up loop).
@@ -275,6 +305,8 @@ void LiveOrchestrator::WorkerLoop() {
               engine_.aggregator->GetL2History(),
           };
           TradeSignal tick_sig = engine_.alpha->Evaluate(tick_ctx, false);
+          LIVE_DBG("orchestrator: alpha->Evaluate(tick) returned direction={}",
+                   static_cast<int>(tick_sig.direction));
           if (tick_sig.direction != SignalDirection::NONE) {
             double exec_price = (tick_sig.direction == SignalDirection::BUY)
                                     ? ev.l2.best_ask_price
@@ -322,6 +354,17 @@ void LiveOrchestrator::WorkerLoop() {
         if (engine_.htf_aggregator) {
           engine_.htf_aggregator->ProcessTrade(htf_live_bar_, ev.trade);
         }
+        LIVE_DBG("orchestrator: ProcessTrade done ts={} candle_finished={} live_bar_ts={} live_bar_close={}",
+                 ev.trade.timestamp, candle_finished,
+                 live_bar_.timestamp_start, live_bar_.close);
+
+        // guard: never evaluate a candle that was never initialized by
+        // a real trade (close stays 0.0).
+        if (live_bar_.close == 0.0) {
+          LIVE_DBG("orchestrator: skipping candle alpha, live_bar_ not "
+                   "initialized (close=0.0)");
+          break;
+        }
 
         // 4. candle-level alpha evaluation.
         if (engine_.alpha && engine_.aggregator) {
@@ -334,6 +377,8 @@ void LiveOrchestrator::WorkerLoop() {
               engine_.aggregator->GetL2History(),
           };
           TradeSignal candle_sig = engine_.alpha->Evaluate(ctx, candle_finished);
+          LIVE_DBG("orchestrator: alpha->Evaluate(candle) returned direction={} candle_finished={}",
+                   static_cast<int>(candle_sig.direction), candle_finished);
           if (candle_sig.direction != SignalDirection::NONE) {
             LOG_TRACE("LiveOrchestrator: candle signal dir={} ts={}",
                       static_cast<int>(candle_sig.direction),

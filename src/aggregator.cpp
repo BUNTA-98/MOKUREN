@@ -1,12 +1,15 @@
 #include "aggregator.hpp"
 #include "trade_event.hpp"
+#include "live_debug.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
 // updates current l2 state and ring buffer memory
 void Aggregator::ProcessL2(const L2Snapshot &l2) {
-  latest_l2_ = l2;
+  LIVE_DBG("aggregator: ProcessL2 ts={} bid={} ask={}",
+           l2.timestamp, l2.best_bid_price, l2.best_ask_price);
+  // single copy: the ring buffer is now the only owner of the snapshot.
   l2_history_.push(l2); // <--- NEU: pushes snapshot into o(1) buffer
 }
 
@@ -30,6 +33,8 @@ PriceLevel *Aggregator::GetOrAddLevel(double price) {
       live_workspace[index].ask_volume = 0.0;
       active_levels++;
     }
+    // remember the touched span so reset/analyze/pack stay in-range.
+    TrackTouched(index);
     return &live_workspace[index];
   }
 
@@ -70,7 +75,7 @@ void Aggregator::AnalyzeCandle(Bar &bar) {
   double max_vol = -1.0; 
   double poc_price = 0.0;
 
-  for (int i = 0; i < MAX_GRID_LEVELS; i++) {
+  for (int i = min_touched_idx_; i <= max_touched_idx_; i++) {
     double total_vol = live_workspace[i].bid_volume + live_workspace[i].ask_volume;
     if (total_vol > max_vol && live_workspace[i].price > 0.0) {
       max_vol = total_vol;
@@ -104,7 +109,7 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
   live_bar.vwap = current_metrics_.vwap;
   
   // attach current l2 state to running candle
-  live_bar.last_l2 = latest_l2_;
+  live_bar.last_l2 = GetLatestL2();
 
   // initialize timer
   if (next_close_time == 0) {
@@ -112,6 +117,8 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
     next_close_time = start_time + interval_ms;
     live_bar.ResetBar(start_time);
     ResetWorkspace(); 
+    LIVE_DBG("aggregator: timer init trade_ts={} start_time={} next_close_time={} interval_ms={}",
+             trade.timestamp, start_time, next_close_time, interval_ms);
   }
 
   bool candle_closed = false;
@@ -123,6 +130,10 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
     history.push_back(live_bar);
     candle_closed = true;
 
+    LIVE_DBG("aggregator: CANDLE CLOSED trade_ts={} closed_bar_ts={} o={} h={} l={} c={} vol={} history_size={}",
+             trade.timestamp, live_bar.timestamp_start, live_bar.open, live_bar.high,
+             live_bar.low, live_bar.close, live_bar.total_volume, history.size());
+
     int64_t new_start = next_close_time;
     next_close_time += interval_ms;
     
@@ -130,7 +141,7 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
     ResetWorkspace(); 
     
     // attach fresh l2 state directly to newly started candle
-    live_bar.last_l2 = latest_l2_;
+    live_bar.last_l2 = GetLatestL2();
   }
 
   // assign data to current timeframe
@@ -145,5 +156,7 @@ void Aggregator::FlushLastCandle(Bar &live_bar) {
     AnalyzeCandle(live_bar);
     PackFootprint(live_bar); 
     history.push_back(live_bar);
+    LIVE_DBG("aggregator: FLUSH last candle ts={} vol={} history_size={}",
+             live_bar.timestamp_start, live_bar.total_volume, history.size());
   }
 }

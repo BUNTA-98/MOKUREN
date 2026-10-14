@@ -9,3 +9,5 @@ build/
 cryptohft/
 logs/
 .aider*
+.env
+live_debug.log

@@ -104,3 +104,23 @@ target_link_libraries(engine_tests PRIVATE
   ixwebsocket
   PkgConfig::HIREDIS
 )
+
+# --- live terminal dashboard ---
+# dedicated target kept OUTSIDE the src/*.cpp globs on purpose: the
+# engine_tests target does not link notcurses, and the dashboard owns its
+# own main(), so it must not be folded into mokuren/engine_tests.
+add_executable(tui_dashboard
+  tui/main.cpp
+  tui/tui_dashboard.cpp
+  src/logger.cpp
+)
+
+target_include_directories(tui_dashboard PRIVATE include tui)
+
+target_link_libraries(tui_dashboard PRIVATE
+  Threads::Threads
+  nlohmann_json::nlohmann_json
+  spdlog::spdlog
+  PkgConfig::NOTCURSES
+  PkgConfig::HIREDIS
+)
