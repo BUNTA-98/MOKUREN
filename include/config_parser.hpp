@@ -61,6 +61,7 @@ struct TradeManagementConfig {
 struct AppConfig {
   // environment settings
   std::string filepath = "";
+  std::string exchange = "binance";
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
   int vwap_reset_hour = 0;

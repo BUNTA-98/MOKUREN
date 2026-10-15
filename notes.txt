@@ -1,3 +1,7 @@
+! imbalance trigger passt nich? sehe stacked imbalances im chart aber er triggert nich.. 
+! downloads 
+! das ganze risk management stet nicht mehr auf R, also alles ab sl_pct, für dynamic position sizing
+frag aider nach den relevanten files die du gemini schickst
 
 - eta für backtests aber ohne performance einbußen
 - htf & ltf candles intervall in config (is schon glaub ich aber ma in sekunden ändern)
@@ -28,6 +32,7 @@
   machen? zweiteres klingt erstmal sinnvoller aber frag gemini, aber bei tradelog, footprint inspector und config
   menu bleibt ja das meiste glecih also muss man da keine eigenen files für anlegen oder?
 - performance is key, not have it impact the calc heavy loops
+- alle daemons laufen weiter, auch wenn UI geschlossen wird, die daemons sollen gar nix von ner ui wissen
 
 
 PAGE 1: DAEMON_CTL 

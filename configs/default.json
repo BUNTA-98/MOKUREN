@@ -7,7 +7,8 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/2026-09",
+    "dataset": "data/2026/woche",
+    "exchange": "binance",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -20,7 +21,7 @@
   },
   "filters": [
     {
-      "active": true,
+      "active": false,
       "lookback": {
         "max": 2500.0,
         "min": 50.0,
@@ -101,8 +102,14 @@
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_pct": 0.005,
-    "tp_pct": 0.03
+    "sl_pct": {
+      "max": 0.02,
+      "min": 0.001,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.001
+    },
+    "tp_pct": 0.001
   },
   "trade_management": {
     "break_even": {
@@ -129,7 +136,7 @@
     },
     {
       "active": true,
-      "levels": 1.0,
+      "levels": 2.0,
       "name": "StackedImbalance",
       "ratio": 2.0
     },

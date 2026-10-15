@@ -2,6 +2,7 @@
 #include "live_debug.hpp"
 #include "ui_manager.hpp"
 #include "binance_streamer.hpp"
+#include "bybit_streamer.hpp"
 #include "live_engine.hpp"
 #include "config_parser.hpp"
 #include "factory.hpp"
@@ -37,7 +38,7 @@ void RunBacktest() {
   }
 }
 
-// headless live forward-test: streams binance data into the orchestrator.
+// headless live forward-test: streams exchange data into the orchestrator.
 // loads the strategy pipeline from a json config file so websocket events
 // flow through Aggregator -> AlphaEngine -> PaperTrader instead of being dropped.
 void RunLive(const std::string& config_path) {
@@ -61,7 +62,14 @@ void RunLive(const std::string& config_path) {
   AppConfig cfg = AppConfig::Load(cfg_json);
   EngineInstance engine = StrategyFactory::Build(cfg);
 
-  auto streamer = std::make_unique<BinanceDataStreamer>();
+  // pick the data source; both derive from IMarketStreamer so the
+  // orchestrator stays exchange-agnostic.
+  std::unique_ptr<IMarketStreamer> streamer;
+  if (cfg.exchange == "bybit") {
+    streamer = std::make_unique<BybitDataStreamer>();
+  } else {
+    streamer = std::make_unique<BinanceDataStreamer>();
+  }
 
   LiveOrchestrator orchestrator(std::move(engine), std::move(streamer), 0.01, 0.01);
 
@@ -70,7 +78,7 @@ void RunLive(const std::string& config_path) {
     return;
   }
 
-  LOG_INFO("live mode: streaming (press ctrl-c to stop)");
+  LOG_INFO("live mode: streaming via '{}' (press ctrl-c to stop)", cfg.exchange);
   LIVE_DBG("main: live loop entered, orchestrator started");
 
   while (!g_quit.load(std::memory_order_acquire)) {

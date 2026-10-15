@@ -310,6 +310,17 @@ AppConfig AppConfig::Load(const json& j) {
     }
   });
 
+  // --- exchange ---
+  // read the data source ("binance" or "bybit") from the config. accepts the
+  // key either at the top level or nested under "environment".
+  ParseSection("exchange", [&]() {
+    if (j.contains("exchange")) {
+      cfg.exchange = SafeString(j, "exchange", cfg.exchange);
+    } else if (j.contains("environment") && j["environment"].is_object()) {
+      cfg.exchange = SafeString(j["environment"], "exchange", cfg.exchange);
+    }
+  });
+
   // --- execution ---
   ParseSection("execution", [&]() {
     if (j.contains("execution")) {
