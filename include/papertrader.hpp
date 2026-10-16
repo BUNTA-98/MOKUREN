@@ -28,7 +28,12 @@ public:
   double GetTotalFeesPaid() const { return total_fees_paid; }
   double GetNetProfit() const { return balance - 10000.0; }
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
-  const std::vector<TradeRecord>& GetTradeHistory() const { return trade_history_; }
+  std::vector<TradeRecord> GetTradeHistory() const override { return trade_history_; }
+  // single-threaded paper account: no lock needed, unlike the ws-backed brokers.
+  int64_t GetLastTradeTime() const override {
+    return trade_history_.empty() ? 0 : trade_history_.back().exit_time;
+  }
+  size_t GetTradeCount() const override { return trade_history_.size(); }
   double GetLastClosedSize() const override { return last_closed_size_; }
   double GetWinrate() const;
 
@@ -38,8 +43,8 @@ public:
                              bool scale_en, double scale_trig, double scale_frac);
 
   // core engine hooks
-  void CheckRisk(double current_price, int64_t current_time);
-  void ProcessSignal(TradeSignal signal, double fill_price, int64_t current_time);
+  void CheckRisk(double current_price, int64_t current_time) override;
+  void ProcessSignal(TradeSignal signal, double fill_price, int64_t current_time) override;
   void CloseOpenPositionAtEnd(double final_price, int64_t end_time);
 
 private:

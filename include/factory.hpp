@@ -3,6 +3,7 @@
 #include "alpha_engine.hpp"
 #include "config_parser.hpp"
 #include "filter.hpp"
+#include "ibroker.hpp"
 #include "papertrader.hpp"
 #include "position_manager.hpp"
 #include "position_sizer.hpp"
@@ -16,6 +17,12 @@ struct EngineInstance {
   std::unique_ptr<Aggregator> aggregator;
   std::unique_ptr<Aggregator> htf_aggregator;
   std::unique_ptr<PaperTrader> ptrader;
+  // live execution venue. null on the paper/backtest path; set to a
+  // HyperliquidBroker when the config selects exchange "hyperliquid".
+  // when set, LiveOrchestrator::ActiveBroker() and every module that takes an
+  // IBroker* (PositionManager, PositionSizer, the risk firewall) are bound to
+  // it instead of ptrader -- ptrader remains constructed but is bypassed.
+  std::unique_ptr<IBroker> broker;
   std::unique_ptr<PositionManager> pos_manager;
   std::unique_ptr<PositionSizer> sizer;
 

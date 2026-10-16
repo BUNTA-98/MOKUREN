@@ -1,6 +1,6 @@
 {
   "backtest": {
-    "config_profile": "configs/default.json",
+    "config_profile": "configs/spoofhunter_testnet.json",
     "wfa_in_sample_days": 14,
     "wfa_mode": false,
     "wfa_out_of_sample_days": 7,

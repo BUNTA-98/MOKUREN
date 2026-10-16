@@ -21,7 +21,7 @@ frag aider nach den relevanten files die du gemini schickst
 - orderbook depth data, wie verhält sich das mit der tick size also was sind 20 lvl, und dann muss man 
   das ja im backtest anpassen
 - can aider see git changes and pull info from previous iterations?
-
+- logging and errors pipeline checken und optimieren, brauch nich jeden trade tick aber halt system diagnostics
 
 
 

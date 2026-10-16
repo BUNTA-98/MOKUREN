@@ -77,6 +77,12 @@ bool LiveOrchestrator::Start() {
     redis_publisher_->Publish(ping.dump());
   }
 
+  if (engine_.broker) {
+    LOG_WARN("LiveOrchestrator: routing orders to the live venue adapter "
+             "instead of the PaperTrader -- confirm the adapter's execution "
+             "path is implemented before trusting this run");
+  }
+
   LOG_INFO("LiveOrchestrator: starting worker thread");
   worker_ = std::thread(&LiveOrchestrator::WorkerLoop, this);
 
@@ -125,7 +131,8 @@ void LiveOrchestrator::Stop() {
     LOG_INFO("LiveOrchestrator: flushing last candle on shutdown");
     engine_.aggregator->FlushLastCandle(live_bar_);
   }
-  if (engine_.ptrader) {
+  IBroker* broker = ActiveBroker();
+  if (broker) {
     double final_price = live_bar_.close;
     if (final_price <= 0.0) {
       final_price = engine_.aggregator
@@ -133,14 +140,28 @@ void LiveOrchestrator::Stop() {
                         : 0.0;
     }
     if (final_price > 0.0) {
-      LOG_INFO("LiveOrchestrator: force-closing open position at {}",
-               final_price);
-      bool was_open = engine_.ptrader->HasOpenPosition();
-      engine_.ptrader->CloseOpenPositionAtEnd(final_price,
-                                              live_bar_.timestamp_start);
+      const bool was_open = broker->HasOpenPosition();
+
+      if (broker == engine_.ptrader.get()) {
+        // paper path: CloseOpenPositionAtEnd performs the full backtest
+        // accounting (fees, stop history, win/loss bookkeeping). Flattening
+        // with ClosePartial(1.0) would not reproduce backtest results.
+        LOG_INFO("LiveOrchestrator: force-closing paper position at {}",
+                 final_price);
+        engine_.ptrader->CloseOpenPositionAtEnd(final_price,
+                                                live_bar_.timestamp_start);
+      } else {
+        // venue path: IBroker has no end-of-run hook, so flatten the whole
+        // position with a reduce-only close instead.
+        LOG_INFO("LiveOrchestrator: flattening venue position at {}",
+                 final_price);
+        broker->ClosePartial(1.0, final_price, live_bar_.timestamp_start,
+                             "shutdown");
+      }
+
       if (was_open) {
         PublishEvent("POSITION_CLOSED", final_price,
-                     engine_.ptrader->GetLastClosedSize(),
+                     broker->GetLastClosedSize(),
                      live_bar_.timestamp_start);
       }
     } else {
@@ -255,15 +276,16 @@ void LiveOrchestrator::WorkerLoop() {
       final_sig = engine_.risk_manager->Evaluate(sized, ts);
     }
 
-    if (final_sig.direction != SignalDirection::NONE && engine_.ptrader) {
+    IBroker* broker = ActiveBroker();
+    if (final_sig.direction != SignalDirection::NONE && broker) {
       LOG_TRACE("LiveOrchestrator: executing signal dir={} entry={} sl={} tp={} vol={} ts={}",
                 static_cast<int>(final_sig.direction), final_sig.entry_price,
                 final_sig.stop_loss, final_sig.take_profit, final_sig.volume,
                 ts);
 
-      bool was_open = engine_.ptrader->HasOpenPosition();
-      engine_.ptrader->ProcessSignal(final_sig, exec_price, ts);
-      bool is_open = engine_.ptrader->HasOpenPosition();
+      bool was_open = broker->HasOpenPosition();
+      broker->ProcessSignal(final_sig, exec_price, ts);
+      bool is_open = broker->HasOpenPosition();
 
       // broadcast a trade-open event when a new position is established.
       if (!was_open && is_open) {
@@ -330,17 +352,18 @@ void LiveOrchestrator::WorkerLoop() {
           engine_.pos_manager->Update(ev.trade.price, ev.trade.timestamp);
         }
 
-        // 2. papertrader risk check (sl/tp/trail/scale-out triggers).
-        if (engine_.ptrader) {
-          bool was_open = engine_.ptrader->HasOpenPosition();
-          engine_.ptrader->CheckRisk(ev.trade.price, ev.trade.timestamp);
-          bool is_open = engine_.ptrader->HasOpenPosition();
+        // 2. active-broker risk check (sl/tp/trail/scale-out triggers).
+        IBroker* broker = ActiveBroker();
+        if (broker) {
+          bool was_open = broker->HasOpenPosition();
+          broker->CheckRisk(ev.trade.price, ev.trade.timestamp);
+          bool is_open = broker->HasOpenPosition();
 
           // broadcast a position-closed event when the risk check
           // (sl/tp/trail/scale-out) fully closes the position.
           if (was_open && !is_open) {
             PublishEvent("POSITION_CLOSED", ev.trade.price,
-                         engine_.ptrader->GetLastClosedSize(),
+                         broker->GetLastClosedSize(),
                          ev.trade.timestamp);
           }
         }

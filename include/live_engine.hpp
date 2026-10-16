@@ -1,6 +1,7 @@
 #pragma once
 #include "aggregator.hpp"
 #include "factory.hpp"
+#include "ibroker.hpp"
 #include "live_streamer.hpp"
 #include "logger.hpp"
 #include "redis_publisher.hpp"
@@ -54,6 +55,13 @@ public:
 
   // true while the worker thread is alive.
   bool IsRunning() const { return running_.load(std::memory_order_acquire); }
+
+  // broker orders and state queries are routed to: the live venue adapter
+  // when the config selected one, otherwise the in-process PaperTrader.
+  // never null -- the paper account always exists.
+  IBroker* ActiveBroker() {
+    return engine_.broker ? engine_.broker.get() : engine_.ptrader.get();
+  }
 
   // number of events dropped due to queue overflow (for monitoring).
   size_t DroppedEvents() const { return dropped_.load(std::memory_order_relaxed); }

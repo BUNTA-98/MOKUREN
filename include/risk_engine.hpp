@@ -2,6 +2,7 @@
 #include "ibroker.hpp"
 #include "logger.hpp"
 #include "strategy.hpp"
+#include <cmath>
 #include <vector>
 
 // base interface for all risk modules
@@ -107,10 +108,10 @@ public:
   const char* Name() const override { return "AntiRevengeLock"; }
 
   bool CheckRisk(const TradeSignal &signal, int64_t current_time) override {
-    const auto& history = broker_->GetTradeHistory();
-    if (history.empty()) return true;
+    // O(1): reads the cached last exit time instead of copying the whole log.
+    if (broker_->GetTradeCount() == 0) return true;
 
-    int64_t last_exit = history.back().exit_time;
+    const int64_t last_exit = broker_->GetLastTradeTime();
     if (current_time - last_exit < cooldown_ms_) {
       return false; 
     }

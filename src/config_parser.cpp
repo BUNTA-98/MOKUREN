@@ -142,6 +142,19 @@ void AppConfig::Validate() const {
     throw std::invalid_argument("AppConfig validation failed: " + msg);
   };
 
+  // --- auth ---
+  // live venues require real credentials. without this check a blank key only
+  // surfaces as a signed-request failure (Bybit retCode 10003) at the first
+  // order, long after startup.
+  if (exchange == "bybit") {
+    if (api_key.empty()) {
+      fail("api_key must not be empty when exchange is \"bybit\"");
+    }
+    if (api_secret.empty()) {
+      fail("api_secret must not be empty when exchange is \"bybit\"");
+    }
+  }
+
   // --- environment ---
   if (interval_ms <= 0) {
     fail("environment.interval_ms must be > 0 (got " + std::to_string(interval_ms) + ")");
@@ -289,6 +302,30 @@ void ParseSection(const std::string& section, Fn&& fn) {
 
 AppConfig AppConfig::Load(const json& j) {
   AppConfig cfg;
+
+  // --- auth ---
+  // credentials live at the root of the config, and may also be nested under
+  // "exchange" or "environment" for configs that group connection settings:
+  //   {"api_key": "...", "api_secret": "...", "is_testnet": true, ...}
+  //   {"environment": {"api_key": "...", "api_secret": "...", ...}}
+  ParseSection("auth", [&]() {
+    // resolve the source once so all three fields are read from the same
+    // place. root keys win; the nested lookup only applies when the root has
+    // no credential keys at all.
+    const json* creds = &j;
+    if (!j.contains("api_key") && !j.contains("api_secret")) {
+      if (j.contains("exchange") && j["exchange"].is_object()) {
+        creds = &j["exchange"];
+      } else if (j.contains("environment") && j["environment"].is_object()) {
+        creds = &j["environment"];
+      }
+    }
+
+    cfg.api_key = SafeString(j, "api_key", SafeString(*creds, "api_key", ""));
+    cfg.api_secret = SafeString(j, "api_secret", SafeString(*creds, "api_secret", ""));
+    // cfg.is_testnet already defaults to true, so it doubles as the fallback.
+    cfg.is_testnet = SafeBool(j, "is_testnet", SafeBool(*creds, "is_testnet", cfg.is_testnet));
+  });
 
   // --- environment ---
   ParseSection("environment", [&]() {

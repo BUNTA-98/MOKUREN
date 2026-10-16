@@ -16,6 +16,12 @@ endif()
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
+# OpenSSL (HMAC-SHA256 signing for the Bybit REST/WS auth)
+find_package(OpenSSL REQUIRED)
+
+# libcurl (authenticated REST calls to the Bybit V5 API)
+find_package(CURL REQUIRED)
+
 # hiredis (redis pub/sub for live event broadcasting)
 pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
 
@@ -58,7 +64,9 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 add_executable(mokuren ${SOURCES})
 
 # include dirs
-target_include_directories(mokuren PRIVATE include)
+# ${ixwebsocket_SOURCE_DIR} is added explicitly so <ixwebsocket/IXWebSocket.h>
+# resolves even if the fetched target does not re-export its build interface.
+target_include_directories(mokuren PRIVATE include ${ixwebsocket_SOURCE_DIR})
 
 # link libs
 target_link_libraries(mokuren PRIVATE 
@@ -68,6 +76,9 @@ target_link_libraries(mokuren PRIVATE
   spdlog::spdlog
   ixwebsocket
   PkgConfig::HIREDIS
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
 )
 
 # --- test environment ---
@@ -94,7 +105,7 @@ list(REMOVE_ITEM ENGINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
 # attach engine code and include dirs
 target_sources(engine_tests PRIVATE ${ENGINE_SOURCES})
-target_include_directories(engine_tests PRIVATE src include)
+target_include_directories(engine_tests PRIVATE src include ${ixwebsocket_SOURCE_DIR})
 
 # link test libs
 target_link_libraries(engine_tests PRIVATE 
@@ -103,7 +114,15 @@ target_link_libraries(engine_tests PRIVATE
   spdlog::spdlog
   ixwebsocket
   PkgConfig::HIREDIS
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
 )
+
+# register the Catch2 test cases with CTest. without this,
+# `ctest` finds nothing: enable_testing() alone only enables the machinery.
+include(Catch)
+catch_discover_tests(engine_tests)
 
 # --- live terminal dashboard ---
 # dedicated target kept OUTSIDE the src/*.cpp globs on purpose: the

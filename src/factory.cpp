@@ -1,5 +1,7 @@
 #include "factory.hpp"
 
+#include "hyperliquid_broker.hpp"
+
 EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   EngineInstance inst;
 
@@ -9,11 +11,36 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   
   // pass fees and slippage to papertrader constructor
   inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss, cfg.slippage_pct, cfg.taker_fee_pct);
+
+  // execution venue selection. "hyperliquid" trades against the venue itself,
+  // so the constructor dials out to the webData2 state feed. every other
+  // exchange (and the whole backtest path) stays on the in-process
+  // PaperTrader above.
+  //
+  // the adapter is the ACTIVE broker: LiveOrchestrator::ActiveBroker() and the
+  // modules below route to it. CAUTION -- its execution path is still stubbed:
+  // ProcessSignal logs the signed-order payload instead of POSTing it, and
+  // CheckRisk does nothing, so a live run will evaluate signals and then not
+  // trade them. Verify the feed (GetBalance rise) before trusting the run.
+  if (cfg.exchange == "hyperliquid") {
+    inst.broker = std::make_unique<HyperliquidBroker>(cfg.api_key, cfg.api_secret);
+    LOG_INFO("factory: hyperliquid execution adapter constructed");
+  }
   
+  // every module that talks to a broker binds to the ACTIVE one: the venue
+  // adapter when the config selected a live exchange, otherwise the in-process
+  // paper account.
+  // NOTE: on the venue path the risk firewall and the sizer query the
+  // exchange's cached state, which stays empty until the first websocket frame
+  // arrives. GetBalance() is 0.0 before that, so PositionSizer yields no size
+  // and MaxLeverageLock rejects every signal -- nothing trades until the state
+  // feed is live.
+  IBroker* active_broker = inst.broker ? inst.broker.get() : inst.ptrader.get();
+
   // wire trade management toggles (enable_scale_out & fraction)
   inst.pos_manager = std::make_unique<PositionManager>(
-      inst.ptrader.get(), 
-      cfg.tm_config.enable_scale_out, 
+      active_broker,
+      cfg.tm_config.enable_scale_out,
       cfg.tm_config.scale_out_fraction
   );
 
@@ -127,23 +154,23 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   
   // 3. wire evaluation and risk modules
   inst.alpha = std::make_unique<AlphaEngine>(*inst.pipeline);
-  inst.sizer = std::make_unique<PositionSizer>(inst.ptrader.get(), cfg.risk_per_trade_pct, cfg.min_distance_dollars);
+  inst.sizer = std::make_unique<PositionSizer>(active_broker, cfg.risk_per_trade_pct, cfg.min_distance_dollars);
   inst.risk_manager = std::make_unique<RiskManager>();
 
   for (const auto &r : cfg.risk_modules) {
     if (r.params.contains("active") && r.params["active"].get<bool>() == false) continue;
 
     if (r.name == "SinglePositionLock") {
-      inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(inst.ptrader.get()));
+      inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(active_broker));
     } else if (r.name == "MaxStopDistanceLock") {
       double max_pct = r.params.value("max_stop_pct", 0.015);
       inst.risk_modules.push_back(std::make_unique<MaxStopDistanceLock>(max_pct));
     } else if (r.name == "MaxLeverageLock") {
       double max_lev = r.params.value("max_leverage", 10.0);
-      inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(inst.ptrader.get(), max_lev));
+      inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(active_broker, max_lev));
     } else if (r.name == "AntiRevengeLock") {
       int64_t cooldown = r.params.value("cooldown_ms", 1800000);
-      inst.risk_modules.push_back(std::make_unique<AntiRevengeLock>(inst.ptrader.get(), cooldown));
+      inst.risk_modules.push_back(std::make_unique<AntiRevengeLock>(active_broker, cooldown));
     }
   }
 

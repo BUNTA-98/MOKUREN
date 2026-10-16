@@ -62,6 +62,11 @@ struct AppConfig {
   // environment settings
   std::string filepath = "";
   std::string exchange = "binance";
+  std::string api_key = "";
+  std::string api_secret = "";
+  // fail safe: default to testnet so a missing or misspelled key in the
+  // config can never silently route live orders to api.bybit.com.
+  bool is_testnet = true;
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
   int vwap_reset_hour = 0;

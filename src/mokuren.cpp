@@ -524,7 +524,10 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
 
         // agg oos trades for global rep
         auto* oos_pt = dynamic_cast<PaperTrader*>(oos_eng.ptrader.get());
-        const auto& window_trades = oos_pt->GetTradeHistory();
+        // GetTradeHistory() returns by value now: name the vector so the copy
+        // is explicit instead of hidden behind a reference binding.
+        const std::vector<TradeRecord> window_trades =
+            oos_pt->GetTradeHistory();
         global_oos_trades.insert(global_oos_trades.end(), window_trades.begin(), window_trades.end());
         
         // save config for ui replay
@@ -665,7 +668,7 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
     result.history_1m = eng.aggregator->GetHistory();
     result.history_15m = eng.htf_aggregator->GetHistory();
     
-    const auto& trade_log = eng.ptrader->GetTradeHistory();
+    const std::vector<TradeRecord> trade_log = eng.ptrader->GetTradeHistory();
     for (const auto& t : trade_log) {
         TradeInfo ti;
         ti.is_long = (t.direction == SignalDirection::BUY); 
@@ -816,7 +819,7 @@ ReplayResult Mokuren::ReplayWFA(const std::string &/*ignored*/, const std::vecto
         result.history_15m.insert(result.history_15m.end(), hist_15m.begin(), hist_15m.end());
 
         // map ui data for concat
-        const auto& trade_log = eng.ptrader->GetTradeHistory();
+        const std::vector<TradeRecord> trade_log = eng.ptrader->GetTradeHistory();
         for (const auto& t : trade_log) {
             TradeInfo ti;
             ti.is_long = (t.direction == SignalDirection::BUY); 

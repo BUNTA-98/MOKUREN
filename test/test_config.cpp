@@ -5,8 +5,8 @@
 using json = nlohmann::json;
 
 TEST_CASE("Config Parser Basics", "[config]") {
-    SECTION("AppConfig loads default fallback values") {
-        json empty_json = json::object();
+    SECTION("AppConfig applies defaults for missing keys") {
+        json empty_json = R"({"triggers": [{"name": "OrderbookImbalance", "ratio": 3.0}]})"_json;
         AppConfig cfg = AppConfig::Load(empty_json);
         
         REQUIRE(cfg.interval_ms == 60000);
@@ -17,6 +17,7 @@ TEST_CASE("Config Parser Basics", "[config]") {
 
     SECTION("AppConfig parses nested JSON correctly") {
         json custom_json = R"({
+            "triggers": [{"name": "OrderbookImbalance", "ratio": 3.0}],
             "environment": {"tick_size": 0.5},
             "risk": {"sl_pct": 0.01, "max_daily_loss": 500.0}
         })"_json;
