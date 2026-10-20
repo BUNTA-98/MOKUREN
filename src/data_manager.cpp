@@ -1,13 +1,58 @@
 #include "data_manager.hpp"
+#include "csv_parser.hpp"
 #include "timestamp_utils.hpp"
 #include <filesystem>
 #include <system_error>
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <string>
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// Reads a whole L2 cache. false means missing, truncated, or carrying a partial
+// trailing record. The caller drops the file and rebuilds from the CSV, so a
+// truncated cache self-heals in the same run instead of one run later.
+bool ReadL2Cache(const fs::path &bin_file, std::vector<L2Snapshot> &out) {
+    std::ifstream file(bin_file.string(), std::ios::binary | std::ios::ate);
+    if (!file) return false;
+
+    const std::streamsize size = file.tellg();
+    if (size <= 0 || size % static_cast<std::streamsize>(sizeof(L2Snapshot)) != 0) {
+        return false;
+    }
+
+    file.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(size) / sizeof(L2Snapshot));
+    if (!file.read(reinterpret_cast<char *>(out.data()), size)) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+// Bybit and Hyperliquid publish the taker side instead of Binance's
+// is_buyer_maker bit. Bybit exports "Buy"/"Sell", Hyperliquid "B"/"A"; both
+// name the aggressor, so a taker sell means the resting bid was hit and the
+// buyer was the maker.
+bool IsBuyerMakerFromSideToken(const char *token) {
+    if (token == nullptr) return false;
+
+    std::string s;
+    for (const char *p = token; *p; ++p) {
+        if (*p == ' ' || *p == '\t' || *p == '"' || *p == '\r') continue;
+        s.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(*p))));
+    }
+    return s == "a" || s == "s" || s == "sell" || s == "ask" ||
+           s == "short" || s == "-1" || s == "false";
+}
+
+} // namespace
 
 bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::string& bin_path) {
     std::ifstream csv_file(csv_path);
@@ -16,32 +61,15 @@ bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::stri
     std::string line;
     if (!std::getline(csv_file, line)) return false; 
 
-    std::vector<std::string> headers;
-    size_t start = 0, end = line.find(',');
-    while (end != std::string::npos) {
-        headers.push_back(line.substr(start, end - start));
-        start = end + 1;
-        end = line.find(',', start);
-    }
-    headers.push_back(line.substr(start));
-
-    int ts_idx = -1;
-    std::vector<int> bids_p, bids_q, asks_p, asks_q;
-
-    for (size_t i = 0; i < headers.size(); ++i) {
-        std::string h = headers[i];
-        std::transform(h.begin(), h.end(), h.begin(), ::tolower);
-        
-        // Findet transaction_time, event_time oder timestamp
-        if (h.find("time") != std::string::npos || h.find("ts") != std::string::npos) {
-            if (ts_idx == -1 || h.find("transaction") != std::string::npos) ts_idx = i; 
-        }
-        // Identifiziert bookTicker Bids und Asks
-        else if (h.find("bid") != std::string::npos && (h.find("price") != std::string::npos || h == "p" || h.find("p") != std::string::npos)) bids_p.push_back(i);
-        else if (h.find("bid") != std::string::npos && (h.find("qty") != std::string::npos || h.find("quantity") != std::string::npos || h == "q")) bids_q.push_back(i);
-        else if (h.find("ask") != std::string::npos && (h.find("price") != std::string::npos || h == "p" || h.find("p") != std::string::npos)) asks_p.push_back(i);
-        else if (h.find("ask") != std::string::npos && (h.find("qty") != std::string::npos || h.find("quantity") != std::string::npos || h == "q")) asks_q.push_back(i);
-    }
+    // one sniffer shared with LoadAllTrades and csv_parser: a file that starts
+    // directly with a snapshot is read with the canonical Binance Vision
+    // bookTicker layout instead of being rejected as "no header".
+    const CsvColumns cols = CSVLoader::SniffL2Columns(line);
+    const int ts_idx = cols.ts;
+    const auto &bids_p = cols.bid_px;
+    const auto &bids_q = cols.bid_qty;
+    const auto &asks_p = cols.ask_px;
+    const auto &asks_q = cols.ask_qty;
 
     if (ts_idx == -1) return false;
 
@@ -61,10 +89,15 @@ bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::stri
     if (!bin_file.is_open()) return false;
 
     std::vector<char*> tokens;
-    tokens.reserve(headers.size());
+    tokens.reserve(32);
 
-    while (std::getline(csv_file, line)) {
-        if (line.empty()) continue; 
+    bool first_is_data = !cols.has_header;
+    while (first_is_data || std::getline(csv_file, line)) {
+        if (first_is_data) {
+            first_is_data = false;
+        } else if (line.empty()) {
+            continue;
+        }
 
         tokens.clear();
         char* ptr = line.data();
@@ -142,73 +175,64 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
     if (file.is_open()) {
         std::string line;
         if (std::getline(file, line)) {
-            // parse headers
-            std::vector<std::string> headers;
-            size_t start = 0, end = line.find(',');
-            while (end != std::string::npos) {
-                headers.push_back(line.substr(start, end - start));
-                start = end + 1;
-                end = line.find(',', start);
-            }
-            headers.push_back(line.substr(start));
+            // the same sniffer csv_parser uses: headerless exports are read as
+            // Binance Vision aggTrades instead of yielding no trades at all.
+            const CsvColumns cols = CSVLoader::SniffTradeColumns(line);
+            const int ts_idx = cols.ts, p_idx = cols.price,
+                      q_idx = cols.qty, m_idx = cols.maker,
+                      s_idx = cols.side;
 
-            // Entfernt eventuelle \r Zeilenumbrüche am Ende des Headers
-            if (!headers.empty() && !headers.back().empty() && headers.back().back() == '\r') {
-                headers.back().pop_back();
-            }
+            // bybit and hyperliquid carry the taker side instead of the maker
+            // bit, so either column satisfies the layout check.
+            if (ts_idx != -1 && p_idx != -1 && q_idx != -1 &&
+                (m_idx != -1 || s_idx != -1)) {
+                const size_t max_idx = static_cast<size_t>(
+                    std::max({ts_idx, p_idx, q_idx, m_idx, s_idx}));
 
-            int ts_idx = -1, p_idx = -1, q_idx = -1, m_idx = -1;
-            for (size_t i = 0; i < headers.size(); ++i) {
-                std::string h = headers[i];
-                std::transform(h.begin(), h.end(), h.begin(), ::tolower);
-                
-                // EXAKTE MATCHES statt find() - so ignorieren wir 'quote_qty' sicher!
-                // binance vision calls it "transact_time"; bybit's "T" is
-                // lowercased to "t" above. missing these aliases produced an
-                // empty dataset with no error at all.
-                if (h == "time" || h == "ts" || h == "transact_time" || h == "t") ts_idx = i;
-                else if (h == "price" || h == "p") p_idx = i;
-                else if (h == "qty" || h == "quantity" || h == "q") q_idx = i; 
-                else if (h == "is_buyer_maker" || h == "maker" || h == "m") m_idx = i;
-            }
-
-            if (ts_idx != -1 && p_idx != -1 && q_idx != -1 && m_idx != -1) {
                 std::vector<char*> tokens;
-                tokens.reserve(headers.size());
-                
-                while (std::getline(file, line)) {
-                    if (line.empty()) continue;
-                    
+                tokens.reserve(32);
+
+                auto process_row = [&](std::string &row) {
+                    if (row.empty()) return;
+
                     tokens.clear();
-                    char* ptr = line.data();
+                    char* ptr = row.data();
                     tokens.push_back(ptr);
-                    
+
                     while (*ptr) {
                         if (*ptr == ',') {
-                            *ptr = '\0'; 
+                            *ptr = '\0';
                             tokens.push_back(ptr + 1);
                         }
                         ptr++;
                     }
 
-                    if (tokens.size() <= static_cast<size_t>(std::max({ts_idx, p_idx, q_idx, m_idx}))) continue;
+                    if (tokens.size() <= max_idx) return;
 
                     TradeEvent trade{};
-                    trade.timestamp = NormalizeEpochToMillis(std::strtoll(tokens[ts_idx], nullptr, 10));
-                    
+                    trade.timestamp = NormalizeEpochToMillis(
+                        std::strtoll(tokens[ts_idx], nullptr, 10));
+
                     if (trade.timestamp > 1500000000000LL) {
                         trade.price = std::atof(tokens[p_idx]);
-                        
-                        // Hier wieder quantity (oder wie auch immer dein Struct-Feld heißt)
-                        trade.quantity = std::atof(tokens[q_idx]); 
-                        
-                        char* m_ptr = tokens[m_idx];
-                        while (*m_ptr == ' ' || *m_ptr == '\t' || *m_ptr == '"') m_ptr++;
-                        trade.is_buyer_maker = (*m_ptr == 't' || *m_ptr == 'T' || *m_ptr == '1');
-                        
+                        trade.quantity = std::atof(tokens[q_idx]);
+
+                        if (m_idx >= 0) {
+                            char* m_ptr = tokens[m_idx];
+                            while (*m_ptr == ' ' || *m_ptr == '\t' || *m_ptr == '"') m_ptr++;
+                            trade.is_buyer_maker =
+                                (*m_ptr == 't' || *m_ptr == 'T' || *m_ptr == '1');
+                        } else {
+                            trade.is_buyer_maker =
+                                IsBuyerMakerFromSideToken(tokens[s_idx]);
+                        }
+
                         all_trades.push_back(trade);
                     }
-                }
+                };
+
+                if (!cols.has_header) process_row(line);
+                while (std::getline(file, line)) process_row(line);
             }
         }
     }
@@ -240,24 +264,19 @@ std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &datas
     }
     
     if (fs::exists(bin_file)) {
-        std::ifstream file(bin_file.string(), std::ios::binary | std::ios::ate);
-        if (file) {
-            std::streamsize size = file.tellg();
-            if (size <= 0 || size % static_cast<std::streamsize>(sizeof(L2Snapshot)) != 0) {
-                // truncated by an interrupted write (power loss, kill -9). drop
-                // it so the next run rebuilds from the CSV rather than
-                // returning an empty book that looks like a quiet market.
-                file.close();
-                std::error_code ec;
-                fs::remove(bin_file, ec);
-                return l2_data;
-            }
-            file.seekg(0, std::ios::beg);
+        if (ReadL2Cache(bin_file, l2_data)) return l2_data;
 
-            l2_data.resize(static_cast<size_t>(size) / sizeof(L2Snapshot));
-            if (file.read(reinterpret_cast<char*>(l2_data.data()), size)) {
-                return l2_data;
-            }
+        // truncated by an interrupted write (power loss, kill -9). drop it and
+        // rebuild immediately: returning an empty book here made the first run
+        // after a crash look like a quiet market and only healed on the next.
+        std::error_code ec;
+        fs::remove(bin_file, ec);
+        l2_data.clear();
+
+        if (fs::exists(csv_file) &&
+            ConvertL2CsvToBin(csv_file.string(), bin_file.string()) &&
+            ReadL2Cache(bin_file, l2_data)) {
+            return l2_data;
         }
     }
     return l2_data;

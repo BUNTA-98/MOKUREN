@@ -2,6 +2,7 @@
 #include "data_manager.hpp"
 #include "logger.hpp"
 #include "performance_metrics.hpp"
+#include "replay_manager.hpp"
 #include "trade_management.hpp"
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <string>
 #include <ctime>
 #include <filesystem>
 
@@ -102,6 +104,39 @@ void ValidateRunConfig(const nlohmann::json& cfg, const char* where) {
     }
 }
 
+// One reader for environment.max_cores. RunGridSearch and RunWFA used
+// json::value, which throws type_error on "max_cores": "8" -- and in
+// RunGridSearch that throw escaped on the driver thread before any worker
+// started, so a config AppConfig::Load accepts aborted the whole scan.
+unsigned int ReadMaxCores(const nlohmann::json& cfg) {
+    unsigned int n = 0;
+    if (cfg.contains("environment") && cfg["environment"].is_object()) {
+        const auto& env = cfg["environment"];
+        if (env.contains("max_cores")) {
+            const auto& v = env["max_cores"];
+            if (v.is_number_integer() && v.get<long long>() > 0) {
+                n = static_cast<unsigned int>(v.get<long long>());
+            } else if (v.is_string()) {
+                const std::string s = v.get<std::string>();
+                size_t used = 0;
+                try {
+                    const unsigned long parsed = std::stoul(s, &used);
+                    if (used == s.size() && parsed > 0) {
+                        n = static_cast<unsigned int>(parsed);
+                    }
+                } catch (...) {
+                    n = 0;
+                }
+            }
+        }
+    }
+    if (n == 0) {
+        n = std::thread::hardware_concurrency();
+        if (n == 0) n = 4;
+    }
+    return n;
+}
+
 } // namespace
 
 void Mokuren::ApplyRMultiplesManagement(const nlohmann::json& json_config, double base_sl_pct, EngineInstance& eng) {
@@ -162,11 +197,32 @@ void Mokuren::ApplyRMultiplesManagement(const nlohmann::json& json_config, doubl
         
     const bool trailing_on = read_enabled(tr);
     const bool scale_out_on = read_enabled(so);
-    if (!so.contains("fraction") || !so["fraction"].is_number()) {
-        throw std::runtime_error(
-            "config error: 'trade_management.scale_out.fraction' must be a number");
-    }
-    const double scale_fraction = so["fraction"].get<double>();
+    // AppConfig::Load accepts "fraction": "0.5" (RequireNumber parses numeric
+    // strings), so demanding is_number() here rejected a config the loader had
+    // already approved -- inside a worker, where it surfaced as "no trades".
+    auto read_number = [](const nlohmann::json& block, const char* key,
+                          const char* path) -> double {
+        if (!block.contains(key)) {
+            throw std::runtime_error(std::string("config error: missing required key '") +
+                                     path + "'");
+        }
+        const auto& v = block[key];
+        if (v.is_number()) return v.get<double>();
+        if (v.is_string()) {
+            const std::string s = v.get<std::string>();
+            size_t used = 0;
+            try {
+                const double parsed = std::stod(s, &used);
+                if (used == s.size()) return parsed;
+            } catch (...) {
+                // fall through to the typed error
+            }
+        }
+        throw std::runtime_error(std::string("config error: '") + path +
+                                 "' must be a number (got " + v.dump() + ")");
+    };
+    const double scale_fraction =
+        read_number(so, "fraction", "trade_management.scale_out.fraction");
 
     // an explicit "enabled": false on break-even is honoured by pushing the
     // trigger out of reach. Resolve the levels only when the block is active: a
@@ -247,8 +303,7 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
     }
 
     // setup threads
-    unsigned int max_cores = base_json["environment"].value("max_cores", 0);
-    if (max_cores == 0) max_cores = std::thread::hardware_concurrency();
+    const unsigned int max_cores = ReadMaxCores(base_json);
     
     LOG_INFO("grid search: {} trades, {} l2 snapshots, {} threads",
              all_trades.size(), all_l2.size(), max_cores);
@@ -513,9 +568,7 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
     int64_t out_days = base_json.value("backtest", nlohmann::json::object()).value("wfa_out_of_sample_days", 7);
     int64_t step_days = base_json.value("backtest", nlohmann::json::object()).value("wfa_step_days", 7);
     
-    unsigned int max_cores = base_json.value("environment", nlohmann::json::object()).value("max_cores", 0);
-    if (max_cores == 0) max_cores = std::thread::hardware_concurrency();
-    if (max_cores == 0) max_cores = 4;
+    const unsigned int max_cores = ReadMaxCores(base_json);
 
     // conv days to ms
     int64_t day_ms = 86400000LL; 
@@ -809,136 +862,14 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
         return result;
     }
 
-    std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
-
-    AppConfig cfg = AppConfig::Load(winning_config);
-    const mokuren::RiskPcts replay_risk = mokuren::ResolveRiskPcts(winning_config);
-    cfg.sl_pct = replay_risk.sl;
-    cfg.tp_pct = replay_risk.tp;
-
-    EngineInstance eng = StrategyFactory::Build(cfg);
-    ApplyRMultiplesManagement(winning_config, cfg.sl_pct, eng);
-
-    auto execute_signal = [&](TradeSignal raw_sig, double exec_price, int64_t ts) {
-        if (raw_sig.direction == SignalDirection::NONE) return;
-        if (!PrepareSignalRisk(raw_sig, exec_price, "replay_single")) return;
-        TradeSignal sized = eng.sizer->CalculateSize(raw_sig);
-        TradeSignal final_sig = eng.risk_manager->Evaluate(sized, ts);
-        if (final_sig.direction != SignalDirection::NONE) {
-            if (!FinalizeTakeProfit(final_sig, exec_price, cfg.sl_pct, cfg.tp_pct,
-                                    "replay_single")) return;
-            eng.ptrader->ProcessSignal(final_sig, exec_price, ts);
-        }
-    };
-
-    Bar live_bar, htf_bar;
-    size_t l2_idx = 0;
-
-    for (const auto &trade : all_trades) {
-        // catch up l2
-        while (l2_idx < all_l2.size() && all_l2[l2_idx].timestamp <= trade.timestamp) {
-            eng.aggregator->ProcessL2(all_l2[l2_idx]);
-            eng.htf_aggregator->ProcessL2(all_l2[l2_idx]);
-            
-            MarketContext tick_ctx{
-                eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-            };
-
-            TradeSignal tick_sig = eng.alpha->Evaluate(tick_ctx, false);
-            if (tick_sig.direction != SignalDirection::NONE) {
-                double exec_price = (tick_sig.direction == SignalDirection::BUY) 
-                                  ? all_l2[l2_idx].best_ask_price 
-                                  : all_l2[l2_idx].best_bid_price;
-                
-                if (exec_price <= 0.0) exec_price = live_bar.close > 0.0 ? live_bar.close : trade.price;
-                execute_signal(tick_sig, exec_price, all_l2[l2_idx].timestamp);
-            }
-            l2_idx++;
-        }
-
-        // proc trade (passing ts to pos manager)
-        eng.pos_manager->Update(trade.price, trade.timestamp);
-        eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-
-        bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
-        eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-        
-        MarketContext context{
-            eng.aggregator->GetHistory(), live_bar, htf_bar, 
-            eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-        };
-
-        TradeSignal candle_sig = eng.alpha->Evaluate(context, candle_finished);
-        execute_signal(candle_sig, trade.price, trade.timestamp);
-    }
-
-    eng.aggregator->FlushLastCandle(live_bar);
-    eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
-
-    // populate ui replay data
-    result.history_1m = eng.aggregator->GetHistory();
-    result.history_15m = eng.htf_aggregator->GetHistory();
-    
-    const std::vector<TradeRecord> trade_log = eng.ptrader->GetTradeHistory();
-    for (const auto& t : trade_log) {
-        TradeInfo ti;
-        ti.is_long = (t.direction == SignalDirection::BUY); 
-        ti.entry_price = t.entry_price;
-        ti.exit_price = t.exit_price;
-        ti.pnl = t.net_profit;
-        ti.exit_reason = t.exit_reason; 
-        ti.stop_history = t.stop_events;
-        
-        // map entry ts to ohlc
-        auto it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.entry_time, 
-            [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
-        if (it != result.history_1m.end()) {
-            ti.candle_idx = std::distance(result.history_1m.begin(), it);
-            if (ti.candle_idx > 0 && it->timestamp_start > t.entry_time) ti.candle_idx--; 
-        } else {
-            ti.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
-        }
-        
-        // map exit ts to ohlc
-        auto exit_it = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), t.exit_time, 
-            [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
-        if (exit_it != result.history_1m.end()) {
-            ti.exit_candle_idx = std::distance(result.history_1m.begin(), exit_it);
-            if (ti.exit_candle_idx > 0 && exit_it->timestamp_start > t.exit_time) ti.exit_candle_idx--; 
-        } else {
-            ti.exit_candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
-        }
-
-        // map stop events to ohlc
-        for (auto& se : ti.stop_history) {
-            auto sit = std::lower_bound(result.history_1m.begin(), result.history_1m.end(), se.timestamp, 
-                [](const Bar& b, int64_t time) { return b.timestamp_start < time; });
-            if (sit != result.history_1m.end()) {
-                se.candle_idx = std::distance(result.history_1m.begin(), sit);
-                if (se.candle_idx > 0 && sit->timestamp_start > se.timestamp) se.candle_idx--;
-            } else {
-                se.candle_idx = result.history_1m.empty() ? 0 : result.history_1m.size() - 1;
-            }
-        }
-        result.trades.push_back(ti);
-    }
-    
-    // fallbacks for ui
-    for (auto& ti : result.trades) {
-        if (result.history_1m.empty()) {
-            ti.candle_idx = 0; ti.exit_candle_idx = 0;
-        } else {
-            size_t max_idx = result.history_1m.size() - 1;
-            if (ti.candle_idx > max_idx) ti.candle_idx = max_idx;
-            if (ti.exit_candle_idx > max_idx) ti.exit_candle_idx = max_idx;
-            if (ti.exit_candle_idx < ti.candle_idx) ti.exit_candle_idx = ti.candle_idx;
-        }
-    }
+    // ReplayManager::Run is the single replay implementation: it owns the
+    // stop-validation/sizing/firewall/TP funnel, the L2 catch-up and the
+    // candle mapping, so this entry point cannot drift from it again.
+    result = ReplayManager::Run(all_trades, winning_config);
 
     LOG_INFO("replay single run complete: bars_1m={} bars_15m={} trades={}",
              result.history_1m.size(), result.history_15m.size(), result.trades.size());
-    
+
     return result;
 }
 

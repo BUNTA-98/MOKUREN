@@ -59,6 +59,41 @@ struct EngineInstance {
 // trade_management.break_even.enabled == false arms break-even at infinity and
 // its target at 0R, so Build produces the same ladder as
 // ApplyRMultiplesManagement. the levels themselves stay required either way.
+// --- config surface (authoritative; mirrors src/factory.cpp) ---------------
+//
+// AppConfig carries triggers/filters/risk modules as opaque json, so this is
+// the full list of names and the params each reader consumes. Every param
+// below is OPTIONAL and falls back to the shown default: a missing or
+// misspelled key never fails, it silently takes the default. This is the
+// opposite of the scalar environment/risk/trade_management keys, which are
+// strict. If a param must be guaranteed, add it to AppConfig, not here.
+//
+// triggers (name: params):
+//   DeltaAbsorption:    delta=1.0
+//   StackedImbalance:   ratio=1.5, levels=2
+//   SpoofHunter:        lookback_ms=500, min_wall_qty=30.0, drop_threshold=0.9
+// filters:
+//   MinVolume:          min_volume=1.0
+//   VwapTrend:          require_trend_alignment=true
+//   CVDDivergence:      lookback=5
+//   MacroTrend:         lookback=1440
+//   Volatility:         min_dollar=150.0, lookback=5
+//   TimeOfDay:          start_h=8, start_m=0, end_h=17, end_m=0
+//   POCTrend:           (none)
+//   RVOL:               threshold=1.5, lookback=20
+//   ATRChop:            min_atr=20.0, lookback=14
+//   OrderbookImbalance: ratio=3.0   <- a FILTER; not a valid trigger name
+// risk.modules:
+//   SinglePositionLock:  (none)
+//   MaxStopDistanceLock: max_stop_pct=0.015
+//   MaxLeverageLock:     max_leverage=10.0
+//   AntiRevengeLock:     cooldown_ms=1800000
+//
+// any component may be disabled with "enabled"/"active"/"isActive" set to
+// false, "false"/"0", or 0. disabling every trigger is a build error.
+//
+// an unknown name is a build error, not a no-op: the run aborts before data is
+// loaded. AppConfig::Load cannot catch it, because it never interprets names.
 class StrategyFactory {
 public:
   static EngineInstance Build(const AppConfig &cfg, bool live_mode = false);

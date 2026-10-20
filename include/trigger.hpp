@@ -215,8 +215,18 @@ public:
     }
 
     // sell signal: massiver kaufdruck aber kerze schließt rot
+    // mirrored from the long branch: a direction-only signal carries no stop,
+    // and the engine's fail-closed funnel drops it before it can trade.
     if (total_delta >= min_delta_threshold_ && bar.close < bar.open) {
-      return TradeSignal{SignalDirection::SELL};
+      TradeSignal ticket;
+      ticket.direction = SignalDirection::SELL;
+      ticket.entry_price = bar.close;
+      ticket.stop_loss = bar.high + (bar.tick_size * 2);
+
+      double risk = ticket.stop_loss - ticket.entry_price;
+      ticket.take_profit = ticket.entry_price - (risk * 2);
+
+      return ticket;
     }
 
     return TradeSignal{};

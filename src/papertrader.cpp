@@ -252,6 +252,8 @@ void PaperTrader::ClosePartial(double fraction, double current_price, int64_t cu
     rec.stop_events = current_stop_history_;
 
     trade_history_.push_back(rec);
+    // the live broadcaster reads this after any exit, not just a full close.
+    last_closed_size_ = close_volume;
     position_size -= close_volume; 
 }
 

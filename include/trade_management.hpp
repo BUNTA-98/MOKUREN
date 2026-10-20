@@ -61,6 +61,14 @@ inline RiskPcts ResolveRiskPcts(const nlohmann::json& root) {
         "config error: 'risk.sl_pct' (or legacy 'risk.sl_price_pct') is "
         "required and defines 1R");
   }
+  // sl is the divisor that turns an absolute tp_pct into R. Load's bounds
+  // check runs after this on every real path, but a direct caller (tests,
+  // tooling) reached the division below with sl == 0 and got NaN, not an
+  // error.
+  if (!(out.sl > 0.0)) {
+    throw std::runtime_error(
+        "config error: 'risk.sl_pct' must be > 0; it defines 1R");
+  }
 
   double tp_r = 0.0;
   if (risk.contains("tp_r") && risk["tp_r"].is_number()) {
