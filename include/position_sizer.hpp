@@ -14,7 +14,12 @@ private:
   double max_leverage_; // NEU: Maximaler Hebel als Margin-Schutz
 
 public:
-  PositionSizer(IBroker* b, double risk_pct, double min_sl_dist = 15.0, 
+  // min_sl_dist is an absolute quote-currency floor, in the same units as
+  // risk.min_distance_dollars. it used to default to 15.0 USD, which is noise
+  // for BTC and a 6%+ stop for SOL: a caller that did not pass one silently
+  // widened every stop. 0 -- the AppConfig default -- means "never widen the
+  // trigger's own stop", so this must not drift from that struct again.
+  PositionSizer(IBroker* b, double risk_pct, double min_sl_dist = 0.0,
                 double lot_step = 0.001, double max_leverage = 20.0)
       : broker_(b), risk_per_trade_pct_(risk_pct),
         min_sl_distance_(min_sl_dist), lot_step_(lot_step), max_leverage_(max_leverage) {}
@@ -44,14 +49,22 @@ public:
     // --- PRO-UPGRADE 1: LEVERAGE LIMIT (Margin Schutz) ---
     // Wenn der SL extrem eng ist, könnte die Lot-Größe so riesig werden, 
     // dass sie unser Margin-Limit (Balance * Max Hebel) sprengt.
-    double max_allowed_volume = (balance * max_leverage_) / signal.entry_price;
-    if (raw_volume > max_allowed_volume) {
-        raw_volume = max_allowed_volume;
+    // a zero/negative cap means "no cap", not "block every order".
+    if (max_leverage_ > 0.0) {
+      double max_allowed_volume = (balance * max_leverage_) / signal.entry_price;
+      if (raw_volume > max_allowed_volume) {
+          raw_volume = max_allowed_volume;
+      }
     }
 
     // --- PRO-UPGRADE 2: LOT STEP ROUNDING ---
     // Börsen akzeptieren keine endlosen Kommastellen
-    double rounded_volume = std::floor(raw_volume / lot_step_) * lot_step_;
+    // only round when a step is configured: dividing by a zero step produced
+    // an infinite volume, which is exactly the order a venue must never see.
+    double rounded_volume = raw_volume;
+    if (lot_step_ > 0.0) {
+      rounded_volume = std::floor(raw_volume / lot_step_) * lot_step_;
+    }
 
     if (rounded_volume <= 0.0) return TradeSignal{}; // Zu klein für die Börse
 

@@ -57,11 +57,13 @@ set(USE_OPEN_SSL ON CACHE BOOL "" FORCE)
 set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ixwebsocket)
 
-# collect source files
+# collect source files. headers are tracked too: with the sources glob alone an
+# edit to a header never re-triggered a build of the targets that include it.
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "include/*.hpp")
 
 # main executable
-add_executable(mokuren ${SOURCES})
+add_executable(mokuren ${SOURCES} ${HEADERS})
 
 # include dirs
 # ${ixwebsocket_SOURCE_DIR} is added explicitly so <ixwebsocket/IXWebSocket.h>
@@ -104,7 +106,7 @@ file(GLOB ENGINE_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 list(REMOVE_ITEM ENGINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
 # attach engine code and include dirs
-target_sources(engine_tests PRIVATE ${ENGINE_SOURCES})
+target_sources(engine_tests PRIVATE ${ENGINE_SOURCES} ${HEADERS})
 target_include_directories(engine_tests PRIVATE src include ${ixwebsocket_SOURCE_DIR})
 
 # link test libs

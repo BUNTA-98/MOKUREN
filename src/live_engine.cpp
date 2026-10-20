@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <utility>
 
 LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
@@ -57,6 +58,11 @@ bool LiveOrchestrator::Start() {
 
   shutdown_.store(false, std::memory_order_release);
   dropped_.store(0, std::memory_order_relaxed);
+  stream_ended_.store(false, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stream_error_.clear();
+  }
 
   if (!streamer_) {
     LOG_ERROR("LiveOrchestrator::Start: no streamer attached");
@@ -67,6 +73,12 @@ bool LiveOrchestrator::Start() {
   // wire the streamer callbacks into our queue before starting it.
   streamer_->SetTradeCallback([this](const TradeEvent& t) { OnTrade(t); });
   streamer_->SetL2Callback([this](const L2Snapshot& s) { OnL2(s); });
+  // without these, a clean end of stream and a dropped socket both look like
+  // a market that simply went quiet: the worker waits on an empty queue
+  // forever and the owner never learns the run is over.
+  streamer_->SetFinishedCallback([this]() { OnStreamFinished(); });
+  streamer_->SetErrorCallback(
+      [this](const std::string& message) { OnStreamError(message); });
 
   // startup ping: lets us verify the redis integration without waiting
   // for the first trade to arrive.
@@ -113,11 +125,7 @@ void LiveOrchestrator::Stop() {
   }
 
   // signal the worker to drain and exit.
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    shutdown_.store(true, std::memory_order_release);
-  }
-  cv_.notify_all();
+  RequestShutdown();
 
   if (worker_.joinable()) {
     LOG_TRACE("LiveOrchestrator: joining worker thread");
@@ -210,6 +218,32 @@ void LiveOrchestrator::OnL2(const L2Snapshot& s) {
   }
 }
 
+void LiveOrchestrator::OnStreamFinished() {
+  LOG_INFO("LiveOrchestrator: market stream finished (clean end of input)");
+  stream_ended_.store(true, std::memory_order_release);
+  RequestShutdown();
+}
+
+void LiveOrchestrator::OnStreamError(const std::string& message) {
+  LOG_ERROR("LiveOrchestrator: market stream error: {}", message);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stream_error_ = message;
+  }
+  stream_ended_.store(true, std::memory_order_release);
+  RequestShutdown();
+}
+
+void LiveOrchestrator::RequestShutdown() {
+  // never joins here: this can run on the streamer's thread via the finished /
+  // error callbacks, and joining it from inside would deadlock.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    shutdown_.store(true, std::memory_order_release);
+  }
+  cv_.notify_all();
+}
+
 bool LiveOrchestrator::Push(Event&& ev) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -256,15 +290,20 @@ void LiveOrchestrator::WorkerLoop() {
                                int64_t ts) {
     if (raw_sig.direction == SignalDirection::NONE) return;
 
+    const bool is_long = raw_sig.direction == SignalDirection::BUY;
+
+    // the stop is the strategy's own risk. the engine never synthesises one
+    // from risk.sl_pct: inventing a stop would silently redefine 1R and move
+    // every r-multiple threshold for the trade.
+    if (!(raw_sig.stop_loss > 0.0) ||
+        (is_long && raw_sig.stop_loss >= exec_price) ||
+        (!is_long && raw_sig.stop_loss <= exec_price)) {
+      LOG_ERROR("live: dropping {} signal at {}: stop_loss={} is missing or on "
+                "the wrong side of entry",
+                is_long ? "long" : "short", exec_price, raw_sig.stop_loss);
+      return;
+    }
     raw_sig.entry_price = exec_price;
-    raw_sig.stop_loss =
-        exec_price * (raw_sig.direction == SignalDirection::BUY
-                          ? (1.0 - sl_pct_)
-                          : (1.0 + sl_pct_));
-    raw_sig.take_profit =
-        exec_price * (raw_sig.direction == SignalDirection::BUY
-                          ? (1.0 + tp_pct_)
-                          : (1.0 - tp_pct_));
 
     TradeSignal sized = raw_sig;
     if (engine_.sizer) {
@@ -278,6 +317,35 @@ void LiveOrchestrator::WorkerLoop() {
 
     IBroker* broker = ActiveBroker();
     if (final_sig.direction != SignalDirection::NONE && broker) {
+      // 1R is the stop that will actually be placed, after the sizer and the
+      // risk manager had their say. sizing may widen it, and the ladder must
+      // follow the stop, not the config value.
+      const bool final_long = final_sig.direction == SignalDirection::BUY;
+      if (!(final_sig.stop_loss > 0.0) ||
+          (final_long && final_sig.stop_loss >= exec_price) ||
+          (!final_long && final_sig.stop_loss <= exec_price)) {
+        LOG_ERROR("live: dropping {} signal at {}: final stop_loss={} is "
+                  "missing or on the wrong side of entry",
+                  final_long ? "long" : "short", exec_price,
+                  final_sig.stop_loss);
+        return;
+      }
+      const double risk_pct =
+          std::abs(exec_price - final_sig.stop_loss) / exec_price;
+
+      // take profit is tp_r x placed risk. tp_pct_ was resolved from the
+      // config's tp_r and risk.sl_pct, so dividing recovers the r-multiple.
+      if (!(final_sig.take_profit > 0.0)) {
+        if (!(sl_pct_ > 0.0)) {
+          LOG_ERROR("live: cannot derive take profit from tp_pct={} with "
+                    "sl_pct={}", tp_pct_, sl_pct_);
+          return;
+        }
+        const double tp_pct = (tp_pct_ / sl_pct_) * risk_pct;
+        final_sig.take_profit = final_long ? exec_price * (1.0 + tp_pct)
+                                           : exec_price * (1.0 - tp_pct);
+      }
+
       LOG_TRACE("LiveOrchestrator: executing signal dir={} entry={} sl={} tp={} vol={} ts={}",
                 static_cast<int>(final_sig.direction), final_sig.entry_price,
                 final_sig.stop_loss, final_sig.take_profit, final_sig.volume,

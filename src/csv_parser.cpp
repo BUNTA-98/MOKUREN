@@ -1,4 +1,5 @@
 #include "csv_parser.hpp"
+#include "timestamp_utils.hpp"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -32,7 +33,7 @@ size_t CSVLoader::ProcessBinanceCSV(const std::string &filepath,
   for (size_t i = 0; i < headers.size(); ++i) {
       if (headers[i] == "price" || headers[i] == "p") idx_price = i;
       else if (headers[i] == "qty" || headers[i] == "quantity" || headers[i] == "q") idx_qty = i;
-      else if (headers[i] == "time" || headers[i] == "transact_time" || headers[i] == "T") idx_time = i;
+      else if (headers[i] == "time" || headers[i] == "ts" || headers[i] == "transact_time" || headers[i] == "T") idx_time = i;
       else if (headers[i] == "is_buyer_maker" || headers[i] == "m") idx_maker = i;
   }
 
@@ -68,7 +69,7 @@ size_t CSVLoader::ProcessBinanceCSV(const std::string &filepath,
         trade.price = std::stod(col[idx_price]);
         trade.quantity = std::stod(col[idx_qty]);
         
-        trade.timestamp = std::stoll(col[idx_time]); 
+        trade.timestamp = NormalizeEpochToMillis(std::stoll(col[idx_time]));
 
         const std::string& m_str = col[idx_maker];
         trade.is_buyer_maker = (m_str == "true" || m_str == "True" || m_str == "1");

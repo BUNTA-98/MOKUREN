@@ -2,10 +2,15 @@
 #include "data_manager.hpp"
 #include "logger.hpp"
 #include "performance_metrics.hpp"
+#include "trade_management.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <exception>
+#include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <fstream>
 #include <iomanip>
@@ -15,29 +20,178 @@
 
 namespace fs = std::filesystem;
 
-void Mokuren::ApplyRMultiplesManagement(const nlohmann::json& json_config, double base_sl_pct, EngineInstance& eng) {
-    auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get());
-    if (pt) {
-        auto tm = json_config.value("trade_management", nlohmann::json::object());
-        auto be = tm.value("break_even", nlohmann::json::object());
-        auto tr = tm.value("trailing", nlohmann::json::object());
-        auto so = tm.value("scale_out", nlohmann::json::object());
+namespace {
 
-        // map r-multiples to abs pct
-        double be_trig = be.value("enabled", false) ? (base_sl_pct * be.value("trigger_r", 1.5)) : 999.0;
-        double be_targ = base_sl_pct * be.value("target_r", 0.25);
-        
-        bool tr_en = tr.value("enabled", false);
-        double tr_trig = base_sl_pct * tr.value("trigger_r", 2.0);
-        double tr_dist = base_sl_pct * tr.value("distance_r", 0.5);
-
-        bool so_en = so.value("enabled", false);
-        double so_trig = base_sl_pct * so.value("trigger_r", 2.0);
-        double so_frac = so.value("fraction", 0.5);
-
-        // apply to paper trader
-        pt->ApplyManagementConfig(be_trig, be_targ, tr_en, tr_trig, tr_dist, so_en, so_trig, so_frac);
+// A signal's own stop is the risk actually taken, so it defines 1R. The engine
+// no longer overwrites it with risk.sl_pct: doing so silently redefined every
+// r-multiple threshold for a strategy that chose a structural stop, and made
+// the backtest disagree with the placed-stop ladder used live. A missing or
+// inverted stop drops the signal instead of inventing a price.
+bool PrepareSignalRisk(TradeSignal& sig, double exec_price,
+                       const char* where) {
+    const bool is_long = sig.direction == SignalDirection::BUY;
+    if (!(sig.stop_loss > 0.0) ||
+        (is_long && sig.stop_loss >= exec_price) ||
+        (!is_long && sig.stop_loss <= exec_price)) {
+        LOG_ERROR("{}: dropping {} signal at {}: stop_loss={} is missing or on "
+                  "the wrong side of entry",
+                  where, is_long ? "long" : "short", exec_price, sig.stop_loss);
+        return false;
     }
+    sig.entry_price = exec_price;
+
+    return true;
+}
+
+// Derives a missing take profit from the stop that will actually be placed.
+// This runs after sizing: when the sizer widens the stop (bug 16), deriving the
+// target earlier would leave it anchored to a risk no longer being taken and
+// silently change the trade's r-multiple.
+bool FinalizeTakeProfit(TradeSignal& sig, double exec_price,
+                        double configured_sl_pct, double configured_tp_pct,
+                        const char* where) {
+    if (sig.take_profit > 0.0) return true;
+    if (!(configured_sl_pct > 0.0)) {
+        LOG_ERROR("{}: cannot derive take profit from tp_pct={} with sl_pct={}",
+                  where, configured_tp_pct, configured_sl_pct);
+        return false;
+    }
+    const bool is_long = sig.direction == SignalDirection::BUY;
+    // tp_pct was resolved as a pct of entry against risk.sl_pct, so dividing
+    // recovers the r; multiplying by the placed risk keeps the target at the
+    // same r-multiple of the stop that actually gets placed.
+    const double risk_pct = std::abs(exec_price - sig.stop_loss) / exec_price;
+    const double tp_pct = (configured_tp_pct / configured_sl_pct) * risk_pct;
+    sig.take_profit =
+        is_long ? exec_price * (1.0 + tp_pct) : exec_price * (1.0 - tp_pct);
+    return true;
+}
+
+// Fails fast on a malformed trade_management block. Used by
+// ApplyRMultiplesManagement and, before any worker is spawned, by the scan and
+// WFA entry points: a config error thrown inside a worker was caught by the
+// per-run handler and logged once per permutation, so a broken config looked
+// like a strategy that simply never traded.
+void ValidateTradeManagement(const nlohmann::json& cfg) {
+    if (!cfg.contains("trade_management") ||
+        !cfg["trade_management"].is_object()) {
+        throw std::runtime_error(
+            "config error: missing required section 'trade_management'");
+    }
+    const auto& tm = cfg["trade_management"];
+    for (const char* section : {"break_even", "trailing", "scale_out"}) {
+        if (!tm.contains(section) || !tm[section].is_object()) {
+            throw std::runtime_error(
+                std::string("config error: missing required section "
+                            "'trade_management.") + section + "'");
+        }
+    }
+}
+
+// One pre-flight for every path. AppConfig::Load validates what it reads, then
+// the risk block and trade_management are checked, so a typo aborts before the
+// dataset is loaded instead of surfacing as an empty result set.
+void ValidateRunConfig(const nlohmann::json& cfg, const char* where) {
+    try {
+        AppConfig::Load(cfg);
+        mokuren::ResolveRiskPcts(cfg);
+        ValidateTradeManagement(cfg);
+    } catch (const std::exception& e) {
+        LOG_ERROR("{}: invalid config: {}", where, e.what());
+        throw;
+    }
+}
+
+} // namespace
+
+void Mokuren::ApplyRMultiplesManagement(const nlohmann::json& json_config, double base_sl_pct, EngineInstance& eng) {
+    if (!(base_sl_pct > 0.0)) {
+        throw std::runtime_error(
+            "ApplyRMultiplesManagement: sl_pct must be > 0; it defines 1R");
+    }
+    ValidateTradeManagement(json_config);
+    const auto& tm = json_config["trade_management"];
+    const auto& be = tm["break_even"];
+    const auto& tr = tm["trailing"];
+    const auto& so = tm["scale_out"];
+
+    // Nothing owns the r-multiple ladder if pos_manager is absent, and falling
+    // through silently disabled the paper broker's management too: the trade
+    // would keep its stop and target but never break even, trail or scale out.
+    if (!eng.pos_manager) {
+        throw std::runtime_error(
+            "ApplyRMultiplesManagement: engine has no PositionManager; "
+            "break-even/trailing/scale-out would never fire");
+    }
+
+    // PaperTrader executes the price-based stop and target only. its own
+    // break-even / trailing / scale-out run on percentages of entry, while the
+    // PositionManager ladder runs on the stop that actually gets placed, so
+    // running both moved the same stop twice and could scale out twice.
+    if (auto* pt = dynamic_cast<PaperTrader*>(eng.ptrader.get())) {
+        pt->DisableManagement();
+    }
+
+    // ResolveLevelPct returns pct-of-entry (r * sl_pct); dividing recovers the
+    // r the author wrote, measured against the placed stop.
+    auto level_r = [base_sl_pct](const nlohmann::json& block, const char* r_key,
+                                 const char* pct_key, const char* section) {
+        return mokuren::ResolveLevelPct(block, base_sl_pct, r_key, pct_key,
+                                        section) / base_sl_pct;
+    };
+    // mirrors AppConfig::Load's SafeBool. Load accepts "false"/0 as well as a
+    // real false for these flags, so the strict is_boolean() check this
+    // replaced rejected configs the loader had already accepted -- and it did
+    // so inside a worker, where the throw surfaced as "no trades" instead of as
+    // a config error. an absent flag means enabled, matching the loader and
+    // StrategyFactory::Build.
+    auto read_enabled = [](const nlohmann::json& block) {
+        if (!block.contains("enabled")) return true;
+        const auto& v = block["enabled"];
+        if (v.is_boolean()) return v.get<bool>();
+        if (v.is_string()) {
+            const std::string s = v.get<std::string>();
+            if (s == "true" || s == "True" || s == "TRUE" || s == "1") return true;
+            if (s == "false" || s == "False" || s == "FALSE" || s == "0") return false;
+            return true;
+        }
+        if (v.is_number_integer()) return v.get<long long>() != 0;
+        if (v.is_number_float()) return v.get<double>() != 0.0;
+        return true;
+    };
+        
+    const bool trailing_on = read_enabled(tr);
+    const bool scale_out_on = read_enabled(so);
+    if (!so.contains("fraction") || !so["fraction"].is_number()) {
+        throw std::runtime_error(
+            "config error: 'trade_management.scale_out.fraction' must be a number");
+    }
+    const double scale_fraction = so["fraction"].get<double>();
+
+    // an explicit "enabled": false on break-even is honoured by pushing the
+    // trigger out of reach. Resolve the levels only when the block is active: a
+    // deliberately disabled block must not be forced to carry trigger keys the
+    // author omitted, or the whole run aborts for a feature they turned off.
+    double be_trigger_r = std::numeric_limits<double>::infinity();
+    double be_target_r = 0.0;
+    // the same reader the other two flags use, so a break-even block disabled
+    // with "false" is honoured exactly like one disabled with false.
+    const bool be_disabled = !read_enabled(be);
+    if (!be_disabled) {
+        be_trigger_r =
+            level_r(be, "trigger_r", "trigger_pct", "trade_management.break_even");
+        be_target_r =
+            level_r(be, "target_r", "target_pct", "trade_management.break_even");
+    }
+
+
+    eng.pos_manager->Configure(
+        be_trigger_r, be_target_r, trailing_on,
+        level_r(tr, "trigger_r", "trigger_pct", "trade_management.trailing"),
+        level_r(tr, "distance_r", "distance_pct", "trade_management.trailing"),
+        scale_out_on,
+        level_r(so, "trigger_r", "trigger_pct", "trade_management.scale_out"),
+        scale_fraction);
 }
 
 void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &config_path,
@@ -56,6 +210,20 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
     
     // gen params
     std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
+
+    if (runs.empty()) {
+        LOG_ERROR("grid search: no permutations generated from {}", config_path);
+        on_status("ERR: EMPTY GRID");
+        return;
+    }
+    // validate once, on the driver thread. a config error inside a worker was
+    // caught by the per-run handler and reported as "no trades".
+    try {
+        ValidateRunConfig(runs.front().full_json, "grid search");
+    } catch (const std::exception& e) {
+        on_status(std::string("ERR: CONFIG: ") + e.what());
+        return;
+    }
     
     std::string active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
     LOG_INFO("grid search start: config={} dataset={} permutations={}",
@@ -72,8 +240,8 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
 
     std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
     if (all_l2.empty()) {
-        LOG_WARN("grid search: no L2 data (L2_cache.bin) found for {}", active_dataset);
-        on_status("WARN: NO L2 DATA (L2_cache.bin) FOUND");
+        LOG_WARN("grid search: no L2 data (L2_cache_v3.bin) found for {}", active_dataset);
+        on_status("WARN: NO L2 DATA (L2_cache_v3.bin) FOUND");
     } else {
         if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
     }
@@ -111,6 +279,9 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
     std::ofstream csv_file(run_dir + "/results.csv");
     bool header_written = false;
 
+    // UI callbacks are not thread-safe; serialise them across workers.
+    std::mutex ui_mutex;
+
     // spawn workers
     std::vector<std::thread> workers;
     for (unsigned int i = 0; i < max_cores; ++i) {
@@ -120,12 +291,16 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                 size_t idx = task_index.fetch_add(1);
                 if (idx >= runs.size()) break; 
                 
+                // a throwing strategy or malformed json must not escape a
+                // worker: that calls std::terminate and kills the whole scan.
+                try {
                 const auto& run = runs[idx];
                 AppConfig cfg = AppConfig::Load(run.full_json);
                 
                 // get sl and tp
-                cfg.sl_pct = run.full_json.value("risk", nlohmann::json::object()).value("sl_price_pct", run.full_json.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
-                cfg.tp_pct = cfg.sl_pct * run.full_json.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
+                const mokuren::RiskPcts risk = mokuren::ResolveRiskPcts(run.full_json);
+                cfg.sl_pct = risk.sl;
+                cfg.tp_pct = risk.tp;
                 
                 // init strat mods
                 EngineInstance eng = StrategyFactory::Build(cfg);
@@ -135,10 +310,7 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                 auto execute_signal = [&](TradeSignal raw_sig, double exec_price, int64_t ts) {
                     if (raw_sig.direction == SignalDirection::NONE) return;
                     
-                    // set targets
-                    raw_sig.entry_price = exec_price;
-                    raw_sig.stop_loss = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 - cfg.sl_pct) : (1.0 + cfg.sl_pct));
-                    raw_sig.take_profit = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 + cfg.tp_pct) : (1.0 - cfg.tp_pct));
+                    if (!PrepareSignalRisk(raw_sig, exec_price, "scan")) return;
                     
                     // apply pos sizing
                     TradeSignal sized = eng.sizer->CalculateSize(raw_sig);
@@ -146,6 +318,10 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                     // final risk check
                     TradeSignal final_sig = eng.risk_manager->Evaluate(sized, ts);
                     if (final_sig.direction != SignalDirection::NONE) {
+                        // tp is an r-multiple of the stop that survived sizing
+                        // and the risk firewall, not of the pre-sizing stop.
+                        if (!FinalizeTakeProfit(final_sig, exec_price, cfg.sl_pct,
+                                                cfg.tp_pct, "scan")) return;
                         eng.ptrader->ProcessSignal(final_sig, exec_price, ts);
                     }
                 };
@@ -209,7 +385,7 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
 
                 // compile metrics
                 if (eng.ptrader->GetTotalTrades() > 0) {
-                    TestResult res;
+                    TestResult res{};
                     res.parameters = run.grid_values;
                     res.full_config = run.full_json; 
                     res.net_profit = eng.ptrader->GetNetProfit();
@@ -240,7 +416,10 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                              res.trades, res.net_profit, res.max_drawdown,
                              res.winrate, res.sharpe);
                     
-                    on_result(res);
+                    {
+                        std::lock_guard<std::mutex> lock(ui_mutex);
+                        on_result(res);
+                    }
 
                     // safe csv write
                     {
@@ -270,7 +449,15 @@ void Mokuren::RunGridSearch(const std::string &/*ignored*/, const std::string &c
                 }
                 
                 int done = ++current_iteration;
-                on_progress(done, total_iterations);
+                {
+                    std::lock_guard<std::mutex> lock(ui_mutex);
+                    on_progress(done, total_iterations);
+                }
+                } catch (const std::exception& e) {
+                    LOG_ERROR("grid worker: run {} threw: {}", idx, e.what());
+                } catch (...) {
+                    LOG_ERROR("grid worker: run {} threw an unknown exception", idx);
+                }
             }
         });
     }
@@ -293,6 +480,15 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
         std::ifstream file(config_path);
         if (file.is_open()) base_json = nlohmann::json::parse(file);
     } catch (...) {}
+
+    // same pre-flight as the scan: report a broken config as a config error,
+    // not as an empty dataset further down.
+    try {
+        ValidateRunConfig(base_json, "wfa");
+    } catch (const std::exception& e) {
+        on_status(std::string("ERR: CONFIG: ") + e.what());
+        return;
+    }
 
     std::string active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
     on_status("LOADING DATASET FOR WFA: " + active_dataset);
@@ -359,8 +555,12 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
         std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
 
         double best_in_sample_profit = -999999.0;
-        RunConfig best_config;
-        if (!runs.empty()) best_config = runs[0];
+        if (runs.empty()) {
+            LOG_WARN("wfa window {}: empty grid, skipping", i + 1);
+            on_progress(i + 1, windows.size());
+            continue;
+        }
+        RunConfig best_config = runs[0];
 
         std::mutex best_mutex;
         std::atomic<size_t> task_index{0};
@@ -373,11 +573,13 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
                     size_t idx = task_index.fetch_add(1);
                     if (idx >= runs.size()) break;
 
+                    try {
                     const auto& run = runs[idx];
                     AppConfig cfg = AppConfig::Load(run.full_json);
                     
-                    cfg.sl_pct = run.full_json.value("risk", nlohmann::json::object()).value("sl_price_pct", run.full_json.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
-                    cfg.tp_pct = cfg.sl_pct * run.full_json.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
+                    const mokuren::RiskPcts risk = mokuren::ResolveRiskPcts(run.full_json);
+                    cfg.sl_pct = risk.sl;
+                    cfg.tp_pct = risk.tp;
                     
                     EngineInstance eng = StrategyFactory::Build(cfg);
                     ApplyRMultiplesManagement(run.full_json, cfg.sl_pct, eng);
@@ -385,13 +587,15 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
                     // exec funnel
                     auto execute_signal = [&](TradeSignal raw_sig, double exec_price, int64_t ts) {
                         if (raw_sig.direction == SignalDirection::NONE) return;
-                        raw_sig.entry_price = exec_price;
-                        raw_sig.stop_loss = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 - cfg.sl_pct) : (1.0 + cfg.sl_pct));
-                        raw_sig.take_profit = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 + cfg.tp_pct) : (1.0 - cfg.tp_pct));
+                        if (!PrepareSignalRisk(raw_sig, exec_price,
+                                               "wfa_in_sample")) return;
                         
                         TradeSignal sized = eng.sizer->CalculateSize(raw_sig);
                         TradeSignal final_sig = eng.risk_manager->Evaluate(sized, ts);
                         if (final_sig.direction != SignalDirection::NONE) {
+                            if (!FinalizeTakeProfit(final_sig, exec_price,
+                                                    cfg.sl_pct, cfg.tp_pct,
+                                                    "wfa_in_sample")) return;
                             eng.ptrader->ProcessSignal(final_sig, exec_price, ts);
                         }
                     };
@@ -450,6 +654,11 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
                         best_in_sample_profit = profit;
                         best_config = run;
                     }
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("wfa worker: run {} threw: {}", idx, e.what());
+                    } catch (...) {
+                        LOG_ERROR("wfa worker: run {} threw an unknown exception", idx);
+                    }
                 }
             });
         }
@@ -460,20 +669,22 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
 
         // exec winning config in oos
         AppConfig oos_cfg = AppConfig::Load(best_config.full_json);
-        oos_cfg.sl_pct = best_config.full_json.value("risk", nlohmann::json::object()).value("sl_price_pct", best_config.full_json.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
-        oos_cfg.tp_pct = oos_cfg.sl_pct * best_config.full_json.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
+        const mokuren::RiskPcts oos_risk = mokuren::ResolveRiskPcts(best_config.full_json);
+        oos_cfg.sl_pct = oos_risk.sl;
+        oos_cfg.tp_pct = oos_risk.tp;
 
         EngineInstance oos_eng = StrategyFactory::Build(oos_cfg);
         ApplyRMultiplesManagement(best_config.full_json, oos_cfg.sl_pct, oos_eng);
 
         auto execute_oos_signal = [&](TradeSignal raw_sig, double exec_price, int64_t ts) {
             if (raw_sig.direction == SignalDirection::NONE) return;
-            raw_sig.entry_price = exec_price;
-            raw_sig.stop_loss = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 - oos_cfg.sl_pct) : (1.0 + oos_cfg.sl_pct));
-            raw_sig.take_profit = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 + oos_cfg.tp_pct) : (1.0 - oos_cfg.tp_pct));
+            if (!PrepareSignalRisk(raw_sig, exec_price,
+                                   "wfa_out_of_sample")) return;
             TradeSignal sized = oos_eng.sizer->CalculateSize(raw_sig);
             TradeSignal final_sig = oos_eng.risk_manager->Evaluate(sized, ts);
             if (final_sig.direction != SignalDirection::NONE) {
+                if (!FinalizeTakeProfit(final_sig, exec_price, oos_cfg.sl_pct,
+                                        oos_cfg.tp_pct, "wfa_out_of_sample")) return;
                 oos_eng.ptrader->ProcessSignal(final_sig, exec_price, ts);
             }
         };
@@ -539,7 +750,7 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
 
     // comp agg wfa res
     if (!global_oos_trades.empty()) {
-        TestResult res;
+        TestResult res{};
         res.parameters["WFA_Windows_Done"] = windows.size(); 
         
         nlohmann::json final_cfg = collected_configs.back().config;
@@ -588,7 +799,7 @@ void Mokuren::RunWFA(const std::string &/*ignored*/, const std::string &config_p
 }
 
 ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nlohmann::json& winning_config) {
-    ReplayResult result;
+    ReplayResult result{};
 
     std::string active_dataset = winning_config.value("environment", nlohmann::json::object()).value("dataset", "data");
     LOG_INFO("replay single run: dataset={}", active_dataset);
@@ -601,20 +812,21 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
     std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
 
     AppConfig cfg = AppConfig::Load(winning_config);
-    cfg.sl_pct = winning_config.value("risk", nlohmann::json::object()).value("sl_price_pct", winning_config.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
-    cfg.tp_pct = cfg.sl_pct * winning_config.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
+    const mokuren::RiskPcts replay_risk = mokuren::ResolveRiskPcts(winning_config);
+    cfg.sl_pct = replay_risk.sl;
+    cfg.tp_pct = replay_risk.tp;
 
     EngineInstance eng = StrategyFactory::Build(cfg);
     ApplyRMultiplesManagement(winning_config, cfg.sl_pct, eng);
 
     auto execute_signal = [&](TradeSignal raw_sig, double exec_price, int64_t ts) {
         if (raw_sig.direction == SignalDirection::NONE) return;
-        raw_sig.entry_price = exec_price;
-        raw_sig.stop_loss = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 - cfg.sl_pct) : (1.0 + cfg.sl_pct));
-        raw_sig.take_profit = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 + cfg.tp_pct) : (1.0 - cfg.tp_pct));
+        if (!PrepareSignalRisk(raw_sig, exec_price, "replay_single")) return;
         TradeSignal sized = eng.sizer->CalculateSize(raw_sig);
         TradeSignal final_sig = eng.risk_manager->Evaluate(sized, ts);
         if (final_sig.direction != SignalDirection::NONE) {
+            if (!FinalizeTakeProfit(final_sig, exec_price, cfg.sl_pct, cfg.tp_pct,
+                                    "replay_single")) return;
             eng.ptrader->ProcessSignal(final_sig, exec_price, ts);
         }
     };
@@ -731,7 +943,7 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &/*ignored*/, const nloh
 }
 
 ReplayResult Mokuren::ReplayWFA(const std::string &/*ignored*/, const std::vector<WFAOOSConfig>& wfa_configs) {
-    ReplayResult result;
+    ReplayResult result{};
     if (wfa_configs.empty()) return result;
 
     std::string active_dataset = wfa_configs[0].config.value("environment", nlohmann::json::object()).value("dataset", "data");
@@ -746,20 +958,21 @@ ReplayResult Mokuren::ReplayWFA(const std::string &/*ignored*/, const std::vecto
 
     for (const auto& wfa_cfg : wfa_configs) {
         AppConfig cfg = AppConfig::Load(wfa_cfg.config);
-        cfg.sl_pct = wfa_cfg.config.value("risk", nlohmann::json::object()).value("sl_price_pct", wfa_cfg.config.value("risk", nlohmann::json::object()).value("sl_pct", 0.004));
-        cfg.tp_pct = cfg.sl_pct * wfa_cfg.config.value("risk", nlohmann::json::object()).value("tp_r", 3.0);
+        const mokuren::RiskPcts wfa_risk = mokuren::ResolveRiskPcts(wfa_cfg.config);
+        cfg.sl_pct = wfa_risk.sl;
+        cfg.tp_pct = wfa_risk.tp;
 
         EngineInstance eng = StrategyFactory::Build(cfg);
         ApplyRMultiplesManagement(wfa_cfg.config, cfg.sl_pct, eng);
 
         auto execute_signal = [&](TradeSignal raw_sig, double exec_price, int64_t ts) {
             if (raw_sig.direction == SignalDirection::NONE) return;
-            raw_sig.entry_price = exec_price;
-            raw_sig.stop_loss = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 - cfg.sl_pct) : (1.0 + cfg.sl_pct));
-            raw_sig.take_profit = exec_price * (raw_sig.direction == SignalDirection::BUY ? (1.0 + cfg.tp_pct) : (1.0 - cfg.tp_pct));
+            if (!PrepareSignalRisk(raw_sig, exec_price, "replay_wfa")) return;
             TradeSignal sized = eng.sizer->CalculateSize(raw_sig);
             TradeSignal final_sig = eng.risk_manager->Evaluate(sized, ts);
             if (final_sig.direction != SignalDirection::NONE) {
+                if (!FinalizeTakeProfit(final_sig, exec_price, cfg.sl_pct,
+                                        cfg.tp_pct, "replay_wfa")) return;
                 eng.ptrader->ProcessSignal(final_sig, exec_price, ts);
             }
         };

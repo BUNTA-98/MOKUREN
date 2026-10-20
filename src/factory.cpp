@@ -2,7 +2,96 @@
 
 #include "hyperliquid_broker.hpp"
 
-EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
+#include <limits>
+#include <stdexcept>
+#include <string>
+
+namespace {
+
+// mirrors GridScanner::FindParams: a component is disabled by a bool false,
+// the strings "false"/"0", or the integer 0. the old code called
+// params["active"].get<bool>(), which throws on exactly the string and
+// integer spellings that GridScanner accepts.
+bool IsDisabled(const json& params) {
+  for (const char* key : {"enabled", "active", "isActive"}) {
+    if (!params.contains(key)) continue;
+    const auto& v = params[key];
+    if (v.is_boolean()) {
+      if (!v.get<bool>()) return true;
+    } else if (v.is_string()) {
+      const std::string s = v.get<std::string>();
+      if (s == "false" || s == "False" || s == "FALSE" || s == "0") return true;
+    } else if (v.is_number_integer()) {
+      if (v.get<long long>() == 0) return true;
+    } else if (v.is_number_float()) {
+      if (v.get<double>() == 0.0) return true;
+    }
+  }
+  return false;
+}
+
+// numeric param reader tolerant of the string spellings left behind by
+// FlattenGrids and hand-written configs. mirrors AppConfig::Load's SafeNumber.
+double ParamNumber(const json& params, const char* key, double fallback) {
+  if (!params.contains(key)) return fallback;
+  const auto& v = params[key];
+  if (v.is_number()) return v.get<double>();
+  if (v.is_string()) {
+    try {
+      return std::stod(v.get<std::string>());
+    } catch (...) {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+int ParamInt(const json& params, const char* key, int fallback) {
+  return static_cast<int>(ParamNumber(params, key, static_cast<double>(fallback)));
+}
+
+// bool reader with the same tolerance. a plain params.value(key, true) throws
+// when the value is the string or integer spelling that IsDisabled already
+// accepts.
+bool ParamBool(const json& params, const char* key, bool fallback) {
+  if (!params.contains(key)) return fallback;
+  const auto& v = params[key];
+  if (v.is_boolean()) return v.get<bool>();
+  if (v.is_string()) {
+    const std::string s = v.get<std::string>();
+    if (s == "true" || s == "True" || s == "TRUE" || s == "1") return true;
+    if (s == "false" || s == "False" || s == "FALSE" || s == "0") return false;
+    return fallback;
+  }
+  if (v.is_number()) return v.get<double>() != 0.0;
+  return fallback;
+}
+
+// resolve one trigger by name. an unknown name is a config error, not a
+// no-op: the previous code left inst.trigger null (or an OR_Trigger with no
+// children), which evaluates to NONE for the entire run.
+std::unique_ptr<ITrigger> MakeTrigger(const std::string& name, const json& p) {
+  if (name == "DeltaAbsorption") {
+    return std::make_unique<DeltaAbsorptionTrigger>(ParamNumber(p, "delta", 1.0));
+  }
+  if (name == "StackedImbalance") {
+    return std::make_unique<StackedImbalanceTrigger>(
+        ParamNumber(p, "ratio", 1.5), ParamInt(p, "levels", 2));
+  }
+  if (name == "SpoofHunter") {
+    return std::make_unique<SpoofHunterTrigger>(
+        ParamInt(p, "lookback_ms", 500),
+        ParamNumber(p, "min_wall_qty", 30.0),
+        ParamNumber(p, "drop_threshold", 0.9));
+  }
+  throw std::runtime_error("factory: unknown trigger '" + name +
+                           "' (supported: DeltaAbsorption, StackedImbalance, "
+                           "SpoofHunter)");
+}
+
+} // namespace
+
+EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode) {
   EngineInstance inst;
 
   // initialize core engine parts
@@ -23,8 +112,17 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   // CheckRisk does nothing, so a live run will evaluate signals and then not
   // trade them. Verify the feed (GetBalance rise) before trusting the run.
   if (cfg.exchange == "hyperliquid") {
-    inst.broker = std::make_unique<HyperliquidBroker>(cfg.api_key, cfg.api_secret);
-    LOG_INFO("factory: hyperliquid execution adapter constructed");
+    if (live_mode) {
+      inst.broker = std::make_unique<HyperliquidBroker>(cfg.api_key, cfg.api_secret);
+      LOG_INFO("factory: hyperliquid execution adapter constructed (live)");
+    } else {
+      // a backtest must never dial out to an exchange. the adapter also
+      // trades nothing until its websocket state feed is populated, so
+      // constructing it here turned a hyperliquid-named backtest into a
+      // silent no-op.
+      LOG_INFO("factory: exchange is 'hyperliquid' but this run is not live; "
+               "using the PaperTrader");
+    }
   }
   
   // every module that talks to a broker binds to the ACTIVE one: the venue
@@ -44,47 +142,26 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
       cfg.tm_config.scale_out_fraction
   );
 
-  // 1. build entry triggers
-  std::vector<ComponentConfig> active_triggers;
+  // 1. build entry triggers. every named trigger must resolve: a silent null
+  // trigger (or an empty OR_Trigger) evaluates to NONE for the whole run and
+  // is indistinguishable from a strategy that found no setups.
   for (const auto& t : cfg.triggers) {
-    if (t.params.contains("active") && t.params["active"].get<bool>() == false) continue;
-    active_triggers.push_back(t);
+    if (IsDisabled(t.params)) continue;
+    inst.sub_triggers.push_back(MakeTrigger(t.name, t.params));
   }
 
-  // wire single trigger or combine multiple with or-logic
-  if (active_triggers.size() == 1) {
-    if (active_triggers[0].name == "DeltaAbsorption") {
-      double delta = active_triggers[0].params.value("delta", 1.0);
-      inst.trigger = std::make_unique<DeltaAbsorptionTrigger>(delta);
-    } else if (active_triggers[0].name == "StackedImbalance") {
-      double ratio = active_triggers[0].params.value("ratio", 1.5);
-      int levels = active_triggers[0].params.value("levels", 2);
-      inst.trigger = std::make_unique<StackedImbalanceTrigger>(ratio, levels);
-    } else if (active_triggers[0].name == "SpoofHunter") {
-      int lookback = active_triggers[0].params.value("lookback_ms", 500);
-      double min_wall = active_triggers[0].params.value("min_wall_qty", 30.0);
-      double drop = active_triggers[0].params.value("drop_threshold", 0.9);
-      inst.trigger = std::make_unique<SpoofHunterTrigger>(lookback, min_wall, drop);
-    }
-  } else if (active_triggers.size() > 1) {
+  if (inst.sub_triggers.empty()) {
+    throw std::runtime_error(
+        "factory: no active triggers -- every entry is disabled or empty");
+  }
+
+  if (inst.sub_triggers.size() == 1) {
+    inst.trigger = std::move(inst.sub_triggers.front());
+    inst.sub_triggers.clear();
+  } else {
     auto or_trigger = std::make_unique<OR_Trigger>();
-    for (const auto& t : active_triggers) {
-      if (t.name == "DeltaAbsorption") {
-        double delta = t.params.value("delta", 1.0);
-        inst.sub_triggers.push_back(std::make_unique<DeltaAbsorptionTrigger>(delta));
-        or_trigger->AddTrigger(inst.sub_triggers.back().get());
-      } else if (t.name == "StackedImbalance") {
-        double ratio = t.params.value("ratio", 1.5);
-        int levels = t.params.value("levels", 2);
-        inst.sub_triggers.push_back(std::make_unique<StackedImbalanceTrigger>(ratio, levels));
-        or_trigger->AddTrigger(inst.sub_triggers.back().get());
-      } else if (t.name == "SpoofHunter") {
-        int lookback = t.params.value("lookback_ms", 500);
-        double min_wall = t.params.value("min_wall_qty", 30.0);
-        double drop = t.params.value("drop_threshold", 0.9);
-        inst.sub_triggers.push_back(std::make_unique<SpoofHunterTrigger>(lookback, min_wall, drop));
-        or_trigger->AddTrigger(inst.sub_triggers.back().get());
-      }
+    for (auto& t : inst.sub_triggers) {
+      or_trigger->AddTrigger(t.get());
     }
     inst.trigger = std::move(or_trigger);
   }
@@ -93,39 +170,39 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
 
   // 2. build filters
   for (const auto &f : cfg.filters) {
-    if (f.params.contains("active") && f.params["active"].get<bool>() == false) continue;
+    if (IsDisabled(f.params)) continue;
 
     if (f.name == "MinVolume") {
-      double min_vol = f.params.value("min_volume", 1.0);
+      double min_vol = ParamNumber(f.params, "min_volume", 1.0);
       inst.filters.push_back(std::make_unique<MinVolumeFilter>(min_vol));
       inst.pipeline->AddFilter(inst.filters.back().get());
     
     } else if (f.name == "VwapTrend") {
-      bool require_trend = f.params.value("require_trend_alignment", true);
+      bool require_trend = ParamBool(f.params, "require_trend_alignment", true);
       inst.filters.push_back(std::make_unique<VwapTrendFilter>(require_trend));
       inst.pipeline->AddFilter(inst.filters.back().get());
     
     } else if (f.name == "CVDDivergence") {
-      int lookback = f.params.value("lookback", 5);
+      int lookback = ParamInt(f.params, "lookback", 5);
       inst.filters.push_back(std::make_unique<CVDDivergenceFilter>(lookback));
       inst.pipeline->AddFilter(inst.filters.back().get());
 
     } else if (f.name == "MacroTrend") {
-      int lookback = f.params.value("lookback", 1440);
+      int lookback = ParamInt(f.params, "lookback", 1440);
       inst.filters.push_back(std::make_unique<MacroTrendFilter>(lookback));
       inst.pipeline->AddFilter(inst.filters.back().get());
     
     } else if (f.name == "Volatility") {
-      double min_dl = f.params.value("min_dollar", 150.0);
-      int lookback = f.params.value("lookback", 5);
+      double min_dl = ParamNumber(f.params, "min_dollar", 150.0);
+      int lookback = ParamInt(f.params, "lookback", 5);
       inst.filters.push_back(std::make_unique<VolatilityFilter>(min_dl, lookback));
       inst.pipeline->AddFilter(inst.filters.back().get());
     
     } else if (f.name == "TimeOfDay") {
-      int start_h = f.params.value("start_h", 8);
-      int start_m = f.params.value("start_m", 0);
-      int end_h = f.params.value("end_h", 17);
-      int end_m = f.params.value("end_m", 0);
+      int start_h = ParamInt(f.params, "start_h", 8);
+      int start_m = ParamInt(f.params, "start_m", 0);
+      int end_h = ParamInt(f.params, "end_h", 17);
+      int end_m = ParamInt(f.params, "end_m", 0);
       inst.filters.push_back(std::make_unique<TimeOfDayFilter>(start_h, start_m, end_h, end_m));
       inst.pipeline->AddFilter(inst.filters.back().get());
 
@@ -134,21 +211,24 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
       inst.pipeline->AddFilter(inst.filters.back().get());
     
     } else if (f.name == "RVOL") { 
-      double threshold = f.params.value("threshold", 1.5);
-      int lookback = f.params.value("lookback", 20);
+      double threshold = ParamNumber(f.params, "threshold", 1.5);
+      int lookback = ParamInt(f.params, "lookback", 20);
       inst.filters.push_back(std::make_unique<RVOLFilter>(threshold, lookback));
       inst.pipeline->AddFilter(inst.filters.back().get());
   
     } else if (f.name == "ATRChop") { 
-      double min_atr = f.params.value("min_atr", 20.0);
-      int period = f.params.value("lookback", 14);
+      double min_atr = ParamNumber(f.params, "min_atr", 20.0);
+      int period = ParamInt(f.params, "lookback", 14);
       inst.filters.push_back(std::make_unique<ATRFilter>(min_atr, period));
       inst.pipeline->AddFilter(inst.filters.back().get());
 
     } else if (f.name == "OrderbookImbalance") {
-      double ratio = f.params.value("ratio", 3.0);
+      double ratio = ParamNumber(f.params, "ratio", 3.0);
       inst.filters.push_back(std::make_unique<OrderbookImbalanceFilter>(ratio));
       inst.pipeline->AddFilter(inst.filters.back().get());
+
+    } else {
+      throw std::runtime_error("factory: unknown filter '" + f.name + "'");
     }
   }
   
@@ -158,19 +238,24 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
   inst.risk_manager = std::make_unique<RiskManager>();
 
   for (const auto &r : cfg.risk_modules) {
-    if (r.params.contains("active") && r.params["active"].get<bool>() == false) continue;
+    if (IsDisabled(r.params)) continue;
 
     if (r.name == "SinglePositionLock") {
       inst.risk_modules.push_back(std::make_unique<SinglePositionLock>(active_broker));
     } else if (r.name == "MaxStopDistanceLock") {
-      double max_pct = r.params.value("max_stop_pct", 0.015);
+      double max_pct = ParamNumber(r.params, "max_stop_pct", 0.015);
       inst.risk_modules.push_back(std::make_unique<MaxStopDistanceLock>(max_pct));
     } else if (r.name == "MaxLeverageLock") {
-      double max_lev = r.params.value("max_leverage", 10.0);
+      double max_lev = ParamNumber(r.params, "max_leverage", 10.0);
       inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(active_broker, max_lev));
     } else if (r.name == "AntiRevengeLock") {
-      int64_t cooldown = r.params.value("cooldown_ms", 1800000);
+      int64_t cooldown =
+          static_cast<int64_t>(ParamNumber(r.params, "cooldown_ms", 1800000.0));
       inst.risk_modules.push_back(std::make_unique<AntiRevengeLock>(active_broker, cooldown));
+
+    } else {
+      // dropping a risk module by typo removes a safety lock; fail loudly.
+      throw std::runtime_error("factory: unknown risk module '" + r.name + "'");
     }
   }
 
@@ -178,12 +263,49 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg) {
     inst.risk_manager->AddModule(mod.get());
   }
 
-  // apply global trade management (breakeven, trailing, scaling)
-  inst.ptrader->ApplyManagementConfig(
-      cfg.tm_config.be_trigger_pct, cfg.tm_config.be_target_pct,
-      cfg.tm_config.enable_trailing, cfg.tm_config.trailing_trigger_pct, cfg.tm_config.trailing_dist_pct,
-      cfg.tm_config.enable_scale_out, cfg.tm_config.scale_out_trigger_pct, cfg.tm_config.scale_out_fraction
-  );
+  // exactly one management owner: PositionManager runs break-even, trailing
+  // and scale-out on every path. PaperTrader keeps only the stop and the
+  // target, so arming its ladder as well would move the stop and scale out
+  // twice per trade.
+  inst.ptrader->DisableManagement();
+
+  // arm the ladder from cfg.tm_config. this used to be handed only to
+  // PaperTrader::ApplyManagementConfig, so a live run -- which calls
+  // Configure nowhere else -- silently used PositionManager's 1R/1R defaults.
+  //
+  // tm_config stores each level as a pct of entry (r * sl_pct, resolved once
+  // at the config boundary), while PositionManager measures every threshold
+  // against the stop actually placed. divide by sl_pct to recover the r the
+  // author wrote: passing the pct straight through armed break-even at
+  // 0.005R instead of 1R. the backtest path masked this because
+  // ApplyRMultiplesManagement re-configures afterwards; live has no second
+  // call, which is exactly where the wrong ladder would have shipped.
+  if (!(cfg.sl_pct > 0.0)) {
+    throw std::runtime_error(
+        "factory: sl_pct must be > 0; it defines 1R for trade management");
+  }
+  const double inv_sl = 1.0 / cfg.sl_pct;
+
+  // an explicit break-even disable is honoured by pushing the trigger out of
+  // reach, exactly as ApplyRMultiplesManagement does. the scan/wfa/replay
+  // paths re-arm the ladder afterwards and masked a missing check here; live
+  // has no second arming site, so a config that turned break-even off still
+  // moved the stop on the venue path.
+  const bool be_enabled = cfg.tm_config.enable_break_even;
+  const double be_trigger_r = be_enabled
+                                  ? cfg.tm_config.be_trigger_pct * inv_sl
+                                  : std::numeric_limits<double>::infinity();
+  const double be_target_r =
+      be_enabled ? cfg.tm_config.be_target_pct * inv_sl : 0.0;
+
+  inst.pos_manager->Configure(
+      be_trigger_r, be_target_r,
+      cfg.tm_config.enable_trailing,
+      cfg.tm_config.trailing_trigger_pct * inv_sl,
+      cfg.tm_config.trailing_dist_pct * inv_sl,
+      cfg.tm_config.enable_scale_out,
+      cfg.tm_config.scale_out_trigger_pct * inv_sl,
+      cfg.tm_config.scale_out_fraction);
 
   return inst;
 }

@@ -66,10 +66,31 @@ public:
   // number of events dropped due to queue overflow (for monitoring).
   size_t DroppedEvents() const { return dropped_.load(std::memory_order_relaxed); }
 
+  // true once the market streamer signalled a clean end of input (replay eof,
+  // or the venue closed the socket) or an unrecoverable transport error. the
+  // worker drains and exits; the owner should then call Stop() to flush.
+  bool StreamEnded() const { return stream_ended_.load(std::memory_order_acquire); }
+
+  // last transport error reported by the streamer; empty when there was none.
+  std::string StreamErrorMessage() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stream_error_;
+  }
+
 private:
   // called by the streamer callbacks; enqueues an event.
   void OnTrade(const TradeEvent& t);
   void OnL2(const L2Snapshot& s);
+
+  // stream completion/error sinks. both run on the streamer's own thread, so
+  // they must not join it: they signal the worker and return. Stop() does the
+  // joining on the owner's thread.
+  void OnStreamFinished();
+  void OnStreamError(const std::string& message);
+
+  // ask the worker to drain and exit. safe from any thread, including a
+  // streamer callback (it never joins).
+  void RequestShutdown();
 
   // publish a structured json event to the redis pub/sub channel.
   // action is e.g. "TRADE_OPEN" or "POSITION_CLOSED".
@@ -113,4 +134,9 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_{false};
   std::atomic<size_t> dropped_{0};
+
+  // set by the finished/error sinks. kept separate from shutdown_ so the
+  // owner can tell "the stream ended on its own" from "we asked it to stop".
+  std::atomic<bool> stream_ended_{false};
+  std::string stream_error_; // guarded by mutex_
 };

@@ -2,12 +2,17 @@
 #include "aggregator.hpp"
 #include "ibroker.hpp"
 #include "logger.hpp"
+#include <limits>
 #include <string>
 #include <vector>
 
 // simulated broker for backtesting and execution logic
 class PaperTrader : public IBroker {
 public:
+  // starting account size. one constant instead of the literal 10000 that was
+  // copied into the constructor, GetNetProfit and the WFA summary.
+  static constexpr double kInitialBalance = 10000.0;
+
   PaperTrader(double max_dl = 400.0, double slip = 0.0002, double taker_fee = 0.0004);
 
   // basic state getters
@@ -26,7 +31,7 @@ public:
   int GetTradesBE() const { return trades_be; } 
   int GetTotalTrades() const { return trades_won + trades_lost + trades_be; }
   double GetTotalFeesPaid() const { return total_fees_paid; }
-  double GetNetProfit() const { return balance - 10000.0; }
+  double GetNetProfit() const { return balance - kInitialBalance; }
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
   std::vector<TradeRecord> GetTradeHistory() const override { return trade_history_; }
   // single-threaded paper account: no lock needed, unlike the ws-backed brokers.
@@ -42,6 +47,16 @@ public:
                              bool trail_en, double trail_trig, double trail_dist,
                              bool scale_en, double scale_trig, double scale_frac);
 
+  // Keep executing the stop and the target, but stop managing the trade. The
+  // r-multiple ladder (break-even, trailing, scale-out) belongs to
+  // PositionManager, which measures every threshold against the placed stop.
+  // Running both moved the same stop twice and could scale out twice.
+  void DisableManagement() {
+    be_trigger_pct_ = std::numeric_limits<double>::infinity();
+    enable_trailing_ = false;
+    enable_scale_out_ = false;
+  }
+
   // core engine hooks
   void CheckRisk(double current_price, int64_t current_time) override;
   void ProcessSignal(TradeSignal signal, double fill_price, int64_t current_time) override;
@@ -53,9 +68,10 @@ private:
   void UpdateDay(int64_t current_time);
   void ClosePosition(double current_price, const std::string &reason, int64_t current_time);
 
-  // account state
-  double balance;
-  double peak_balance_;
+  // account state. initialised in-class so no path can read an uninitialised
+  // account (the WFA aggregation and PositionSizer::GetBalance read it early).
+  double balance = kInitialBalance;
+  double peak_balance_ = kInitialBalance;
   double max_drawdown_pct_ = 0.0;
   
   // position state

@@ -1,5 +1,11 @@
 #pragma once
-#include "mokuren.hpp" // importiert deine structs (TradeEvent, L2Snapshot, etc.)
+// the three types this header needs: TradeEvent/L2Snapshot live in
+// trade_event.hpp, WFAWindow in wfa_window.hpp. including mokuren.hpp pulled in
+// the whole engine and closed a cycle -- mokuren.hpp -> replay_manager.hpp ->
+// data_manager.hpp -> mokuren.hpp -- which left WFAWindow (or DataManager)
+// undeclared depending on which translation unit entered the cycle first.
+#include "trade_event.hpp"
+#include "wfa_window.hpp"
 #include <vector>
 #include <string>
 #include <functional>

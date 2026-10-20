@@ -60,18 +60,31 @@ void RunLive(const std::string& config_path) {
   FlattenGrids(cfg_json);
 
   AppConfig cfg = AppConfig::Load(cfg_json);
-  EngineInstance engine = StrategyFactory::Build(cfg);
 
-  // pick the data source; both derive from IMarketStreamer so the
-  // orchestrator stays exchange-agnostic.
+  // pick the data source first, and never fall back to a different venue: a
+  // hyperliquid run priced off binance data is worse than refusing to start.
+  // this used to run after Build(), so an exchange without a streamer left a
+  // live venue adapter -- and its state-feed websocket -- constructed behind
+  // a throw.
   std::unique_ptr<IMarketStreamer> streamer;
   if (cfg.exchange == "bybit") {
     streamer = std::make_unique<BybitDataStreamer>();
-  } else {
+  } else if (cfg.exchange == "binance") {
     streamer = std::make_unique<BinanceDataStreamer>();
+  } else {
+    throw std::runtime_error(
+        "live mode: no market-data streamer for exchange '" + cfg.exchange +
+        "' (supported: binance, bybit)");
   }
 
-  LiveOrchestrator orchestrator(std::move(engine), std::move(streamer), 0.01, 0.01);
+  // live_mode=true is what lets the factory construct a venue adapter. the
+  // backtest/WFA/replay paths keep the default (false) and can never dial out.
+  EngineInstance engine = StrategyFactory::Build(cfg, /*live_mode=*/true);
+
+  // risk parameters come from the config. the old literal 1%/1% silently
+  // overrode every tuned backtest.
+  LiveOrchestrator orchestrator(std::move(engine), std::move(streamer),
+                                cfg.sl_pct, cfg.tp_pct);
 
   if (!orchestrator.Start()) {
     LOG_ERROR("live mode: failed to start orchestrator");
@@ -82,6 +95,18 @@ void RunLive(const std::string& config_path) {
   LIVE_DBG("main: live loop entered, orchestrator started");
 
   while (!g_quit.load(std::memory_order_acquire)) {
+    // a clean end of stream or a dropped socket ends the run by itself.
+    // without this the loop slept forever and the failure looked exactly like
+    // a quiet market.
+    if (orchestrator.StreamEnded()) {
+      const std::string err = orchestrator.StreamErrorMessage();
+      if (err.empty()) {
+        LOG_INFO("live mode: market stream ended");
+      } else {
+        LOG_ERROR("live mode: market stream aborted: {}", err);
+      }
+      break;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
@@ -96,6 +121,7 @@ int main(int argc, char** argv) {
   ix::initNetSystem();
 
   bool live_mode = false;
+  bool debug_mode = false;
   std::string config_path;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--live") == 0) {
@@ -103,6 +129,7 @@ int main(int argc, char** argv) {
     } else if (std::strncmp(argv[i], "--config=", 9) == 0) {
       config_path = argv[i] + 9;
     } else if (std::strcmp(argv[i], "--debug") == 0) {
+      debug_mode = true;
       mokuren::debug::g_live_debug_enabled.store(true, std::memory_order_relaxed);
     }
   }
@@ -112,8 +139,13 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  mokuren::InitLogger("logs/engine.log", spdlog::level::info, live_mode);
-  spdlog::set_level(spdlog::level::trace);
+  mokuren::InitLogger("logs/engine.log",
+                      debug_mode ? spdlog::level::trace : spdlog::level::info,
+                      live_mode);
+  // pin the global level to the same threshold. spdlog::set_level(trace) was
+  // unconditional, so every release run logged at trace into the rotating
+  // audit file and drowned the events that matter.
+  spdlog::set_level(debug_mode ? spdlog::level::trace : spdlog::level::info);
   LOG_INFO("engine starting up");
 
   int exit_code = 0;

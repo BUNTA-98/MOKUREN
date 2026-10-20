@@ -1,5 +1,7 @@
 #include "data_manager.hpp"
+#include "timestamp_utils.hpp"
 #include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <algorithm>
 #include <cmath>
@@ -10,9 +12,6 @@ namespace fs = std::filesystem;
 bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::string& bin_path) {
     std::ifstream csv_file(csv_path);
     if (!csv_file.is_open()) return false;
-
-    std::ofstream bin_file(bin_path, std::ios::binary);
-    if (!bin_file.is_open()) return false;
 
     std::string line;
     if (!std::getline(csv_file, line)) return false; 
@@ -51,6 +50,16 @@ bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::stri
     size_t struct_max_depth = sizeof(dummy.bids) / sizeof(dummy.bids[0]);
     size_t safe_depth = std::min(max_csv_depth, struct_max_depth);
 
+    // a recognised L2 file that maps to zero levels used to be written out as
+    // zero-filled snapshots: valid-looking rows with an empty book, which
+    // silently disabled every book trigger. refuse instead of poisoning the
+    // cache. the output file is opened only past this point, so a failed
+    // conversion leaves nothing behind for the next run to mistake for data.
+    if (safe_depth == 0) return false;
+
+    std::ofstream bin_file(bin_path, std::ios::binary);
+    if (!bin_file.is_open()) return false;
+
     std::vector<char*> tokens;
     tokens.reserve(headers.size());
 
@@ -72,7 +81,9 @@ bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::stri
         if (tokens.size() <= static_cast<size_t>(ts_idx)) continue;
 
         L2Snapshot snap{};
-        snap.timestamp = std::strtoll(tokens[ts_idx], nullptr, 10);
+        // exports arrive in s/ms/us/ns depending on the tool; normalise once
+        // here so a microsecond file is not read as a date in the year 55000.
+        snap.timestamp = NormalizeEpochToMillis(std::strtoll(tokens[ts_idx], nullptr, 10));
         
         if (snap.timestamp < 1500000000000LL) continue; 
 
@@ -99,7 +110,9 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
     fs::path path = dataset_path;
     fs::path csv_file = path / "trades.csv";
     
-    fs::path cache_path = path / "trades_cache.bin"; 
+    // v2: timestamps are normalised to milliseconds before being cached, so a
+    // v1 cache would be replayed at the wrong scale.
+    fs::path cache_path = path / "trades_cache_v2.bin"; 
 
     // try load bin cache
     if (fs::exists(cache_path)) {
@@ -109,11 +122,15 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
             std::streamsize size = cache_file.tellg();
             cache_file.seekg(0, std::ios::beg);
 
-            size_t count = size / sizeof(TradeEvent);
-            std::vector<TradeEvent> all_trades(count);
-
-            if (cache_file.read(reinterpret_cast<char*>(all_trades.data()), size)) {
-                return all_trades;
+            // only whole records are valid: an interrupted write leaves a
+            // partial trailing record, and reading `size` bytes into a
+            // count-sized vector overran it by the remainder. a bad cache
+            // simply falls through to the CSV below.
+            if (size > 0 && size % static_cast<std::streamsize>(sizeof(TradeEvent)) == 0) {
+                std::vector<TradeEvent> cached(static_cast<size_t>(size) / sizeof(TradeEvent));
+                if (cache_file.read(reinterpret_cast<char*>(cached.data()), size)) {
+                    return cached;
+                }
             }
         }
     }
@@ -146,7 +163,10 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
                 std::transform(h.begin(), h.end(), h.begin(), ::tolower);
                 
                 // EXAKTE MATCHES statt find() - so ignorieren wir 'quote_qty' sicher!
-                if (h == "time" || h == "ts") ts_idx = i;
+                // binance vision calls it "transact_time"; bybit's "T" is
+                // lowercased to "t" above. missing these aliases produced an
+                // empty dataset with no error at all.
+                if (h == "time" || h == "ts" || h == "transact_time" || h == "t") ts_idx = i;
                 else if (h == "price" || h == "p") p_idx = i;
                 else if (h == "qty" || h == "quantity" || h == "q") q_idx = i; 
                 else if (h == "is_buyer_maker" || h == "maker" || h == "m") m_idx = i;
@@ -174,7 +194,7 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
                     if (tokens.size() <= static_cast<size_t>(std::max({ts_idx, p_idx, q_idx, m_idx}))) continue;
 
                     TradeEvent trade{};
-                    trade.timestamp = std::strtoll(tokens[ts_idx], nullptr, 10);
+                    trade.timestamp = NormalizeEpochToMillis(std::strtoll(tokens[ts_idx], nullptr, 10));
                     
                     if (trade.timestamp > 1500000000000LL) {
                         trade.price = std::atof(tokens[p_idx]);
@@ -207,8 +227,10 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
 
 std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &dataset_path) {
     fs::path path = dataset_path;
-    // Der L2 Cache wird ebenfalls neu forciert, da sich das CSV Format geaendert hat!
-    fs::path bin_file = path / "L2_cache_v2.bin"; 
+    // bumped to v3 together with the L2Snapshot layout change (dropping the
+    // pragma pack widened a record from 200 to 688 bytes). a stale v2 cache
+    // must never be read at the new stride.
+    fs::path bin_file = path / "L2_cache_v3.bin";
     fs::path csv_file = path / "L2.csv"; 
     
     std::vector<L2Snapshot> l2_data;
@@ -221,9 +243,18 @@ std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &datas
         std::ifstream file(bin_file.string(), std::ios::binary | std::ios::ate);
         if (file) {
             std::streamsize size = file.tellg();
+            if (size <= 0 || size % static_cast<std::streamsize>(sizeof(L2Snapshot)) != 0) {
+                // truncated by an interrupted write (power loss, kill -9). drop
+                // it so the next run rebuilds from the CSV rather than
+                // returning an empty book that looks like a quiet market.
+                file.close();
+                std::error_code ec;
+                fs::remove(bin_file, ec);
+                return l2_data;
+            }
             file.seekg(0, std::ios::beg);
-            
-            l2_data.resize(size / sizeof(L2Snapshot));
+
+            l2_data.resize(static_cast<size_t>(size) / sizeof(L2Snapshot));
             if (file.read(reinterpret_cast<char*>(l2_data.data()), size)) {
                 return l2_data;
             }

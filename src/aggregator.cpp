@@ -3,6 +3,7 @@
 #include "live_debug.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 // updates current l2 state and ring buffer memory
@@ -13,17 +14,85 @@ void Aggregator::ProcessL2(const L2Snapshot &l2) {
   l2_history_.push(l2); // <--- NEU: pushes snapshot into o(1) buffer
 }
 
-// gets price level from grid or creates new one
+// gets price level from grid or creates new one.
+// the grid is a fixed 5000-level window; when a print falls outside it the
+// window slides instead of dropping the print (returning nullptr here silently
+// lost volume and left the footprint empty).
 PriceLevel *Aggregator::GetOrAddLevel(double price) {
   double normalized_price = std::floor(price / tick_size) * tick_size;
 
-  // setup on first trade of candle
-  if (active_levels == 0) {
+  // setup on first trade of candle. an empty touched range is exactly the
+  // state after a reset, which is a more reliable signal than
+  // active_levels == 0 (levels can slide out of the window mid-candle).
+  if (max_touched_idx_ < min_touched_idx_) {
     base_price = normalized_price - (MAX_GRID_LEVELS / 2) * tick_size;
     lowest_price = normalized_price;
   }
 
-  int index = std::round((normalized_price - base_price) / tick_size);
+  int index = static_cast<int>(std::llround((normalized_price - base_price) / tick_size));
+
+  // slide the window if the print lands outside [0, MAX_GRID_LEVELS)
+  if (index < 0 || index >= MAX_GRID_LEVELS) {
+    // delta is added to every existing index; positive delta = move up
+    const int delta = (index < 0) ? -index : -(index - (MAX_GRID_LEVELS - 1));
+    const int shift = (delta < 0) ? -delta : delta;
+
+    if (shift >= MAX_GRID_LEVELS) {
+      // the jump exceeds the whole window: nothing survives, re-anchor.
+      for (int i = min_touched_idx_; i <= max_touched_idx_; ++i) {
+        if (live_workspace[i].price != 0.0) --active_levels;
+        live_workspace[i].price = 0.0;
+        live_workspace[i].bid_volume = 0.0;
+        live_workspace[i].ask_volume = 0.0;
+      }
+      min_touched_idx_ = MAX_GRID_LEVELS;
+      max_touched_idx_ = -1;
+      base_price = normalized_price - (MAX_GRID_LEVELS / 2) * tick_size;
+      lowest_price = normalized_price;
+      index = MAX_GRID_LEVELS / 2;
+    } else {
+      if (delta > 0) {
+        // drop levels leaving at the top, then move everything up
+        for (int i = MAX_GRID_LEVELS - delta; i < MAX_GRID_LEVELS; ++i) {
+          if (live_workspace[i].price != 0.0) --active_levels;
+        }
+        std::memmove(live_workspace + delta, live_workspace,
+                     sizeof(PriceLevel) * (MAX_GRID_LEVELS - delta));
+        for (int i = 0; i < delta; ++i) {
+          live_workspace[i].price = 0.0;
+          live_workspace[i].bid_volume = 0.0;
+          live_workspace[i].ask_volume = 0.0;
+        }
+        base_price -= delta * tick_size;
+      } else {
+        // drop levels leaving at the bottom, then move everything down
+        for (int i = 0; i < shift; ++i) {
+          if (live_workspace[i].price != 0.0) --active_levels;
+        }
+        std::memmove(live_workspace, live_workspace + shift,
+                     sizeof(PriceLevel) * (MAX_GRID_LEVELS - shift));
+        for (int i = MAX_GRID_LEVELS - shift; i < MAX_GRID_LEVELS; ++i) {
+          live_workspace[i].price = 0.0;
+          live_workspace[i].bid_volume = 0.0;
+          live_workspace[i].ask_volume = 0.0;
+        }
+        base_price += shift * tick_size;
+      }
+
+      // remap the touched span and clamp it to the surviving window.
+      // dropped levels were already subtracted from active_levels above.
+      if (max_touched_idx_ >= min_touched_idx_) {
+        min_touched_idx_ = std::max(0, min_touched_idx_ + delta);
+        max_touched_idx_ = std::min(MAX_GRID_LEVELS - 1, max_touched_idx_ + delta);
+        if (max_touched_idx_ < min_touched_idx_) {
+          min_touched_idx_ = MAX_GRID_LEVELS;
+          max_touched_idx_ = -1;
+        }
+      }
+
+      index += delta;
+    }
+  }
 
   // update level within static array
   if (index >= 0 && index < MAX_GRID_LEVELS) {
@@ -43,6 +112,11 @@ PriceLevel *Aggregator::GetOrAddLevel(double price) {
 
 // writes raw trades into ohlc data and footprint grid
 void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
+  // the strategy layer reasons in ticks (stop placement, imbalance ladders).
+  // carry the real tick size on the bar so triggers never re-infer it from
+  // gapped footprint levels (that inference is always a multiple of the tick).
+  bar.tick_size = tick_size;
+
   // track ohlc min/max
   if (bar.open == 0.0) {
     bar.open = trade.price;
@@ -125,6 +199,17 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
 
   // interval exceeded -> close candle
   while (trade.timestamp >= next_close_time) {
+    // an interval without prints must still carry a valid price forward.
+    // publishing open==0 poisons ATR/SMA/RVOL and every close-based trigger.
+    if (live_bar.total_volume <= 0.0 && !history.empty()) {
+      const double prev_close = history.back().close;
+      live_bar.open = prev_close;
+      live_bar.high = prev_close;
+      live_bar.low = prev_close;
+      live_bar.close = prev_close;
+    }
+    live_bar.tick_size = tick_size;
+
     AnalyzeCandle(live_bar);
     PackFootprint(live_bar); 
     history.push_back(live_bar);

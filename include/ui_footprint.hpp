@@ -10,6 +10,12 @@
 #include <cstdio>
 #include <ctime>
 
+// imbalance ratio the ladder highlights at. must match StackedImbalanceTrigger's
+// default (include/trigger.hpp): the display used 3.0 while the trigger fires at
+// 1.5, so the levels the strategy traded on were drawn as balanced and the
+// balanced ones as signal.
+inline constexpr double kImbalanceRatio = 1.5;
+
 class UIInspector : public UIPage {
 private:
     std::vector<Bar> history_1m;
@@ -201,8 +207,8 @@ public:
                 double ask = it->ask_volume;
                 double delta = GetLevelDelta(*it);
                 
-                bool bid_imbalance = (bid >= ask * 3.0 && bid > 0.0001);
-                bool ask_imbalance = (ask >= bid * 3.0 && ask > 0.0001);
+                bool bid_imbalance = (bid >= ask * kImbalanceRatio && bid > 0.0001);
+                bool ask_imbalance = (ask >= bid * kImbalanceRatio && ask > 0.0001);
 
                 if (show_quote_volume) {
                     bid *= price;

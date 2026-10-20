@@ -4,8 +4,7 @@
 
 PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee)
     : max_daily_loss_(max_dl), slippage(slip), taker_fee_pct(taker_fee) {
-  balance = 10000.0;
-  peak_balance_ = 10000.0;
+  // balance and peak_balance_ are initialised in-class from kInitialBalance.
 }
 
 TradeSignal PaperTrader::GetCurrentPosition() const {
@@ -124,6 +123,26 @@ void PaperTrader::ProcessSignal(TradeSignal signal, double fill_price, int64_t c
 
   if (signal.volume > 0.0 && (signal.direction == SignalDirection::BUY ||
                               signal.direction == SignalDirection::SELL)) {
+    // the entry maths below divides by entry_price and re-derives sl/tp from
+    // percentage distances. a zero entry makes those NaN, and a zero or
+    // inverted stop leaves the position without a stop for the rest of the
+    // trade -- both fail silently as "never exits".
+    const bool long_side = (signal.direction == SignalDirection::BUY);
+    const bool geometry_ok =
+        signal.entry_price > 0.0 &&
+        (long_side ? (signal.stop_loss > 0.0 &&
+                      signal.stop_loss < signal.entry_price &&
+                      signal.take_profit > signal.entry_price)
+                   : (signal.stop_loss > signal.entry_price &&
+                      signal.take_profit > 0.0 &&
+                      signal.take_profit < signal.entry_price));
+    if (!geometry_ok) {
+      LOG_ERROR("entry rejected: invalid geometry dir={} entry={} sl={} tp={} vol={}",
+                static_cast<int>(signal.direction), signal.entry_price,
+                signal.stop_loss, signal.take_profit, signal.volume);
+      return;
+    }
+
     position_size = signal.volume;
     position_direction_ = signal.direction;
     entry_time_ = current_time;

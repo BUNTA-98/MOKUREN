@@ -114,15 +114,22 @@ public:
 
     if (bar.footprint.size() < 2) return TradeSignal{};
 
-    // auto-detect tick size aus footprint-daten
-    double real_tick = 999999.0;
-    for (size_t i = 1; i < bar.footprint.size(); i++) {
-        double diff = bar.footprint[i].price - bar.footprint[i-1].price;
-        if (diff > 1e-5 && diff < real_tick) {
-            real_tick = diff;
+    // use the tick carried on the bar. footprint levels are packed without
+    // zero-volume slots, so the smallest adjacent price delta is a multiple
+    // of the real tick: inferring from it inflates the gap threshold and the
+    // stacked counter collapses to zero. keep the inference only as a
+    // fallback for callers that build a Bar by hand.
+    double real_tick = bar.tick_size;
+    if (!(real_tick > 0.0)) {
+        real_tick = 999999.0;
+        for (size_t i = 1; i < bar.footprint.size(); i++) {
+            double diff = bar.footprint[i].price - bar.footprint[i-1].price;
+            if (diff > 1e-5 && diff < real_tick) {
+                real_tick = diff;
+            }
         }
+        if (real_tick == 999999.0) real_tick = 1.0; // fallback
     }
-    if (real_tick == 999999.0) real_tick = 1.0; // fallback
 
     int current_buy_stacked = 0, max_buy_stacked = 0;
     int current_sell_stacked = 0, max_sell_stacked = 0;

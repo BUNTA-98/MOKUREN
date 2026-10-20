@@ -1,5 +1,9 @@
 #include "config_parser.hpp"
+#include "trade_management.hpp"
 
+#include <cctype>
+#include <cmath>
+#include <initializer_list>
 #include <sstream>
 
 // ============================================================================
@@ -26,7 +30,22 @@ void GridScanner::FindParams(const json& j, const std::string& current_path,
     // this prevents type_error.302 when a key like "min" holds an object.
     if (j.contains("min") && j.contains("max") && j.contains("step") &&
         j["min"].is_number() && j["max"].is_number() && j["step"].is_number()) {
+      // the leaf name is what the csv/report shows. two grid nodes with the
+      // same leaf (e.g. trigger_r under break_even and trailing) would
+      // collapse into one map entry and one results.csv column, silently
+      // hiding one of the swept values. qualify both by their json path as
+      // soon as a collision is detected.
+      auto path_name = [](const std::string& p) {
+        return (!p.empty() && p.front() == '/') ? p.substr(1) : p;
+      };
       std::string param_name = current_path.substr(current_path.find_last_of('/') + 1);
+      for (auto& existing : params) {
+        if (existing.name == param_name) {
+          existing.name = path_name(existing.ptr.to_string());
+          param_name = path_name(current_path);
+          break;
+        }
+      }
       params.push_back({json::json_pointer(current_path), param_name,
                         j["min"].get<double>(), j["max"].get<double>(), j["step"].get<double>()});
     } else {
@@ -53,10 +72,27 @@ void GridScanner::Generate(const json& base_json, const std::vector<GridParam>& 
   }
 
   const auto& p = params[index];
-  double step = (p.step == 0.0) ? 1.0 : p.step;
+  const double step = (p.step == 0.0) ? 1.0 : p.step;
+
+  // validate the sweep before emitting anything: min > max silently produced
+  // zero permutations, which surfaced as "SCAN COMPLETE" with no runs.
+  if (!std::isfinite(p.min) || !std::isfinite(p.max) ||
+      !std::isfinite(step) || !(p.min <= p.max) || !(step > 0.0)) {
+    throw std::runtime_error(
+        "grid error: invalid range for parameter '" + p.name + "' (min=" +
+        std::to_string(p.min) + " max=" + std::to_string(p.max) +
+        " step=" + std::to_string(p.step) + ")");
+  }
+
+  // iterate over an integer count instead of accumulating with +=. floating
+  // accumulation drifts: it either emits one value past max or stops short of
+  // it, so the tuned last value is never actually tested.
+  const long long steps = static_cast<long long>(
+      std::floor((p.max - p.min) / step + 1e-9));
 
   // create permutations for current param
-  for (double val = p.min; val <= p.max + 1e-9; val += step) {
+  for (long long k = 0; k <= steps; ++k) {
+    const double val = p.min + static_cast<double>(k) * step;
     json next_json = base_json;
     next_json[p.ptr] = val;
 
@@ -92,6 +128,10 @@ std::vector<RunConfig> GridScanner::GenerateGrid(const json& root) {
   } catch (const json::exception& e) {
     throw std::runtime_error("grid generation error: " + std::string(e.what()));
   }
+
+  if (results.empty()) {
+    throw std::runtime_error("grid generation produced no runs");
+  }
   return results;
 }
 
@@ -101,19 +141,41 @@ std::vector<RunConfig> GridScanner::GenerateGrid(const json& root) {
 
 namespace {
 
+// true when j["val"] is a number or a numeric string. hand-written configs
+// carry "val": "0.5"; leaving that as an object meant the live factory saw a
+// grid node as a param object and every numeric reader fell back to default.
+bool HasScalarVal(const json& j) {
+  if (!j.contains("val")) return false;
+  const auto& v = j["val"];
+  if (v.is_number()) return true;
+  if (!v.is_string()) return false;
+  try {
+    const std::string s = v.get<std::string>();
+    size_t used = 0;
+    std::stod(s, &used);
+    while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
+      ++used;
+    }
+    return used == s.size();
+  } catch (...) {
+    return false;
+  }
+}
+
 // a grid node is an object that carries min/max/step plus a scalar "val".
 bool IsGridNode(const json& j) {
   return j.is_object() &&
          j.contains("min") && j["min"].is_number() &&
          j.contains("max") && j["max"].is_number() &&
          j.contains("step") && j["step"].is_number() &&
-         j.contains("val") && j["val"].is_number();
+         HasScalarVal(j);
 }
 
 void FlattenGridsRec(json& j) {
   if (j.is_object()) {
     if (IsGridNode(j)) {
-      // collapse the whole node into its scalar "val"
+      // collapse the whole node into its scalar "val". keep the original
+      // type: SafeNumber and the factory both parse numeric strings.
       j = j["val"];
       return;
     }
@@ -191,8 +253,9 @@ void AppConfig::Validate() const {
   if (risk_per_trade_pct <= 0.0 || risk_per_trade_pct >= 0.1) {
     fail("risk.risk_per_trade_pct must be in (0.0, 0.1) (got " + std::to_string(risk_per_trade_pct) + ")");
   }
-  if (min_distance_dollars < 0.0) {
-    fail("risk.min_distance_dollars must be >= 0.0 (got " + std::to_string(min_distance_dollars) + ")");
+  if (min_distance_dollars < 0.0 || !std::isfinite(min_distance_dollars)) {
+    fail("risk.min_distance_dollars must be >= 0.0 in quote-currency units "
+         "(0 disables the widening) (got " + std::to_string(min_distance_dollars) + ")");
   }
   if (max_daily_loss <= 0.0) {
     fail("risk.max_daily_loss must be > 0.0 (got " + std::to_string(max_daily_loss) + ")");
@@ -215,7 +278,10 @@ void AppConfig::Validate() const {
     fail("trade_management.trailing.distance_pct must be in (0.0, 0.1) (got " +
          std::to_string(tm_config.trailing_dist_pct) + ")");
   }
-  if (tm_config.trailing_dist_pct >= tm_config.trailing_trigger_pct) {
+  // only meaningful when trailing is on: a disabled block with stale values
+  // aborted the whole config for a feature that will never run.
+  if (tm_config.enable_trailing &&
+      tm_config.trailing_dist_pct >= tm_config.trailing_trigger_pct) {
     fail("trade_management.trailing.distance_pct (" + std::to_string(tm_config.trailing_dist_pct) +
          ") must be < trade_management.trailing.trigger_pct (" +
          std::to_string(tm_config.trailing_trigger_pct) + ")");
@@ -259,25 +325,47 @@ namespace {
 // safely read a numeric field. if the value is an object (e.g. a grid
 // definition with min/max/step) or missing, the default is returned instead
 // of throwing. this keeps the parser tolerant of grid-style configs.
+//
+// numeric strings are accepted too: hand-written configs carry "0.004"
+// rather than 0.004, and silently falling back to the default there changes
+// the risk of the run without any error.
 double SafeNumber(const json& parent, const std::string& key, double fallback) {
   if (!parent.contains(key)) return fallback;
   const auto& v = parent[key];
   if (v.is_number()) return v.get<double>();
+  if (v.is_string()) {
+    try {
+      const std::string s = v.get<std::string>();
+      size_t used = 0;
+      const double parsed = std::stod(s, &used);
+      while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
+        ++used;
+      }
+      if (used == s.size() && std::isfinite(parsed)) return parsed;
+    } catch (...) {
+      // fall through to the default
+    }
+  }
   return fallback;
 }
 
-int SafeInt(const json& parent, const std::string& key, int fallback) {
-  if (!parent.contains(key)) return fallback;
-  const auto& v = parent[key];
-  if (v.is_number_integer()) return v.get<int>();
-  if (v.is_number()) return static_cast<int>(v.get<double>());
-  return fallback;
-}
 
+// read a boolean field. accepts the same spellings GridScanner treats as a
+// disable flag: bool, "true"/"false"/"1"/"0", and integer 1/0. without this,
+// {"enabled": "false"} silently returned the fallback (true for trailing),
+// enabling a component the config explicitly turned off.
 bool SafeBool(const json& parent, const std::string& key, bool fallback) {
   if (!parent.contains(key)) return fallback;
   const auto& v = parent[key];
   if (v.is_boolean()) return v.get<bool>();
+  if (v.is_string()) {
+    const std::string s = v.get<std::string>();
+    if (s == "true" || s == "True" || s == "TRUE" || s == "1") return true;
+    if (s == "false" || s == "False" || s == "FALSE" || s == "0") return false;
+    return fallback;
+  }
+  if (v.is_number_integer()) return v.get<long long>() != 0;
+  if (v.is_number_float()) return v.get<double>() != 0.0;
   return fallback;
 }
 
@@ -286,6 +374,101 @@ std::string SafeString(const json& parent, const std::string& key, const std::st
   const auto& v = parent[key];
   if (v.is_string()) return v.get<std::string>();
   return fallback;
+}
+
+// strict readers for every field that changes what a run does. a missing or
+// mistyped key aborts with the full path instead of substituting a number the
+// author never wrote: a run must mean exactly what its config says.
+double RequireNumber(const json& parent, const std::string& key,
+                     const std::string& section) {
+  const std::string path = section + "." + key;
+  if (!parent.contains(key)) {
+    throw std::runtime_error("config error: missing required key '" + path + "'");
+  }
+  const auto& v = parent[key];
+  if (v.is_number()) {
+    const double d = v.get<double>();
+    if (!std::isfinite(d)) {
+      throw std::runtime_error("config error: '" + path + "' must be finite");
+    }
+    return d;
+  }
+  if (v.is_string()) {
+    const std::string s = v.get<std::string>();
+    size_t used = 0;
+    try {
+      const double parsed = std::stod(s, &used);
+      while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
+        ++used;
+      }
+      if (used == s.size() && std::isfinite(parsed)) return parsed;
+    } catch (...) {
+      // fall through to the typed error below
+    }
+  }
+  throw std::runtime_error("config error: '" + path + "' must be a number (got " +
+                           v.dump() + ")");
+}
+
+int RequireInt(const json& parent, const std::string& key,
+               const std::string& section) {
+  const std::string path = section + "." + key;
+  if (!parent.contains(key)) {
+    throw std::runtime_error("config error: missing required key '" + path + "'");
+  }
+  const auto& v = parent[key];
+  if (v.is_number_integer()) return v.get<int>();
+  if (v.is_number_float()) {
+    const double d = v.get<double>();
+    if (std::floor(d) == d) return static_cast<int>(d);
+  }
+  if (v.is_string()) {
+    const std::string s = v.get<std::string>();
+    size_t used = 0;
+    try {
+      const long long parsed = std::stoll(s, &used);
+      while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
+        ++used;
+      }
+      if (used == s.size()) return static_cast<int>(parsed);
+    } catch (...) {
+      // fall through
+    }
+  }
+  throw std::runtime_error("config error: '" + path + "' must be an integer (got " +
+                           v.dump() + ")");
+}
+
+bool RequireBool(const json& parent, const std::string& key,
+                 const std::string& section) {
+  const std::string path = section + "." + key;
+  if (!parent.contains(key)) {
+    throw std::runtime_error("config error: missing required key '" + path + "'");
+  }
+  const auto& v = parent[key];
+  if (v.is_boolean()) return v.get<bool>();
+  if (v.is_string()) {
+    const std::string s = v.get<std::string>();
+    if (s == "true" || s == "True" || s == "TRUE" || s == "1") return true;
+    if (s == "false" || s == "False" || s == "FALSE" || s == "0") return false;
+  }
+  if (v.is_number_integer()) return v.get<long long>() != 0;
+  if (v.is_number_float()) return v.get<double>() != 0.0;
+  throw std::runtime_error("config error: '" + path + "' must be a boolean (got " +
+                           v.dump() + ")");
+}
+
+double RequireNumberAny(const json& parent, std::initializer_list<const char*> keys,
+                        const std::string& section) {
+  for (const char* k : keys) {
+    if (parent.contains(k)) return RequireNumber(parent, k, section);
+  }
+  std::string names;
+  for (const char* k : keys) {
+    if (!names.empty()) names += " / ";
+    names += std::string(section) + "." + k;
+  }
+  throw std::runtime_error("config error: one of '" + names + "' is required");
 }
 
 // wrap a section parse in a try/catch that reports the section name.
@@ -329,13 +512,16 @@ AppConfig AppConfig::Load(const json& j) {
 
   // --- environment ---
   ParseSection("environment", [&]() {
-    if (j.contains("environment")) {
+    if (!j.contains("environment") || !j["environment"].is_object()) {
+      throw std::runtime_error("config error: missing required section 'environment'");
+    }
+    {
       const auto& env = j["environment"];
       cfg.filepath = SafeString(env, "filepath", "");
-      cfg.interval_ms = SafeInt(env, "interval_ms", 60000);
-      cfg.macro_interval_ms = SafeInt(env, "macro_interval_ms", 900000);
-      cfg.tick_size = SafeNumber(env, "tick_size", 1.0);
-      cfg.vwap_reset_hour = SafeInt(env, "vwap_reset_hour", 0);
+      cfg.interval_ms = RequireInt(env, "interval_ms", "environment");
+      cfg.macro_interval_ms = RequireInt(env, "macro_interval_ms", "environment");
+      cfg.tick_size = RequireNumber(env, "tick_size", "environment");
+      cfg.vwap_reset_hour = RequireInt(env, "vwap_reset_hour", "environment");
 
       if (env.contains("max_cores") && env["max_cores"].is_number_integer() &&
           env["max_cores"].get<int>() > 0) {
@@ -351,25 +537,55 @@ AppConfig AppConfig::Load(const json& j) {
   // read the data source ("binance" or "bybit") from the config. accepts the
   // key either at the top level or nested under "environment".
   ParseSection("exchange", [&]() {
+    // never default the venue. a missing key used to mean "binance", which
+    // would stream binance data for an account configured elsewhere.
+    bool found = false;
     if (j.contains("exchange")) {
-      cfg.exchange = SafeString(j, "exchange", cfg.exchange);
-    } else if (j.contains("environment") && j["environment"].is_object()) {
-      cfg.exchange = SafeString(j["environment"], "exchange", cfg.exchange);
+      const auto& ex = j["exchange"];
+      if (ex.is_string()) {
+        cfg.exchange = ex.get<std::string>();
+        found = !cfg.exchange.empty();
+      } else if (ex.is_object()) {
+        // credentials may be grouped under "exchange"; the venue name then
+        // lives inside that object.
+        const std::string name = SafeString(ex, "name", SafeString(ex, "venue", ""));
+        if (!name.empty()) {
+          cfg.exchange = name;
+          found = true;
+        }
+      }
+    }
+    if (!found && j.contains("environment") && j["environment"].is_object()) {
+      const std::string name = SafeString(j["environment"], "exchange", "");
+      if (!name.empty()) {
+        cfg.exchange = name;
+        found = true;
+      }
+    }
+    if (!found) {
+      throw std::runtime_error("config error: 'exchange' is required");
     }
   });
 
   // --- execution ---
   ParseSection("execution", [&]() {
-    if (j.contains("execution")) {
-      const auto& ex = j["execution"];
-      cfg.taker_fee_pct = SafeNumber(ex, "taker_fee_pct", 0.0004);
-      cfg.slippage_pct = SafeNumber(ex, "slippage_pct", 0.0002);
-    } else if (j.contains("environment")) {
-      // fallback for backwards compatibility
-      const auto& env = j["environment"];
-      cfg.taker_fee_pct = SafeNumber(env, "taker_fee_pct", 0.0004);
-      cfg.slippage_pct = SafeNumber(env, "slippage_pct", 0.0002);
+    // fees and slippage change every pnl number in the report, so they are
+    // never guessed. accepted at the root or, for older configs, inside
+    // "environment".
+    const json* ex = nullptr;
+    std::string section;
+    if (j.contains("execution") && j["execution"].is_object()) {
+      ex = &j["execution"];
+      section = "execution";
+    } else if (j.contains("environment") && j["environment"].is_object()) {
+      ex = &j["environment"];
+      section = "environment";
     }
+    if (!ex) {
+      throw std::runtime_error("config error: missing required section 'execution'");
+    }
+    cfg.taker_fee_pct = RequireNumber(*ex, "taker_fee_pct", section);
+    cfg.slippage_pct = RequireNumber(*ex, "slippage_pct", section);
   });
 
   // --- triggers ---
@@ -406,14 +622,22 @@ AppConfig AppConfig::Load(const json& j) {
 
   // --- risk ---
   ParseSection("risk", [&]() {
-    if (j.contains("risk")) {
+    if (!j.contains("risk") || !j["risk"].is_object()) {
+      throw std::runtime_error("config error: missing required section 'risk'");
+    }
+    {
       const auto& risk = j["risk"];
-      // accept both canonical and legacy key names
-      cfg.sl_pct = SafeNumber(risk, "sl_pct", SafeNumber(risk, "sl_price_pct", 0.002));
-      cfg.tp_pct = SafeNumber(risk, "tp_pct", 0.01);
-      cfg.risk_per_trade_pct = SafeNumber(risk, "risk_per_trade_pct", 0.01);
-      cfg.min_distance_dollars = SafeNumber(risk, "min_distance_dollars", 10.0);
-      cfg.max_daily_loss = SafeNumber(risk, "max_daily_loss", 400.0);
+      // 1R is defined by sl_pct and nothing else.
+      cfg.sl_pct = RequireNumberAny(risk, {"sl_pct", "sl_price_pct"}, "risk");
+      // tp_r (a multiple of sl_pct, i.e. of 1R) wins over the legacy absolute
+      // tp_pct. a config that names neither fails to load instead of keeping
+      // a 1% guess.
+      cfg.tp_pct = mokuren::ResolveTpPct(j, cfg.sl_pct);
+      cfg.risk_per_trade_pct = RequireNumber(risk, "risk_per_trade_pct", "risk");
+      // optional by design: 0 (the default here) means "never widen the
+      // strategy's own stop", so absence has a defined, non-arbitrary meaning.
+      cfg.min_distance_dollars = SafeNumber(risk, "min_distance_dollars", 0.0);
+      cfg.max_daily_loss = RequireNumber(risk, "max_daily_loss", "risk");
 
       if (risk.contains("modules") && risk["modules"].is_array()) {
         for (const auto& item : risk["modules"]) {
@@ -426,25 +650,51 @@ AppConfig AppConfig::Load(const json& j) {
 
   // --- trade_management ---
   ParseSection("trade_management", [&]() {
-    if (j.contains("trade_management")) {
+    if (!j.contains("trade_management") || !j["trade_management"].is_object()) {
+      throw std::runtime_error(
+          "config error: missing required section 'trade_management'");
+    }
+    {
       const auto& tm = j["trade_management"];
-      if (tm.contains("break_even") && tm["break_even"].is_object()) {
-        const auto& be = tm["break_even"];
-        cfg.tm_config.be_trigger_pct = SafeNumber(be, "trigger_pct", 0.005);
-        cfg.tm_config.be_target_pct = SafeNumber(be, "target_pct", 0.001);
+      // every level is required, in R or via the legacy absolute key. sl_pct
+      // is 1R, so one config means the same thing in every path.
+      if (!tm.contains("break_even") || !tm["break_even"].is_object()) {
+        throw std::runtime_error(
+            "config error: missing required section 'trade_management.break_even'");
       }
-      if (tm.contains("trailing") && tm["trailing"].is_object()) {
-        const auto& tr = tm["trailing"];
-        cfg.tm_config.enable_trailing = SafeBool(tr, "enabled", true);
-        cfg.tm_config.trailing_trigger_pct = SafeNumber(tr, "trigger_pct", 0.008);
-        cfg.tm_config.trailing_dist_pct = SafeNumber(tr, "distance_pct", 0.004);
+      const auto& be = tm["break_even"];
+      cfg.tm_config.be_trigger_pct = mokuren::ResolveLevelPct(
+          be, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.break_even");
+      cfg.tm_config.be_target_pct = mokuren::ResolveLevelPct(
+          be, cfg.sl_pct, "target_r", "target_pct", "trade_management.break_even");
+      // only the arming decision follows the flag; the levels above stay
+      // required so a config means the same thing whether or not the block is
+      // switched on. absent => enabled, matching ApplyRMultiplesManagement.
+      cfg.tm_config.enable_break_even = SafeBool(be, "enabled", true);
+
+      if (!tm.contains("trailing") || !tm["trailing"].is_object()) {
+        throw std::runtime_error(
+            "config error: missing required section 'trade_management.trailing'");
       }
-      if (tm.contains("scale_out") && tm["scale_out"].is_object()) {
-        const auto& so = tm["scale_out"];
-        cfg.tm_config.enable_scale_out = SafeBool(so, "enabled", false);
-        cfg.tm_config.scale_out_trigger_pct = SafeNumber(so, "trigger_pct", 0.006);
-        cfg.tm_config.scale_out_fraction = SafeNumber(so, "fraction", 0.5);
+      const auto& tr = tm["trailing"];
+      cfg.tm_config.enable_trailing =
+          RequireBool(tr, "enabled", "trade_management.trailing");
+      cfg.tm_config.trailing_trigger_pct = mokuren::ResolveLevelPct(
+          tr, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.trailing");
+      cfg.tm_config.trailing_dist_pct = mokuren::ResolveLevelPct(
+          tr, cfg.sl_pct, "distance_r", "distance_pct", "trade_management.trailing");
+
+      if (!tm.contains("scale_out") || !tm["scale_out"].is_object()) {
+        throw std::runtime_error(
+            "config error: missing required section 'trade_management.scale_out'");
       }
+      const auto& so = tm["scale_out"];
+      cfg.tm_config.enable_scale_out =
+          RequireBool(so, "enabled", "trade_management.scale_out");
+      cfg.tm_config.scale_out_trigger_pct = mokuren::ResolveLevelPct(
+          so, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.scale_out");
+      cfg.tm_config.scale_out_fraction =
+          RequireNumber(so, "fraction", "trade_management.scale_out");
     }
   });
 

@@ -2,6 +2,7 @@
 #include "config_parser.hpp"
 #include "csv_parser.hpp"
 #include "factory.hpp"
+#include "wfa_window.hpp"
 #include "market_context.hpp"
 #include "ui_footprint.hpp"
 #include "replay_manager.hpp"
@@ -33,13 +34,6 @@ struct TestResult {
   double mc_drawdown = 0.0;
 };
 
-// wfa rolling window def
-struct WFAWindow {
-  int64_t in_sample_start;
-  int64_t in_sample_end;
-  int64_t out_of_sample_start;
-  int64_t out_of_sample_end;
-};
 
 // adv metrics
 struct AdvancedMetrics {

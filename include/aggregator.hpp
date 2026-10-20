@@ -1,5 +1,7 @@
 #pragma once
 #include "trade_event.hpp"
+#include <cstddef>
+#include <stdexcept>
 #include <vector>
 
 // base signal types for order engine
@@ -65,7 +67,9 @@ struct Bar {
   std::vector<PriceLevel> footprint;
   L2Snapshot last_l2; 
 
-  // reset for next period
+  // reset for next period. tick_size and last_l2 deliberately survive: the
+  // tick is constant for the run, and the first evaluation of the new candle
+  // must still see the most recent book rather than a zeroed snapshot.
   void ResetBar(int64_t new_timestamp) {
     open = 0.0;
     high = 0.0;
@@ -88,8 +92,18 @@ struct SessionMetrics {
 
 class Aggregator {
 public:
+  // interval and tick are the two divisors every downstream calculation
+  // depends on. a zero here does not fail loudly: tick==0 turns every price
+  // level into NaN and interval==0 spins the candle loop forever. reject them
+  // at construction instead of discovering it as an empty footprint.
   Aggregator(int64_t interval, double tick, int vwap_reset_hour = 0)
       : interval_ms(interval), tick_size(tick), vwap_reset_hour_(vwap_reset_hour) {
+    if (interval <= 0) {
+      throw std::invalid_argument("Aggregator: interval must be > 0");
+    }
+    if (!(tick > 0.0)) {  // written this way so NaN is rejected too
+      throw std::invalid_argument("Aggregator: tick_size must be > 0");
+    }
     ResetWorkspace();
   }
 
@@ -109,6 +123,11 @@ public:
   }
   const L2RingBuffer &GetL2History() const { return l2_history_; }
   void FlushLastCandle(Bar &live_bar);
+
+  // immutable run constants. exposed so the startup capability gate and the
+  // venue adapters can check a config without re-parsing the json.
+  int64_t IntervalMs() const { return interval_ms; }
+  double TickSize() const { return tick_size; }
 
 private:
   int64_t interval_ms;
