@@ -8,6 +8,7 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -23,6 +24,25 @@ namespace {
 // interval.
 constexpr int kHeartbeatIntervalMs = 20000;
 constexpr int kHeartbeatSliceMs = 100;
+
+// a market entry is echoed (fill or reject) far inside this window. a pending
+// flag older than this is a lost push, not a live order.
+constexpr int64_t kPendingEntryTimeoutMs = 10000;
+
+// bybit mixes strings and numbers for the same field across endpoints.
+double JsonNum(const nlohmann::json& j, const char* key, double fallback = 0.0) {
+    if (!j.contains(key)) return fallback;
+    const auto& v = j[key];
+    if (v.is_number()) return v.get<double>();
+    if (v.is_string()) {
+        try {
+            return std::stod(v.get<std::string>());
+        } catch (...) {
+            return fallback;
+        }
+    }
+    return fallback;
+}
 
 // lowercase hex encoding of a raw HMAC digest
 std::string ToHex(const unsigned char* data, size_t len) {
@@ -60,22 +80,203 @@ std::string FormatDouble(double value) {
     return oss.str();
 }
 
+// Like FormatDouble, but emitted with exactly the number of decimals the
+// venue's step implies. floor(qty / step) * step lands on values such as
+// 0.0009999999999999998, which a 15-digit dump sends verbatim and the venue
+// then rejects as off-grid. Formatting to the step's own precision makes the
+// wire value equal the intended grid point.
+std::string FormatStep(double value, double step) {
+    int decimals = 0;
+    if (step > 0.0) {
+        double scaled = step;
+        while (decimals < 8 && std::abs(scaled - std::round(scaled)) > 1e-12) {
+            scaled *= 10.0;
+            ++decimals;
+        }
+    }
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(decimals) << value;
+    std::string out = oss.str();
+    if (decimals > 0) {
+        while (!out.empty() && out.back() == '0') out.pop_back();
+        if (!out.empty() && out.back() == '.') out.pop_back();
+    }
+    return out;
+}
+
+// rounds a price or qty to the venue's grid (tickSize for price, qtyStep for
+// size). bybit rejects a value that is not a multiple of the step, and a
+// rejected break-even move leaves the position at its previous stop while
+// the local ladder believes it moved.
+double RoundToStep(double value, double step) {
+    if (!(step > 0.0)) return value;
+    return std::round(value / step) * step;
+}
+
 } // namespace
+
+int64_t BybitBroker::NowSignedMillis() const {
+    return NowMillis() + clock_offset_ms_;
+}
 
 BybitBroker::BybitBroker(const std::string& api_key,
                          const std::string& api_secret,
-                         bool is_testnet)
-    : api_key_(api_key), api_secret_(api_secret), is_testnet_(is_testnet) {
-    // V5 routes testnet and mainnet to different hosts.
-    if (is_testnet_) {
-        rest_base_url_  = "https://api-testnet.bybit.com";
-        private_ws_url_ = "wss://stream-testnet.bybit.com/v5/private";
-    } else {
-        rest_base_url_  = "https://api.bybit.com";
-        private_ws_url_ = "wss://stream.bybit.com/v5/private";
-    }
+                         mokuren::venue::Spec spec)
+    : api_key_(api_key), api_secret_(api_secret), spec_(spec) {
+    // every host comes from the resolved spec, so the broker and the
+    // market-data streamer can never disagree about mainnet/testnet/demo.
+    rest_base_url_  = spec_.rest_base;
+    private_ws_url_ = spec_.private_ws;
+
+    LOG_INFO("BybitBroker: venue {}", mokuren::venue::Manifest(spec_));
+
+    // before anything can trade: is the clock usable, what does this symbol
+    // accept, and is the account already holding something we did not open?
+    EstablishStartupTruth();
 
     ConnectPrivateStream();
+}
+
+void BybitBroker::EstablishStartupTruth() {
+    // time first. every signed call below depends on it, and a wrong clock
+    // turns a valid key into "retCode 10004 invalid signature".
+    SyncClock();
+
+    // fail fast: without the venue's own step and minimums, ProcessSignal is
+    // guessing, and a guessed quantity is a guaranteed reject (or worse, a
+    // silently floored order the strategy did not intend).
+    if (!FetchInstrumentRules()) {
+        throw std::runtime_error(
+            "BybitBroker: could not read instrument rules for " + spec_.symbol +
+            " -- refusing to trade blind");
+    }
+
+    // a prop account that restarts with an open position must adopt it, not
+    // open a second one. this also fixes HasOpenPosition() for the window
+    // before the first private push arrives.
+    ReconcileAccount();
+}
+
+void BybitBroker::SyncClock() {
+    nlohmann::json j;
+    if (!SendRestGet("/v5/market/time", "", j)) {
+        throw std::runtime_error(
+            "BybitBroker: cannot read server time; refusing to sign requests "
+            "against an unverified clock");
+    }
+
+    int64_t server_ms = 0;
+    if (j.contains("result") && j["result"].is_object()) {
+        const auto& res = j["result"];
+        if (res.contains("timeNano")) {
+            server_ms = static_cast<int64_t>(JsonNum(res, "timeNano") / 1e6);
+        } else if (res.contains("timeSecond")) {
+            server_ms = static_cast<int64_t>(JsonNum(res, "timeSecond") * 1000.0);
+        }
+    }
+    if (server_ms <= 0) {
+        throw std::runtime_error("BybitBroker: server time response carried no "
+                                 "usable timestamp");
+    }
+
+    clock_offset_ms_ = server_ms - NowMillis();
+    LOG_INFO("BybitBroker: clock offset {} ms", clock_offset_ms_);
+
+    // every signed request is stamped with the corrected clock, so a large
+    // offset is not fatal -- it would only become one if a caller used
+    // NowMillis() uncorrected. surface it anyway: a host that is seconds off
+    // is a broken ntp setup, and the operator should know before it becomes
+    // a "why did every order reject overnight" thread.
+    if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000) {
+        LOG_WARN("BybitBroker: local clock is off by {} ms; signatures are "
+                 "corrected, but check the host's time sync", clock_offset_ms_);
+    }
+}
+
+bool BybitBroker::FetchInstrumentRules() {
+    const std::string query =
+        "category=" + spec_.category + "&symbol=" + spec_.symbol;
+
+    nlohmann::json j;
+    if (!SendRestGet("/v5/market/instruments-info", query, j)) return false;
+    if (!j.contains("result") || !j["result"].is_object() ||
+        !j["result"].contains("list") || !j["result"]["list"].is_array() ||
+        j["result"]["list"].empty()) {
+        return false;
+    }
+
+    const auto& item = j["result"]["list"][0];
+    InstrumentRules r;
+    if (item.contains("priceFilter")) {
+        r.tick_size = JsonNum(item["priceFilter"], "tickSize");
+    }
+    if (item.contains("lotSizeFilter")) {
+        const auto& lot = item["lotSizeFilter"];
+        r.qty_step = JsonNum(lot, "qtyStep");
+        r.min_qty = JsonNum(lot, "minOrderQty");
+        r.min_notional = JsonNum(lot, "minNotionalValue");
+    }
+    if (item.contains("leverageFilter")) {
+        r.max_leverage = JsonNum(item["leverageFilter"], "maxLeverage");
+    }
+
+    if (!(r.qty_step > 0.0)) {
+        LOG_ERROR("BybitBroker: instruments-info reported no qtyStep for {}",
+                  spec_.symbol);
+        return false;
+    }
+
+    r.valid = true;
+    rules_ = r;
+
+    LOG_INFO("BybitBroker: {} tick={} step={} minQty={} minNotional={} maxLev={}",
+             spec_.symbol, rules_.tick_size, rules_.qty_step, rules_.min_qty,
+             rules_.min_notional, rules_.max_leverage);
+    return true;
+}
+
+void BybitBroker::ReconcileAccount() {
+    const std::string query =
+        "category=" + spec_.category + "&symbol=" + spec_.symbol;
+
+    nlohmann::json j;
+    if (!SendRestGet("/v5/position/list", query, j)) {
+        LOG_ERROR("BybitBroker: could not read open positions at startup; the "
+                  "local position state starts empty");
+        return;
+    }
+
+    if (!j.contains("result") || !j["result"].is_object() ||
+        !j["result"].contains("list") || !j["result"]["list"].is_array()) {
+        return;
+    }
+
+    for (const auto& p : j["result"]["list"]) {
+        if (!p.is_object()) continue;
+        const double size = JsonNum(p, "size");
+        if (!(size > 0.0)) continue;
+
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        position_size_ = size;
+        entry_price_ = JsonNum(p, "entryPrice");
+        current_sl_ = JsonNum(p, "stopLoss");
+        current_tp_ = JsonNum(p, "takeProfit");
+        current_position_.direction =
+            (p.value("side", "") == "Buy") ? SignalDirection::BUY
+                                           : SignalDirection::SELL;
+        current_position_.volume = size;
+        current_position_.entry_price = entry_price_;
+        current_position_.stop_loss = current_sl_;
+        current_position_.take_profit = current_tp_;
+
+        // adopt, never flatten: liquidating someone else's position on startup
+        // is not the engine's decision to make, but re-entering on top of it
+        // would breach every single-position rule the prop account has.
+        LOG_WARN("BybitBroker: adopted an existing {} {} position (size={} "
+                 "entry={} sl={} tp={}); the strategy will manage it as its own",
+                 p.value("side", "?"), spec_.symbol, size, entry_price_,
+                 current_sl_, current_tp_);
+    }
 }
 
 BybitBroker::~BybitBroker() {
@@ -97,10 +298,11 @@ void BybitBroker::ConnectPrivateStream() {
     private_ws_.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
         switch (msg->type) {
             case ix::WebSocketMessageType::Open:
-                // connection is up -> run the HMAC handshake, then subscribe
-                // to the execution and position push channels.
+                // connection is up -> run the HMAC handshake. the subscription
+                // is sent from the auth ack (see HandlePrivateMessage): bybit
+                // rejects a subscribe that arrives before auth completes, and
+                // sending both back to back raced that requirement.
                 AuthenticatePrivateStream();
-                SubscribePrivateTopics();
                 ws_connected_ = true;
                 break;
             case ix::WebSocketMessageType::Message:
@@ -161,7 +363,7 @@ void BybitBroker::AuthenticatePrivateStream() {
     // V5 private auth message:
     //   {"op":"auth","args":["<api_key>", <expires>, "<signature>"]}
     // signature = HMAC_SHA256(api_secret, "GET/realtime" + expires)
-    const int64_t expires = NowMillis() + 10000;
+    const int64_t expires = NowSignedMillis() + 10000;
     const std::string signature =
         GenerateSignature("GET/realtime" + std::to_string(expires), "");
 
@@ -172,8 +374,12 @@ void BybitBroker::AuthenticatePrivateStream() {
 }
 
 void BybitBroker::SubscribePrivateTopics() {
-    // execution -> fills/order updates, position -> live size and SL/TP.
-    private_ws_.send(R"({"op":"subscribe","args":["position","execution"]})");
+    // position -> live size and SL/TP, execution -> fills and closedPnl,
+    // wallet -> equity. wallet is not optional: the sizer multiplies equity by
+    // risk_per_trade_pct, and without this subscription that number stayed 0.0
+    // so no volume was ever produced.
+    private_ws_.send(
+        R"({"op":"subscribe","args":["position","execution","wallet"]})");
 }
 
 void BybitBroker::HandlePrivateMessage(const std::string& payload) {
@@ -185,9 +391,28 @@ void BybitBroker::HandlePrivateMessage(const std::string& payload) {
         return;
     }
 
+    // the auth ack is the gate for the subscription. bybit discards a
+    // subscribe that arrives before the handshake is confirmed, and a broker
+    // that never subscribes reports equity 0.0 forever.
+    const std::string op = j.value("op", "");
+    if (op == "auth") {
+        if (j.value("success", false)) {
+            SubscribePrivateTopics();
+        } else {
+            LOG_ERROR("BybitBroker: private stream auth failed: {}",
+                      j.value("retMsg", "no reason given"));
+        }
+        return;
+    }
+    if (op == "subscribe" && !j.value("success", true)) {
+        LOG_ERROR("BybitBroker: private stream subscribe rejected: {}",
+                  j.value("retMsg", "no reason given"));
+        return;
+    }
+
     const std::string topic = j.value("topic", "");
-    if (topic != "position" && topic != "execution") {
-        // auth acks, pongs and subscribe confirmations land here.
+    if (topic != "position" && topic != "execution" && topic != "wallet") {
+        // pongs and subscribe confirmations land here.
         return;
     }
     if (!j.contains("data") || !j["data"].is_array()) return;
@@ -202,11 +427,15 @@ void BybitBroker::HandlePrivateMessage(const std::string& payload) {
         if (topic == "position") {
             for (const auto& entry : j["data"]) {
                 if (!entry.is_object()) continue;
-                // single-symbol broker: only the BTCUSDT position matters.
-                if (entry.value("symbol", "") != "BTCUSDT") continue;
+                // single-symbol broker: only the configured symbol matters.
+                if (entry.value("symbol", "") != spec_.symbol) continue;
 
                 position_size_ =
                     entry.contains("size") ? std::stod(entry["size"].get<std::string>()) : 0.0;
+
+                // the exchange has now spoken about this symbol, filled or not:
+                // the pending-entry guard can stand down.
+                pending_entry_ = false;
 
                 if (position_size_ > 0.0) {
                     entry_price_ = entry.contains("entryPrice")
@@ -232,12 +461,50 @@ void BybitBroker::HandlePrivateMessage(const std::string& payload) {
                     current_position_.volume = 0.0;
                 }
             }
+        } else if (topic == "wallet") {
+            // uta wallet push. totalEquity is what the sizer multiplies.
+            for (const auto& entry : j["data"]) {
+                if (!entry.is_object()) continue;
+                double equity = 0.0;
+                if (entry.contains("totalEquity")) {
+                    equity = JsonNum(entry, "totalEquity");
+                } else if (entry.contains("list") && entry["list"].is_array()) {
+                    for (const auto& coin : entry["list"]) {
+                        if (coin.is_object()) equity += JsonNum(coin, "equity");
+                    }
+                }
+                if (equity > 0.0) {
+                    current_balance_ = equity;
+                    LOG_INFO("BybitBroker: wallet equity {}", current_balance_);
+                }
+            }
         } else if (topic == "execution") {
             for (const auto& entry : j["data"]) {
                 if (!entry.is_object()) continue;
-                if (entry.value("symbol", "") != "BTCUSDT") continue;
-                if (entry.contains("closedSize")) {
-                    last_closed_size_ = std::stod(entry["closedSize"].get<std::string>());
+                if (entry.value("symbol", "") != spec_.symbol) continue;
+
+                // any execution on this symbol answers the pending entry.
+                pending_entry_ = false;
+
+                const double closed = JsonNum(entry, "closedSize");
+                if (closed > 0.0) {
+                    last_closed_size_ = closed;
+
+                    // recorded so GetLastTradeTime/GetTradeCount work: without
+                    // it AntiRevengeLock's cooldown never engaged and a risk
+                    // module was silently switched off on the venue path.
+                    TradeRecord rec{};
+                    rec.entry_time = 0;
+                    rec.exit_time =
+                        static_cast<int64_t>(JsonNum(entry, "execTime"));
+                    rec.direction = (entry.value("side", "") == "Buy")
+                                        ? SignalDirection::BUY
+                                        : SignalDirection::SELL;
+                    rec.entry_price = entry_price_;
+                    rec.exit_price = JsonNum(entry, "execPrice");
+                    rec.net_profit = JsonNum(entry, "closedPnl");
+                    rec.exit_reason = "venue_fill";
+                    trade_history_.push_back(rec);
                 }
             }
         }
@@ -265,13 +532,13 @@ std::string BybitBroker::GenerateSignature(const std::string& payload,
     return ToHex(digest, digest_len);
 }
 
-void BybitBroker::SendRestRequest(const std::string& method,
-                                  const std::string& endpoint,
-                                  const std::string& payload) {
+int BybitBroker::SendRestRequest(const std::string& method,
+                                 const std::string& endpoint,
+                                 const std::string& payload) {
     // Builds an authenticated V5 REST call. Required headers:
     //   X-BAPI-API-KEY, X-BAPI-TIMESTAMP, X-BAPI-RECV-WINDOW, X-BAPI-SIGN
     // where X-BAPI-SIGN = HMAC_SHA256(timestamp + api_key + recv_window + payload).
-    const std::string timestamp = std::to_string(NowMillis());
+    const std::string timestamp = std::to_string(NowSignedMillis());
     const std::string recv_window = "5000";
     const std::string signing_string = timestamp + api_key_ + recv_window + payload;
     const std::string signature = GenerateSignature(signing_string, "");
@@ -279,7 +546,9 @@ void BybitBroker::SendRestRequest(const std::string& method,
     CURL* curl = curl_easy_init();
     if (!curl) {
         LOG_ERROR("BybitBroker: curl_easy_init() failed for {}", endpoint);
-        return;
+        // -1 = transport failure, never 0 (accepted). callers must not treat
+        // this as a submitted order.
+        return -1;
     }
 
     const std::string url = rest_base_url_ + endpoint;
@@ -303,6 +572,7 @@ void BybitBroker::SendRestRequest(const std::string& method,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
 
+    int ret_code = -1;
     const CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
         LOG_ERROR("BybitBroker: REST {} {} failed: {}", method, endpoint,
@@ -319,11 +589,81 @@ void BybitBroker::SendRestRequest(const std::string& method,
         } else if (http_code < 200 || http_code >= 300) {
             LOG_ERROR("BybitBroker: REST {} {} HTTP {}: {}", method, endpoint,
                       http_code, response_body);
+        } else {
+            // retCode 0 means the request was accepted. anything else is an
+            // exchange-level reject (bad qty, wrong positionIdx, ...) and must
+            // never be reported as a submitted order.
+            const nlohmann::json j =
+                nlohmann::json::parse(response_body, nullptr, false);
+            if (!j.is_discarded() && j.is_object() && j.contains("retCode") &&
+                j["retCode"].is_number_integer()) {
+                ret_code = j["retCode"].get<int>();
+            }
         }
     }
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    return ret_code;
+}
+
+bool BybitBroker::SendRestGet(const std::string& path, const std::string& query,
+                              nlohmann::json& out) {
+    // GET signs timestamp + api_key + recv_window + query string. the body is
+    // empty, which is why this cannot reuse SendRestRequest's POSTFIELDS path.
+    const std::string timestamp = std::to_string(NowSignedMillis());
+    const std::string recv_window = "5000";
+    const std::string signature = GenerateSignature(
+        timestamp + api_key_ + recv_window + query, "");
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        LOG_ERROR("BybitBroker: curl_easy_init() failed for {}", path);
+        return false;
+    }
+
+    const std::string url =
+        rest_base_url_ + path + (query.empty() ? "" : "?" + query);
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, ("X-BAPI-API-KEY: " + api_key_).c_str());
+    headers = curl_slist_append(headers, ("X-BAPI-SIGN: " + signature).c_str());
+    headers = curl_slist_append(headers, ("X-BAPI-TIMESTAMP: " + timestamp).c_str());
+    headers = curl_slist_append(headers, ("X-BAPI-RECV-WINDOW: " + recv_window).c_str());
+
+    std::string response_body;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+
+    bool ok = false;
+    const CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        LOG_ERROR("BybitBroker: GET {} failed: {}", path, curl_easy_strerror(res));
+    } else {
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        LIVE_DBG("bybit: GET {} -> {} | {}", path, http_code, response_body);
+
+        out = nlohmann::json::parse(response_body, nullptr, false);
+        if (out.is_discarded() || !out.is_object()) {
+            LOG_ERROR("BybitBroker: GET {} returned an unparsable body", path);
+        } else if (out.value("retCode", -1) != 0) {
+            LOG_ERROR("BybitBroker: GET {} retCode {} {}", path,
+                      out.value("retCode", -1), out.value("retMsg", ""));
+        } else {
+            ok = true;
+        }
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return ok;
 }
 
 // ---- cached state getters (served without blocking) ----
@@ -333,9 +673,21 @@ double BybitBroker::GetBalance() const {
     return current_balance_;
 }
 
+bool BybitBroker::PendingEntryLocked() const {
+    if (!pending_entry_) return false;
+    if (NowMillis() - pending_since_ms_ > kPendingEntryTimeoutMs) {
+        pending_entry_ = false;
+        return false;
+    }
+    return true;
+}
+
 bool BybitBroker::HasOpenPosition() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    return position_size_ > 0.0;
+    // a submitted-but-unconfirmed entry counts as open. the exchange echo
+    // arrives tens of milliseconds later, and SinglePositionLock runs inside
+    // that window; without this it admitted a second entry per burst.
+    return position_size_ > 0.0 || PendingEntryLocked();
 }
 
 TradeSignal BybitBroker::GetCurrentPosition() const {
@@ -377,6 +729,34 @@ void BybitBroker::ProcessSignal(TradeSignal signal, double fill_price,
                                 int64_t current_time) {
     if (signal.volume <= 0.0 || signal.direction == SignalDirection::NONE) return;
 
+    // the venue, not the sizer, is the authority on what it accepts. the sizer
+    // rounds to a coarse 0.001 step; the real step and minimums come from
+    // instruments-info and are enforced here, so an off-grid or too-small
+    // quantity is reported as a refusal instead of an exchange reject.
+    double qty = signal.volume;
+    if (rules_.valid && rules_.qty_step > 0.0) {
+        qty = std::floor(qty / rules_.qty_step) * rules_.qty_step;
+    }
+    if (!(qty > 0.0)) {
+        LOG_ERROR("BybitBroker: entry qty {} floors to zero on step {}; "
+                  "refusing to send", signal.volume, rules_.qty_step);
+        return;
+    }
+    if (rules_.valid) {
+        if (rules_.min_qty > 0.0 && qty < rules_.min_qty) {
+            LOG_ERROR("BybitBroker: entry qty {} is below minOrderQty {}; "
+                      "refusing to send", qty, rules_.min_qty);
+            return;
+        }
+        if (rules_.min_notional > 0.0 && fill_price > 0.0 &&
+            qty * fill_price < rules_.min_notional) {
+            LOG_ERROR("BybitBroker: entry notional {} is below the venue "
+                      "minimum {}; refusing to send", qty * fill_price,
+                      rules_.min_notional);
+            return;
+        }
+    }
+
     // HYBRID APPROACH:
     // The entry order is submitted to POST /v5/order/create with the entry
     // parameters AND the protective levels attached in the same request:
@@ -399,70 +779,140 @@ void BybitBroker::ProcessSignal(TradeSignal signal, double fill_price,
     // POST /v5/position/trading-stop.
     //
     nlohmann::json payload = {
-        {"category", "linear"},
-        {"symbol", "BTCUSDT"},
+        {"category", spec_.category},
+        {"symbol", spec_.symbol},
         {"orderType", "Market"},
         {"side", (signal.direction == SignalDirection::BUY) ? "Buy" : "Sell"},
-        {"qty", FormatDouble(signal.volume)},
+        {"qty", FormatStep(qty, rules_.qty_step)},
+        // a unique tag per intent. retries and restarts cannot be deduplicated
+        // by the venue without one, and it is what makes an order traceable in
+        // the bybit ui next to the engine log line.
+        {"orderLinkId", "mok-" + std::to_string(NowSignedMillis()) + "-" +
+                            std::to_string(++order_seq_)},
     };
 
     // Protective levels are attached to the entry so the hard stop lives on
-    // Bybit's matching engine even if this process dies.
+    // Bybit's matching engine even if this process dies. Both prices are
+    // rounded to the venue tick before they leave: an off-tick stop-loss is
+    // rejected with the whole order, which would silently drop the protection.
     if (signal.stop_loss > 0.0) {
-        payload["stopLoss"] = FormatDouble(signal.stop_loss);
+        const double sl = RoundToStep(signal.stop_loss, rules_.tick_size);
+        payload["stopLoss"] = FormatStep(sl, rules_.tick_size);
         payload["slTriggerBy"] = "LastPrice";
     }
     if (signal.take_profit > 0.0) {
-        payload["takeProfit"] = FormatDouble(signal.take_profit);
+        const double tp = RoundToStep(signal.take_profit, rules_.tick_size);
+        payload["takeProfit"] = FormatStep(tp, rules_.tick_size);
         payload["tpTriggerBy"] = "LastPrice";
     }
 
-    SendRestRequest("POST", "/v5/order/create", payload.dump());
+    const int ret = SendRestRequest("POST", "/v5/order/create", payload.dump());
     (void)fill_price;
     (void)current_time;
+
+    if (ret == 0) {
+        // accepted but not filled yet. reporting it as open closes the window
+        // in which SinglePositionLock would admit a second entry before the
+        // exchange echo arrives.
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pending_entry_ = true;
+        pending_since_ms_ = NowMillis();
+    } else {
+        LOG_ERROR("BybitBroker: entry rejected by venue (retCode {})", ret);
+    }
 }
 
 void BybitBroker::CheckRisk(double current_price, int64_t current_time) {
-    // DYNAMIC RISK MANAGEMENT (client side, mirrors PaperTrader):
-    // the hard stop already sits on Bybit, but break-even and trailing
-    // adjustments are computed locally because Bybit's native trailing stop
-    // cannot express the strategy's percentage-of-entry rules.
+    // intentionally empty. the hard stop and the target are attached to the
+    // entry, so bybit's matching engine enforces them even if this process
+    // dies. break-even, trailing and scale-out are PositionManager's job: it
+    // measures every threshold against the placed stop and calls
+    // UpdateStopLoss / ClosePartial.
     //
-    //   1. track the running high/low since entry for both directions
-    //   2. if unrealized profit >= be_trigger_pct -> move SL to entry +/- be_target_pct
-    //   3. if unrealized profit >= trailing_trigger_pct -> keep SL
-    //      trailing_dist_pct behind the best observed price
-    //   4. if the computed SL differs from the last one pushed, call
-    //      UpdateStopLoss(new_sl)
-    //
-    // State is read from the private-channel snapshots so this runs without a
-    // round-trip to the exchange.
+    // running a second ladder here would move the same stop twice, in two
+    // different units -- which is exactly the paper/live divergence that made
+    // venue results unattributable against backtest.
     (void)current_price;
     (void)current_time;
 }
 
 void BybitBroker::UpdateStopLoss(double new_sl) {
-    // Persist the new stop so CheckRisk can diff against it, then push it to
-    // the exchange.
-    current_sl_ = new_sl;
+    if (!(new_sl > 0.0)) {
+        LOG_ERROR("BybitBroker: refusing to push a non-positive stop ({})",
+                  new_sl);
+        return;
+    }
+
+    // round before sending. bybit rejects an off-tick price with the whole
+    // request (retCode 10001), and on a break-even or trail move that means
+    // the position keeps its previous stop while the ladder moves on.
+    const double rounded_sl = RoundToStep(new_sl, rules_.tick_size);
 
     nlohmann::json payload = {
-        {"category", "linear"},
-        {"symbol", "BTCUSDT"},
+        {"category", spec_.category},
+        {"symbol", spec_.symbol},
         {"positionIdx", 0},
-        {"stopLoss", FormatDouble(new_sl)},
+        {"stopLoss", FormatStep(rounded_sl, rules_.tick_size)},
         {"slTriggerBy", "LastPrice"},
     };
 
-    SendRestRequest("POST", "/v5/position/trading-stop", payload.dump());
+    // commit only on acceptance. Writing locally first left the engine
+    // believing a rejected move had landed; PositionManager's never-move-
+    // backwards comparison then skipped every retry, and the position sat
+    // on the old stop with a log line claiming it had moved.
+    const int ret =
+        SendRestRequest("POST", "/v5/position/trading-stop", payload.dump());
+    if (ret == 0) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        current_sl_ = rounded_sl;
+        current_position_.stop_loss = rounded_sl;
+    } else {
+        LOG_ERROR("BybitBroker: stop-loss move to {} rejected (retCode {})",
+                  rounded_sl, ret);
+    }
 }
 
 void BybitBroker::ClosePartial(double fraction, double current_price,
                                int64_t current_time, const std::string& reason) {
-    // Reduce-only market order for `fraction` of the open position:
-    // POST /v5/order/create with "reduceOnly": true, "qty": size * fraction.
-    (void)fraction;
     (void)current_price;
     (void)current_time;
-    (void)reason;
+
+    double close_size = 0.0;
+    bool closing_long = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (position_size_ <= 0.0) return;
+
+        const double clamped = std::max(0.0, std::min(1.0, fraction));
+        close_size = position_size_ * clamped;
+        if (!(close_size > 0.0)) return;
+
+        closing_long = current_position_.direction == SignalDirection::BUY;
+
+        // reduce optimistically: LiveOrchestrator::Stop calls this to flatten,
+        // and a repeated call must never send a second order for a position
+        // that is already gone. leaving an open position behind on shutdown is
+        // the one failure a prop account does not forgive.
+        position_size_ -= close_size;
+        if (position_size_ < 0.0) position_size_ = 0.0;
+        current_position_.volume = position_size_;
+        if (position_size_ == 0.0) {
+            current_position_.direction = SignalDirection::NONE;
+        }
+        last_closed_size_ = close_size;
+    }
+
+    nlohmann::json payload = {
+        {"category", spec_.category},
+        {"symbol", spec_.symbol},
+        {"side", closing_long ? "Sell" : "Buy"},
+        {"orderType", "Market"},
+        {"qty", FormatStep(close_size, rules_.qty_step)},
+        {"reduceOnly", true},
+        {"orderLinkId", "close-" + std::to_string(NowSignedMillis()) + "-" +
+                            std::to_string(++order_seq_)},
+    };
+
+    LOG_INFO("BybitBroker: reducing position by {} ({})", close_size, reason);
+    SendRestRequest("POST", "/v5/order/create", payload.dump());
 }

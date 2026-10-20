@@ -217,6 +217,31 @@ void AppConfig::Validate() const {
     }
   }
 
+  // --- venue ---
+  // whitelist the venue name. a typo used to skip the credential check above
+  // and then fall through the factory's string comparison into a silent
+  // paper-trading run.
+  if (exchange != "binance" && exchange != "bybit" &&
+      exchange != "hyperliquid") {
+    fail("exchange must be one of 'binance', 'bybit', 'hyperliquid' (got '" +
+         exchange + "')");
+  }
+  if (category != "linear" && category != "spot" && category != "inverse") {
+    fail("venue.category must be one of 'linear', 'spot', 'inverse' (got '" +
+         category + "')");
+  }
+  if (symbol.empty()) {
+    fail("venue.symbol must not be empty");
+  }
+  if (position_mode != "one_way" && position_mode != "hedge") {
+    fail("venue.position_mode must be 'one_way' or 'hedge' (got '" +
+         position_mode + "')");
+  }
+  if (exchange == "bybit" && env == mokuren::venue::Env::Mainnet &&
+      !allow_mainnet) {
+    fail("venue environment 'mainnet' requires allow_mainnet: true");
+  }
+
   // --- environment ---
   if (interval_ms <= 0) {
     fail("environment.interval_ms must be > 0 (got " + std::to_string(interval_ms) + ")");
@@ -566,6 +591,109 @@ AppConfig AppConfig::Load(const json& j) {
       throw std::runtime_error("config error: 'exchange' is required");
     }
   });
+
+  // --- venue identity ---
+  // environment + category + symbol + position mode form ONE identity. the
+  // broker and the streamer are both built from it, and neither may derive a
+  // host or a symbol of its own -- that is how a config ended up streaming
+  // mainnet data into a testnet account.
+  ParseSection("venue", [&]() {
+    if (j.contains("venue") && j["venue"].is_object()) {
+      const auto& v = j["venue"];
+      const std::string env_name =
+          SafeString(v, "environment", SafeString(v, "env", ""));
+      if (!env_name.empty()) {
+        try {
+          cfg.env = mokuren::venue::ParseEnv(env_name);
+        } catch (const std::exception& e) {
+          throw std::runtime_error(std::string("config error: venue.environment: ") +
+                                   e.what());
+        }
+        cfg.is_testnet = (cfg.env != mokuren::venue::Env::Mainnet);
+      }
+      cfg.category = SafeString(v, "category", cfg.category);
+      cfg.symbol = SafeString(v, "symbol", cfg.symbol);
+      cfg.position_mode = SafeString(v, "position_mode", cfg.position_mode);
+      cfg.allow_mainnet = SafeBool(v, "allow_mainnet", cfg.allow_mainnet);
+    } else if (j.contains("is_testnet")) {
+      // legacy spelling. demo cannot be selected this way, on purpose.
+      cfg.is_testnet = SafeBool(j, "is_testnet", true);
+      cfg.env = cfg.is_testnet ? mokuren::venue::Env::Testnet
+                               : mokuren::venue::Env::Mainnet;
+    }
+
+    // root-level overrides for the instrument identity.
+    cfg.category = SafeString(j, "category", cfg.category);
+    cfg.symbol = SafeString(j, "symbol", cfg.symbol);
+    cfg.allow_mainnet = SafeBool(j, "allow_mainnet", cfg.allow_mainnet);
+  });
+
+  // --- funded-account survival rules ---
+  // parsed as their own section and deliberately not under a strategy block:
+  // these limits belong to the account, not to a parameter set. a fraction
+  // (0.04) is the unit here, matching every other pct in this file.
+  if (j.contains("prop") && j["prop"].is_object()) {
+    const auto& p = j["prop"];
+
+    // numbers or numeric strings, as the rest of this loader accepts.
+    auto read_num = [&p](const char* key, double fallback) {
+      if (!p.contains(key)) return fallback;
+      const auto& v = p[key];
+      if (v.is_number()) return v.get<double>();
+      if (v.is_string()) {
+        try {
+          return std::stod(v.get<std::string>());
+        } catch (...) {
+          return fallback;
+        }
+      }
+      return fallback;
+    };
+
+    cfg.prop.enabled = SafeBool(p, "enabled", cfg.prop.enabled);
+    cfg.prop.max_daily_drawdown_pct =
+        read_num("max_daily_drawdown_pct", cfg.prop.max_daily_drawdown_pct);
+    cfg.prop.max_total_drawdown_pct =
+        read_num("max_total_drawdown_pct", cfg.prop.max_total_drawdown_pct);
+    cfg.prop.warn_fraction = read_num("warn_fraction", cfg.prop.warn_fraction);
+    cfg.prop.initial_balance =
+        read_num("initial_balance", cfg.prop.initial_balance);
+    cfg.prop.flatten_on_breach =
+        SafeBool(p, "flatten_on_breach", cfg.prop.flatten_on_breach);
+    if (p.contains("daily_reset_hour_utc") &&
+        p["daily_reset_hour_utc"].is_number_integer()) {
+      cfg.prop.daily_reset_hour_utc = p["daily_reset_hour_utc"].get<int>();
+    }
+
+    // a zero or >100% limit silently disables half the protection, and a warn
+    // fraction at 1.0 means the only warning is the breach itself.
+    if (cfg.prop.enabled) {
+      auto bad_pct = [](double v) { return !(v > 0.0) || v > 1.0; };
+      if (bad_pct(cfg.prop.max_daily_drawdown_pct)) {
+        throw std::runtime_error(
+            "config error: prop.max_daily_drawdown_pct must be a fraction in "
+            "(0, 1], e.g. 0.04");
+      }
+      if (bad_pct(cfg.prop.max_total_drawdown_pct)) {
+        throw std::runtime_error(
+            "config error: prop.max_total_drawdown_pct must be a fraction in "
+            "(0, 1], e.g. 0.06");
+      }
+      if (!(cfg.prop.warn_fraction > 0.0) || cfg.prop.warn_fraction >= 1.0) {
+        throw std::runtime_error(
+            "config error: prop.warn_fraction must be in (0, 1), e.g. 0.8");
+      }
+      if (cfg.prop.daily_reset_hour_utc < 0 ||
+          cfg.prop.daily_reset_hour_utc > 23) {
+        throw std::runtime_error(
+            "config error: prop.daily_reset_hour_utc must be 0..23");
+      }
+      if (cfg.prop.initial_balance < 0.0) {
+        throw std::runtime_error(
+            "config error: prop.initial_balance must be >= 0");
+      }
+    }
+  }
 
   // --- execution ---
   ParseSection("execution", [&]() {

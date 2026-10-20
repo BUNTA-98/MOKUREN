@@ -1,6 +1,10 @@
 #include "factory.hpp"
 
+#include "binance_streamer.hpp"
+#include "bybit_broker.hpp"
+#include "bybit_streamer.hpp"
 #include "hyperliquid_broker.hpp"
+#include "venue_spec.hpp"
 
 #include <limits>
 #include <stdexcept>
@@ -101,28 +105,60 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode) {
   // pass fees and slippage to papertrader constructor
   inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss, cfg.slippage_pct, cfg.taker_fee_pct);
 
-  // execution venue selection. "hyperliquid" trades against the venue itself,
-  // so the constructor dials out to the webData2 state feed. every other
-  // exchange (and the whole backtest path) stays on the in-process
-  // PaperTrader above.
-  //
-  // the adapter is the ACTIVE broker: LiveOrchestrator::ActiveBroker() and the
-  // modules below route to it. CAUTION -- its execution path is still stubbed:
-  // ProcessSignal logs the signed-order payload instead of POSTing it, and
-  // CheckRisk does nothing, so a live run will evaluate signals and then not
-  // trade them. Verify the feed (GetBalance rise) before trusting the run.
-  if (cfg.exchange == "hyperliquid") {
+  // execution venue AND market data, resolved from one spec, so the broker and
+  // the streamer can never disagree about environment, host, category or
+  // symbol. the previous split -- a testnet broker default next to a mainnet
+  // streamer default -- was a real-money/real-data mismatch waiting for its
+  // first config.
+  if (cfg.exchange == "bybit") {
+    const mokuren::venue::Spec spec =
+        mokuren::venue::Resolve(cfg.env, cfg.category, cfg.symbol);
+
+    // explicit arguments: the streamer must never fall back to its own
+    // compiled-in (mainnet) default host.
+    inst.streamer =
+        std::make_unique<BybitDataStreamer>(spec.symbol, spec.public_ws);
+
     if (live_mode) {
-      inst.broker = std::make_unique<HyperliquidBroker>(cfg.api_key, cfg.api_secret);
-      LOG_INFO("factory: hyperliquid execution adapter constructed (live)");
+      inst.broker =
+          std::make_unique<BybitBroker>(cfg.api_key, cfg.api_secret, spec);
+      LOG_INFO("factory: bybit live {}", mokuren::venue::Manifest(spec));
+      if (cfg.position_mode != "one_way") {
+        LOG_WARN("factory: venue.position_mode='{}' is not implemented; the "
+                 "adapter sends positionIdx=0 (one-way) orders",
+                 cfg.position_mode);
+      }
     } else {
-      // a backtest must never dial out to an exchange. the adapter also
-      // trades nothing until its websocket state feed is populated, so
-      // constructing it here turned a hyperliquid-named backtest into a
-      // silent no-op.
-      LOG_INFO("factory: exchange is 'hyperliquid' but this run is not live; "
-               "using the PaperTrader");
+      LOG_INFO("factory: bybit data-only {}; using the PaperTrader",
+               mokuren::venue::Manifest(spec));
     }
+  } else if (cfg.exchange == "binance") {
+    inst.streamer = std::make_unique<BinanceDataStreamer>();
+    if (live_mode) {
+      // no binance execution adapter exists. a live run here streams real data
+      // into the PaperTrader, which is a legitimate rehearsal but must never
+      // be mistaken for real execution: the previous silent fallthrough is
+      // exactly how "bybit" looked healthy while trading nothing.
+      LOG_WARN("factory: exchange is 'binance' and this run is live, but no "
+               "binance execution adapter exists; orders go to the PaperTrader");
+    }
+  } else if (cfg.exchange == "hyperliquid") {
+    if (live_mode) {
+      // no market-data streamer exists for hyperliquid, so a live run would
+      // evaluate signals against another venue's data -- or none at all.
+      throw std::runtime_error(
+          "factory: no market-data streamer for exchange 'hyperliquid'");
+    }
+    // a backtest must never dial out to an exchange. the adapter also trades
+    // nothing until its websocket state feed is populated, so constructing it
+    // here turned a hyperliquid-named backtest into a silent no-op.
+    LOG_INFO("factory: exchange is 'hyperliquid' but this run is not live; "
+             "using the PaperTrader");
+  } else {
+    // Validate() already rejects this, but the factory must not rely on it:
+    // falling through would silently paper-trade a typo.
+    throw std::runtime_error("factory: unsupported exchange '" + cfg.exchange +
+                             "'");
   }
   
   // every module that talks to a broker binds to the ACTIVE one: the venue

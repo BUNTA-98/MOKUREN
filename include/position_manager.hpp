@@ -1,6 +1,8 @@
 #pragma once
 #include "ibroker.hpp"
+#include "logger.hpp"
 #include <cmath>
+#include <cstdint>
 #include <string>
 
 // handles active trade management, scale outs and trailing stops
@@ -24,6 +26,19 @@ private:
   double trailing_trigger_r_ = 0.0;
   double trailing_dist_r_ = 0.0;
   double scale_out_trigger_r_ = 1.0;
+
+  // a venue may reject a stop move (off-tick, rate limit, transient reject),
+  // and bybit's UpdateStopLoss deliberately does not commit local state in
+  // that case. without a cooldown the retry would fire on every tick; with
+  // one it fires at most once a second, which a minute-bar strategy can
+  // absorb without spamming the venue.
+  int64_t last_stop_attempt_ms_ = 0;
+  static constexpr int64_t kStopRetryCooldownMs = 1000;
+
+  bool CanRetryStopMove(int64_t now_ms) const {
+    if (last_stop_attempt_ms_ == 0) return true;
+    return now_ms - last_stop_attempt_ms_ >= kStopRetryCooldownMs;
+  }
 
 public:
   PositionManager(IBroker* b, bool enable_scale = false, double scale_fraction = 0.7) 
@@ -59,6 +74,7 @@ public:
     if (!broker_->HasOpenPosition()) {
       stop_moved_to_be_ = false;
       scaled_out_ = false;
+      last_stop_attempt_ms_ = 0;
       return;
     }
 
@@ -83,13 +99,31 @@ public:
       scaled_out_ = true;
     }
 
-    // secure profit and protect the trade
+    // secure profit and protect the trade.
+    //
+    // confirm the write actually landed. a venue that rejected the move
+    // leaves the broker's stop at the previous value; latching
+    // stop_moved_to_be_ here regardless is how a break-even went missing on
+    // a prop account without a single warning. retry on a cooldown rather
+    // than per-tick, so a persistent reject cannot turn into a rate-limit
+    // ban (or a blocked worker thread).
     if (!stop_moved_to_be_ && profit >= be_trigger_r_ * risk_distance) {
       const double be_stop =
           is_long ? pos.entry_price + be_target_r_ * risk_distance
                   : pos.entry_price - be_target_r_ * risk_distance;
-      broker_->UpdateStopLoss(be_stop);
-      stop_moved_to_be_ = true;
+      if (CanRetryStopMove(current_time)) {
+        const double before = pos.stop_loss;
+        broker_->UpdateStopLoss(be_stop);
+        const double after = broker_->GetCurrentPosition().stop_loss;
+        if (std::abs(after - before) > 1e-12) {
+          stop_moved_to_be_ = true;
+        } else {
+          last_stop_attempt_ms_ = current_time;
+          LOG_WARN("PositionManager: break-even move to {} did not take "
+                   "(broker stop still {}); will retry",
+                   be_stop, before);
+        }
+      }
     }
 
     // ratchet the stop behind price once the trailing trigger is reached.
@@ -100,7 +134,17 @@ public:
       // never move the stop backwards.
       if ((is_long && trail_stop > pos.stop_loss) ||
           (!is_long && trail_stop < pos.stop_loss)) {
-        broker_->UpdateStopLoss(trail_stop);
+        if (CanRetryStopMove(current_time)) {
+          const double before = pos.stop_loss;
+          broker_->UpdateStopLoss(trail_stop);
+          const double after = broker_->GetCurrentPosition().stop_loss;
+          if (std::abs(after - before) <= 1e-12) {
+            last_stop_attempt_ms_ = current_time;
+            LOG_WARN("PositionManager: trail move to {} did not take "
+                     "(broker stop still {}); will retry",
+                     trail_stop, before);
+          }
+        }
       }
     }
   }

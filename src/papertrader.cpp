@@ -255,6 +255,23 @@ void PaperTrader::ClosePartial(double fraction, double current_price, int64_t cu
     // the live broadcaster reads this after any exit, not just a full close.
     last_closed_size_ = close_volume;
     position_size -= close_volume; 
+
+    // a full reduction through this path -- the prop guard's flatten, or an
+    // explicit ClosePartial(1.0) -- must leave the same clean state as
+    // ClosePosition. otherwise position_direction_ and entry_price survive a
+    // closed position and GetCurrentPosition reports one that does not exist.
+    if (position_size <= 0.0) {
+      position_size = 0.0;
+      entry_price = 0.0;
+      current_sl_ = 0.0;
+      current_tp_ = 0.0;
+      entry_time_ = 0;
+      current_entry_fee_ = 0.0;
+      sl_moved_to_be_ = false;
+      has_scaled_out_ = false;
+      position_direction_ = SignalDirection::NONE;
+      current_stop_history_.clear();
+    }
 }
 
 void PaperTrader::ClosePosition(double current_price, const std::string &reason, int64_t current_time) {

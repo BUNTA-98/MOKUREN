@@ -1,9 +1,11 @@
 #pragma once
 
 #include "ibroker.hpp"
+#include "venue_spec.hpp"
 
 #include <ixwebsocket/IXWebSocket.h>
 #include <ixwebsocket/IXWebSocketMessage.h>
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -20,9 +22,11 @@
 // subscription to the "position" and "execution" channels.
 class BybitBroker : public IBroker {
 public:
+    // the spec carries env, category, symbol and every host. there is no
+    // default here on purpose: a venue cannot be selected by omission.
     BybitBroker(const std::string& api_key,
                 const std::string& api_secret,
-                bool is_testnet = true);
+                mokuren::venue::Spec spec);
     ~BybitBroker() override;
 
     // stop the heartbeat and the private websocket. idempotent; also invoked
@@ -61,9 +65,38 @@ public:
     void HandlePrivateMessage(const std::string& payload);
 
 private:
+    // ---- live-exchange truth, fetched once at construction ----
+    //
+    // all three run before the first signal and before any order can be sent.
+    // they turn "a default we guessed" into "what the venue actually says",
+    // which is the only defensible basis for sizing and for HasOpenPosition().
+    // clock/startup facts are established once, before the websocket thread
+    // and the engine thread exist, so the fields they fill need no lock.
+    void EstablishStartupTruth();
+    void SyncClock();            // server-time offset; throws if unusable
+    bool FetchInstrumentRules(); // tick/qtyStep/minQty/minNotional/maxLeverage
+    void ReconcileAccount();     // adopt an existing position, do not re-enter
+
+    // local time plus the measured server offset. every signature is stamped
+    // with this: a few seconds of drift makes valid auth look like a bad key.
+    // defined in the .cpp because NowMillis() is a file-local helper there;
+    // an inline body here could not see it.
+    int64_t NowSignedMillis() const;
+
     // ---- REST plumbing ----
-    void SendRestRequest(const std::string& method, const std::string& endpoint,
-                         const std::string& payload);
+    // returns the exchange retCode (0 = accepted), or -1 on transport/HTTP
+    // failure. callers that submit an entry need the distinction.
+    int SendRestRequest(const std::string& method, const std::string& endpoint,
+                        const std::string& payload);
+
+    // signed GET. separate from SendRestRequest because a GET signs its query
+    // string and carries no body.
+    bool SendRestGet(const std::string& path, const std::string& query,
+                     nlohmann::json& out);
+
+    // true while a submitted entry awaits its exchange echo. expires so a lost
+    // push cannot leave the local guard stuck forever.
+    bool PendingEntryLocked() const;
 
     // ---- private websocket plumbing ----
     void ConnectPrivateStream();
@@ -76,9 +109,30 @@ private:
     // ---- credentials / endpoint routing ----
     std::string api_key_;
     std::string api_secret_;
-    bool is_testnet_ = true;
+    mokuren::venue::Spec spec_;
     std::string rest_base_url_;
     std::string private_ws_url_;
+
+    // what this symbol actually accepts. filled by FetchInstrumentRules()
+    // before any thread starts; reading it from the engine thread afterwards
+    // is safe because it is written exactly once, at construction.
+    struct InstrumentRules {
+        double tick_size = 0.0;
+        double qty_step = 0.0;    // order quantity granularity
+        double min_qty = 0.0;     // minOrderQty
+        double min_notional = 0.0; // minNotionalValue (0 = no floor published)
+        double max_leverage = 0.0;
+        bool valid = false;
+    };
+    InstrumentRules rules_;
+
+    // measured server-minus-local offset. signing against local time is the
+    // most common cause of a "bad signature" that is really a clock problem.
+    int64_t clock_offset_ms_ = 0;
+
+    // monotonic tag for orderLinkId, so a retried or duplicated submit can be
+    // told apart from a new intent. written on the engine thread only.
+    uint64_t order_seq_ = 0;
 
     // listens to the private channel for execution + position updates
     ix::WebSocket private_ws_;
@@ -104,6 +158,12 @@ private:
     double last_closed_size_ = 0.0;
     TradeSignal current_position_;
     std::vector<TradeRecord> trade_history_;
+
+    // set between a submitted entry and its execution/reject echo. the getters
+    // are const and may expire a stale flag while serving a read, hence
+    // mutable.
+    mutable bool pending_entry_ = false;
+    mutable int64_t pending_since_ms_ = 0;
 
     // ---- stop management state (CheckRisk -> UpdateStopLoss) ----
     double current_sl_ = 0.0;

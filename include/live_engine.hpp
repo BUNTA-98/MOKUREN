@@ -4,6 +4,7 @@
 #include "ibroker.hpp"
 #include "live_streamer.hpp"
 #include "logger.hpp"
+#include "prop_guard.hpp"
 #include "redis_publisher.hpp"
 #include <atomic>
 #include <condition_variable>
@@ -40,7 +41,8 @@ public:
                    double sl_pct, double tp_pct,
                    std::string redis_host = "127.0.0.1",
                    int redis_port = 6379,
-                   std::string symbol = "BTCUSDT");
+                   std::string symbol = "BTCUSDT",
+                   mokuren::PropRules prop_rules = {});
   ~LiveOrchestrator();
 
   // non-copyable / non-movable (owns threads and a unique engine).
@@ -65,6 +67,13 @@ public:
 
   // number of events dropped due to queue overflow (for monitoring).
   size_t DroppedEvents() const { return dropped_.load(std::memory_order_relaxed); }
+
+  // true once an event was dropped for queue overflow. a dropped trade loses a
+  // print; a dropped l2 snapshot leaves the book stale while triggers keep
+  // being evaluated against it. new entries are refused from that point on:
+  // the position stays protected by the venue-side stop, but the engine no
+  // longer pretends to know the book.
+  bool BookDegraded() const { return book_degraded_.load(std::memory_order_acquire); }
 
   // true once the market streamer signalled a clean end of input (replay eof,
   // or the venue closed the socket) or an unrecoverable transport error. the
@@ -100,6 +109,12 @@ private:
   // worker thread entry point: drains the queue and feeds the engine.
   void WorkerLoop();
 
+  // evaluate the funded-account drawdown limits against the active broker's
+  // equity, and flatten once if a limit is breached. called from the worker on
+  // every trade print: equity only moves when something fills, so that is the
+  // natural cadence and it costs a handful of comparisons.
+  void CheckPropGuard(int64_t now_ms, double price);
+
   // push an event; returns false if the queue is full (event dropped).
   bool Push(Event&& ev);
 
@@ -122,6 +137,13 @@ private:
   // symbol used in broadcast events (e.g. "BTCUSDT").
   std::string symbol_;
 
+  // funded-account survival limits. one policy, evaluated identically on the
+  // paper and venue paths: an account limit is not a strategy parameter, and
+  // it must not live inside a broker or a sizer where only one path sees it.
+  // worker-thread only, so it needs no lock.
+  mokuren::PropGuard prop_guard_;
+  mokuren::PropDecision last_prop_decision_;
+
   // non-blocking redis pub/sub broadcaster for live events.
   std::unique_ptr<RedisPublisher> redis_publisher_;
 
@@ -134,6 +156,7 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_{false};
   std::atomic<size_t> dropped_{0};
+  std::atomic<bool> book_degraded_{false};
 
   // set by the finished/error sinks. kept separate from shutdown_ so the
   // owner can tell "the stream ended on its own" from "we asked it to stop".

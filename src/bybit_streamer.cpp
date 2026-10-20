@@ -37,11 +37,29 @@ void BybitDataStreamer::Start() {
         // the subscription must be sent after the handshake completes.
         SendSubscription();
         break;
-      case ix::WebSocketMessageType::Close:
+      case ix::WebSocketMessageType::Close: {
         LOG_WARN(">>> WEBSOCKET CLOSED (code={}, reason={})", msg->closeInfo.code, msg->closeInfo.reason);
+        // running_ is cleared by Stop() *before* web_socket_.stop(), so a
+        // close observed while it is still set was not asked for. report it:
+        // this socket does not reconnect, and without the error the worker
+        // waits on an empty queue forever and the run looks like a quiet
+        // market. running_ is deliberately left untouched here so Stop() still
+        // runs its full teardown and joins the heartbeat thread.
+        if (running_.load(std::memory_order_acquire)) {
+          const std::string reason = msg->closeInfo.reason.empty()
+                                         ? std::string("websocket closed by peer")
+                                         : "websocket closed: " + msg->closeInfo.reason;
+          EmitError(reason);
+        }
         break;
+      }
       case ix::WebSocketMessageType::Error:
         LOG_ERROR(">>> WEBSOCKET ERROR ({}): {} <<<", msg->errorInfo.http_status, msg->errorInfo.reason);
+        if (running_.load(std::memory_order_acquire)) {
+          EmitError(msg->errorInfo.reason.empty()
+                        ? std::string("websocket transport error")
+                        : msg->errorInfo.reason);
+        }
         break;
       case ix::WebSocketMessageType::Message:
         OnMessage(msg->str);

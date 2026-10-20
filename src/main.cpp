@@ -1,8 +1,6 @@
 #include "logger.hpp"
 #include "live_debug.hpp"
 #include "ui_manager.hpp"
-#include "binance_streamer.hpp"
-#include "bybit_streamer.hpp"
 #include "live_engine.hpp"
 #include "config_parser.hpp"
 #include "factory.hpp"
@@ -61,30 +59,31 @@ void RunLive(const std::string& config_path) {
 
   AppConfig cfg = AppConfig::Load(cfg_json);
 
-  // pick the data source first, and never fall back to a different venue: a
-  // hyperliquid run priced off binance data is worse than refusing to start.
-  // this used to run after Build(), so an exchange without a streamer left a
-  // live venue adapter -- and its state-feed websocket -- constructed behind
-  // a throw.
-  std::unique_ptr<IMarketStreamer> streamer;
-  if (cfg.exchange == "bybit") {
-    streamer = std::make_unique<BybitDataStreamer>();
-  } else if (cfg.exchange == "binance") {
-    streamer = std::make_unique<BinanceDataStreamer>();
-  } else {
-    throw std::runtime_error(
-        "live mode: no market-data streamer for exchange '" + cfg.exchange +
-        "' (supported: binance, bybit)");
-  }
-
   // live_mode=true is what lets the factory construct a venue adapter. the
   // backtest/WFA/replay paths keep the default (false) and can never dial out.
   EngineInstance engine = StrategyFactory::Build(cfg, /*live_mode=*/true);
 
+  // the streamer is built by the factory from the same resolved venue spec as
+  // the broker. deciding it here, independently, is how a bybit config ended
+  // up streaming mainnet data into a testnet broker.
+  if (!engine.streamer) {
+    throw std::runtime_error("live mode: no market-data streamer for exchange '" +
+                             cfg.exchange + "'");
+  }
+  auto streamer = std::move(engine.streamer);
+
   // risk parameters come from the config. the old literal 1%/1% silently
-  // overrode every tuned backtest.
+  // overrode every tuned backtest. the symbol comes from the same venue spec
+  // the broker and streamer were built from: leaving it at the ctor default
+  // made every redis event name BTCUSDT regardless of the instrument traded.
+  // the account's survival rules travel with the config, not with the broker:
+  // the guard must behave the same whether orders go to the paper account or
+  // to a funded venue.
   LiveOrchestrator orchestrator(std::move(engine), std::move(streamer),
-                                cfg.sl_pct, cfg.tp_pct);
+                                cfg.sl_pct, cfg.tp_pct,
+                                /*redis_host=*/"127.0.0.1", /*redis_port=*/6379,
+                                cfg.symbol,
+                                /*prop_rules=*/cfg.prop);
 
   if (!orchestrator.Start()) {
     LOG_ERROR("live mode: failed to start orchestrator");

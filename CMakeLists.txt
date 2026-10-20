@@ -145,3 +145,22 @@ target_link_libraries(tui_dashboard PRIVATE
   PkgConfig::NOTCURSES
   PkgConfig::HIREDIS
 )
+
+# --- read-only venue doctor ---
+# explicit source list, kept outside the src/*.cpp globs: engine_tests must not
+# link this tool, and it owns its own main().
+add_executable(venue_doctor
+  tools/venue_doctor.cpp
+  src/venue_spec.cpp
+)
+
+target_include_directories(venue_doctor PRIVATE include ${ixwebsocket_SOURCE_DIR})
+
+target_link_libraries(venue_doctor PRIVATE
+  Threads::Threads
+  nlohmann_json::nlohmann_json
+  ixwebsocket
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
+)

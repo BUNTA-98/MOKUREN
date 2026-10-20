@@ -8,6 +8,9 @@
 #include <vector>
 #include <thread>
 
+#include "prop_guard.hpp"
+#include "venue_spec.hpp"
+
 using json = nlohmann::json;
 
 // holds json and specific grid values for one run
@@ -75,7 +78,27 @@ struct AppConfig {
   std::string api_secret = "";
   // fail safe: default to testnet so a missing or misspelled key in the
   // config can never silently route live orders to api.bybit.com.
+  //
+  // LEGACY: a bool cannot express demo, so this only distinguishes testnet
+  // from mainnet. `env` below is authoritative; this field is kept so old
+  // configs keep working and so nothing reads two different truths.
   bool is_testnet = true;
+
+  // venue identity. one object the broker and the market-data streamer both
+  // take, so they cannot disagree about host, category or symbol.
+  mokuren::venue::Env env = mokuren::venue::Env::Testnet;
+  std::string category = "linear";
+  std::string symbol = "BTCUSDT";
+  std::string position_mode = "one_way"; // "one_way" | "hedge"
+  // mainnet spends real money. requiring an explicit opt-in turns a config
+  // typo into a startup abort instead of a funded order.
+  bool allow_mainnet = false;
+
+  // funded-account survival limits (hyrotrader: 4% daily, 6% total). enforced
+  // by one guard on every path, independent of sl_pct/tp_r -- a strategy's
+  // per-trade risk and the account's lifetime limits are different questions.
+  mokuren::PropRules prop;
+
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
   int vwap_reset_hour = 0;

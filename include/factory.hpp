@@ -4,6 +4,7 @@
 #include "config_parser.hpp"
 #include "filter.hpp"
 #include "ibroker.hpp"
+#include "live_streamer.hpp"
 #include "papertrader.hpp"
 #include "position_manager.hpp"
 #include "position_sizer.hpp"
@@ -17,12 +18,19 @@ struct EngineInstance {
   std::unique_ptr<Aggregator> aggregator;
   std::unique_ptr<Aggregator> htf_aggregator;
   std::unique_ptr<PaperTrader> ptrader;
-  // live execution venue. null on the paper/backtest path; set to a
-  // HyperliquidBroker when the config selects exchange "hyperliquid".
+  // live execution venue. null on the paper/backtest path; set to a BybitBroker
+  // when the config selects exchange "bybit" and the run is live.
   // when set, LiveOrchestrator::ActiveBroker() and every module that takes an
   // IBroker* (PositionManager, PositionSizer, the risk firewall) are bound to
   // it instead of ptrader -- ptrader remains constructed but is bypassed.
   std::unique_ptr<IBroker> broker;
+
+  // live market-data source, built from the same venue spec as broker. kept
+  // here so the two can only ever be constructed together: deciding them in
+  // different places is how a config streamed mainnet data into a testnet
+  // account. null on the backtest path.
+  std::unique_ptr<IMarketStreamer> streamer;
+
   std::unique_ptr<PositionManager> pos_manager;
   std::unique_ptr<PositionSizer> sizer;
 

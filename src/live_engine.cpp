@@ -12,14 +12,46 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
                                    std::unique_ptr<IMarketStreamer> streamer,
                                    double sl_pct, double tp_pct,
                                    std::string redis_host, int redis_port,
-                                   std::string symbol)
+                                   std::string symbol,
+                                   mokuren::PropRules prop_rules)
     : engine_(std::move(engine)),
       streamer_(std::move(streamer)),
       sl_pct_(sl_pct),
       tp_pct_(tp_pct),
-      symbol_(std::move(symbol)) {
+      symbol_(std::move(symbol)),
+      prop_guard_(prop_rules) {
   LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={} symbol={})",
            kMaxQueueDepth, sl_pct_, tp_pct_, symbol_);
+
+  // say out loud whether the account's survival rules are enforced. a prop run
+  // with the guard off is the one configuration where a single bad day ends
+  // the account, so it must never be silent.
+  if (prop_rules.enabled) {
+    LOG_INFO("LiveOrchestrator: prop guard armed (daily={}% total={}% "
+             "warn_at={} of limit reset_hour={}z flatten={} initial_balance={})",
+             prop_rules.max_daily_drawdown_pct * 100.0,
+             prop_rules.max_total_drawdown_pct * 100.0,
+             prop_rules.warn_fraction, prop_rules.daily_reset_hour_utc,
+             prop_rules.flatten_on_breach ? "on" : "off",
+             prop_rules.initial_balance > 0.0
+                 ? std::to_string(prop_rules.initial_balance)
+                 : std::string("derived from first equity reading"));
+  } else {
+    LOG_WARN("LiveOrchestrator: prop guard DISABLED -- no account-level "
+             "drawdown limit is enforced on this run");
+  }
+
+  // a funded balance next to a paper account halts instantly: 100k of starting
+  // equity measured against a 10k paper balance is a 90% drawdown before the
+  // first trade, and the guard would then refuse every entry in silence.
+  if (prop_rules.enabled && !engine_.broker &&
+      prop_rules.initial_balance > 0.0 &&
+      std::abs(prop_rules.initial_balance - PaperTrader::kInitialBalance) > 1.0) {
+    LOG_WARN("LiveOrchestrator: prop.initial_balance={} does not match the "
+             "paper account's {} -- this run starts past the total drawdown "
+             "limit and will refuse every entry",
+             prop_rules.initial_balance, PaperTrader::kInitialBalance);
+  }
 
   // start the async broadcaster. it owns its own worker thread and
   // never blocks the trading loop.
@@ -58,11 +90,18 @@ bool LiveOrchestrator::Start() {
 
   shutdown_.store(false, std::memory_order_release);
   dropped_.store(0, std::memory_order_relaxed);
+  book_degraded_.store(false, std::memory_order_release);
   stream_ended_.store(false, std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stream_error_.clear();
   }
+
+  // clear the per-run halt latches. the total-drawdown base survives (it is a
+  // config constant), so a restart keeps measuring from the funded balance
+  // instead of quietly re-deriving it from a reduced equity.
+  prop_guard_.Reset();
+  last_prop_decision_ = mokuren::PropDecision{};
 
   if (!streamer_) {
     LOG_ERROR("LiveOrchestrator::Start: no streamer attached");
@@ -90,9 +129,14 @@ bool LiveOrchestrator::Start() {
   }
 
   if (engine_.broker) {
+    // a venue adapter sizes from exchange equity, which only arrives on the
+    // private wallet stream. until that frame lands GetBalance() is 0.0, the
+    // sizer produces no volume, and the first signals are dropped. say it once
+    // at start instead of leaving it to be inferred from silence.
     LOG_WARN("LiveOrchestrator: routing orders to the live venue adapter "
-             "instead of the PaperTrader -- confirm the adapter's execution "
-             "path is implemented before trusting this run");
+             "(equity={}) -- signals are suppressed until the wallet stream "
+             "reports a balance",
+             engine_.broker->GetBalance());
   }
 
   LOG_INFO("LiveOrchestrator: starting worker thread");
@@ -244,12 +288,98 @@ void LiveOrchestrator::RequestShutdown() {
   cv_.notify_all();
 }
 
+void LiveOrchestrator::CheckPropGuard(int64_t now_ms, double price) {
+  IBroker* broker = ActiveBroker();
+  if (!broker) return;
+
+  // GetBalance() is mark-to-market equity on the venue path (wallet
+  // totalEquity, which includes open pnl) -- that is what the firm measures.
+  //
+  // a paper account's balance only moves when a trade closes, so measuring it
+  // directly made the guard report realised drawdown and look safer than live
+  // while a losing trade was open. derive the floating leg from the open
+  // position instead. entry/exit fees are not subtracted here; on a 4-6% limit
+  // they are noise, and CheckRisk already folds them into its own drawdown
+  // tracking.
+  double equity = broker->GetBalance();
+  if (engine_.ptrader && broker == engine_.ptrader.get() && price > 0.0) {
+    const TradeSignal pos = broker->GetCurrentPosition();
+    if (pos.volume > 0.0 && pos.entry_price > 0.0 &&
+        pos.direction != SignalDirection::NONE) {
+      const double dir = pos.direction == SignalDirection::BUY ? 1.0 : -1.0;
+      equity += (price - pos.entry_price) * pos.volume * dir;
+    }
+  }
+  const mokuren::PropDecision d = prop_guard_.Observe(equity, now_ms);
+
+  // log transitions only: this runs on every print, and a warning repeated
+  // thousands of times buries the one line that mattered.
+  if (d.state != last_prop_decision_.state) {
+    switch (d.state) {
+      case mokuren::PropState::Unarmed:
+        LOG_WARN("prop guard: {} (equity={})", d.reason, equity);
+        break;
+      case mokuren::PropState::Normal:
+        LOG_INFO("prop guard: {} (equity={} daily_dd={}% total_dd={}%)",
+                 d.reason, equity, prop_guard_.daily_drawdown() * 100.0,
+                 prop_guard_.total_drawdown() * 100.0);
+        break;
+      case mokuren::PropState::Warning:
+        LOG_WARN("prop guard: {} -- no new entries (daily_dd={}% total_dd={}%)",
+                 d.reason, prop_guard_.daily_drawdown() * 100.0,
+                 prop_guard_.total_drawdown() * 100.0);
+        break;
+      case mokuren::PropState::DailyHalted:
+      case mokuren::PropState::TotalHalted:
+        LOG_ERROR("prop guard: {} -- no new entries (daily_dd={}% total_dd={}%)",
+                  d.reason, prop_guard_.daily_drawdown() * 100.0,
+                  prop_guard_.total_drawdown() * 100.0);
+        break;
+    }
+    last_prop_decision_ = d;
+  }
+
+  if (!d.should_flatten) return;
+
+  // the breach ends the run's right to hold risk, so the position goes flat
+  // now instead of waiting for the stop. flatten is emitted once, on the
+  // transition: repeating it every print would spray reduce-only orders at a
+  // venue that already closed the position.
+  PublishEvent("PROP_HALT", price, 0.0, now_ms);
+  LOG_ERROR("prop guard: {} -- flattening the open position at {}",
+            d.reason, price);
+
+  double flatten_price = price;
+  if (!(flatten_price > 0.0) && engine_.aggregator) {
+    flatten_price = engine_.aggregator->GetLatestL2().best_bid_price;
+  }
+  if (!(flatten_price > 0.0)) {
+    LOG_ERROR("prop guard: no usable price to flatten at; the venue-side stop "
+              "remains the only protection on this position");
+    return;
+  }
+
+  const bool was_open = broker->HasOpenPosition();
+  broker->ClosePartial(1.0, flatten_price, now_ms, "prop_guard");
+  if (was_open) {
+    PublishEvent("POSITION_CLOSED", flatten_price,
+                 broker->GetLastClosedSize(), now_ms);
+  }
+}
+
 bool LiveOrchestrator::Push(Event&& ev) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (queue_.size() >= kMaxQueueDepth) {
       // drop the newest event to keep the queue bounded.
       size_t n = dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+      // latch the degraded state: from here the book is no longer a faithful
+      // picture of the venue, so entries stop. this used to be a counter only,
+      // which meant the engine kept opening positions against a stale book.
+      if (!book_degraded_.exchange(true, std::memory_order_acq_rel)) {
+        LOG_ERROR("LiveOrchestrator: event queue overflow -- the local book is "
+                  "now stale; refusing new entries for the rest of the run");
+      }
       // log every 1024th drop to avoid spamming the audit log.
       if ((n & 0x3FF) == 1) {
         LOG_WARN("LiveOrchestrator: queue overflow, dropped {} events so far",
@@ -290,7 +420,29 @@ void LiveOrchestrator::WorkerLoop() {
                                int64_t ts) {
     if (raw_sig.direction == SignalDirection::NONE) return;
 
+    // no new risk on a book we know is stale. existing positions are untouched:
+    // their hard stop sits on the venue and exits still run through
+    // PositionManager / CheckRisk.
+    if (BookDegraded()) {
+      LOG_ERROR("live: refusing a {} signal: the event queue overflowed and "
+                "the local book is stale",
+                raw_sig.direction == SignalDirection::BUY ? "long" : "short");
+      return;
+    }
+
     const bool is_long = raw_sig.direction == SignalDirection::BUY;
+
+    // the account's survival limits outrank the strategy. this sits after the
+    // stale-book gate because a stale book is the more immediate reason to
+    // stand down, and before sizing because there is no point sizing a trade
+    // that will not be sent.
+    if (!prop_guard_.allow_new_entry()) {
+      LOG_WARN("live: refusing a {} signal: prop guard state {} ({})",
+               is_long ? "long" : "short",
+               static_cast<int>(prop_guard_.state()),
+               last_prop_decision_.reason);
+      return;
+    }
 
     // the stop is the strategy's own risk. the engine never synthesises one
     // from risk.sl_pct: inventing a stop would silently redefine 1R and move
@@ -415,6 +567,12 @@ void LiveOrchestrator::WorkerLoop() {
       }
 
       case Event::Type::TRADE: {
+        // the account guard runs before anything can act on this print: a
+        // breach must refuse the trade, not race it. on the venue path the
+        // equity behind it arrives asynchronously on the private wallet
+        // stream, so this reads the most recent value the broker holds.
+        CheckPropGuard(ev.trade.timestamp, ev.trade.price);
+
         // 1. position manager update (trailing / be / scale-out bookkeeping).
         if (engine_.pos_manager) {
           engine_.pos_manager->Update(ev.trade.price, ev.trade.timestamp);
