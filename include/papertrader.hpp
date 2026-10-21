@@ -13,7 +13,13 @@ public:
   // copied into the constructor, GetNetProfit and the WFA summary.
   static constexpr double kInitialBalance = 10000.0;
 
-  PaperTrader(double max_dl = 400.0, double slip = 0.0002, double taker_fee = 0.0004);
+  // initial_balance seeds the account. --paper (shadow) runs pass
+  // cfg.initial_balance so drawdown is measured against the capital the
+  // account will actually be funded with; every other path keeps the
+  // compile-time default and therefore behaves exactly as before.
+  PaperTrader(double max_dl = 400.0, double slip = 0.0002,
+              double taker_fee = 0.0004,
+              double initial_balance = kInitialBalance);
 
   // basic state getters
   double GetBalance() const override { return balance; }
@@ -31,7 +37,11 @@ public:
   int GetTradesBE() const { return trades_be; } 
   int GetTotalTrades() const { return trades_won + trades_lost + trades_be; }
   double GetTotalFeesPaid() const { return total_fees_paid; }
-  double GetNetProfit() const { return balance - kInitialBalance; }
+  // net of the balance this account actually started with. subtracting the
+  // compile-time constant reported a seeded account (--paper with
+  // initial_balance=50000) as +40000 on its first tick, and would have made a
+  // losing shadow run look profitable.
+  double GetNetProfit() const { return balance - initial_balance_; }
   double GetMaxDrawdown() const { return max_drawdown_pct_; }
   std::vector<TradeRecord> GetTradeHistory() const override { return trade_history_; }
   // single-threaded paper account: no lock needed, unlike the ws-backed brokers.
@@ -72,6 +82,9 @@ private:
   // account (the WFA aggregation and PositionSizer::GetBalance read it early).
   double balance = kInitialBalance;
   double peak_balance_ = kInitialBalance;
+  // the seed this account started from. kept so GetNetProfit and the drawdown
+  // math measure against the funded capital rather than the 10k default.
+  double initial_balance_ = kInitialBalance;
   double max_drawdown_pct_ = 0.0;
   
   // position state

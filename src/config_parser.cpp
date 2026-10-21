@@ -199,7 +199,7 @@ void FlattenGrids(json& j) {
 // AppConfig::Validate
 // ============================================================================
 
-void AppConfig::Validate() const {
+void AppConfig::Validate(bool require_venue_credentials) const {
   auto fail = [](const std::string& msg) {
     throw std::invalid_argument("AppConfig validation failed: " + msg);
   };
@@ -208,7 +208,7 @@ void AppConfig::Validate() const {
   // live venues require real credentials. without this check a blank key only
   // surfaces as a signed-request failure (Bybit retCode 10003) at the first
   // order, long after startup.
-  if (exchange == "bybit") {
+  if (require_venue_credentials && exchange == "bybit") {
     if (api_key.empty()) {
       fail("api_key must not be empty when exchange is \"bybit\"");
     }
@@ -284,6 +284,13 @@ void AppConfig::Validate() const {
   }
   if (max_daily_loss <= 0.0) {
     fail("risk.max_daily_loss must be > 0.0 (got " + std::to_string(max_daily_loss) + ")");
+  }
+  // starting capital is the denominator of every drawdown figure
+  // (PaperTrader::UpdateDrawdown divides by peak_balance_). a zero or negative
+  // seed produced NaN drawdowns instead of an error.
+  if (!(initial_balance > 0.0) || !std::isfinite(initial_balance)) {
+    fail("initial_balance must be a finite number > 0 (got " +
+         std::to_string(initial_balance) + ")");
   }
 
   // --- trade management ---
@@ -508,7 +515,7 @@ void ParseSection(const std::string& section, Fn&& fn) {
 
 } // namespace
 
-AppConfig AppConfig::Load(const json& j) {
+AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   AppConfig cfg;
 
   // --- auth ---
@@ -534,6 +541,12 @@ AppConfig AppConfig::Load(const json& j) {
     // cfg.is_testnet already defaults to true, so it doubles as the fallback.
     cfg.is_testnet = SafeBool(j, "is_testnet", SafeBool(*creds, "is_testnet", cfg.is_testnet));
   });
+
+  // --- paper account starting capital ---
+  // only consumed in --paper (shadow) mode, where the factory hands this to
+  // PaperTrader instead of the compile-time default. optional on purpose: a
+  // config that omits it must behave exactly like today's paper runs.
+  cfg.initial_balance = SafeNumber(j, "initial_balance", cfg.initial_balance);
 
   // --- environment ---
   ParseSection("environment", [&]() {
@@ -827,7 +840,7 @@ AppConfig AppConfig::Load(const json& j) {
   });
 
   // fail fast: abort before any EngineInstance is built
-  cfg.Validate();
+  cfg.Validate(require_venue_credentials);
 
   return cfg;
 }

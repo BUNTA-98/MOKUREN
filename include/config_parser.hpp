@@ -136,13 +136,24 @@ struct AppConfig {
   double min_distance_dollars = 0.0;
   double max_daily_loss = 400.0;
 
+  // starting capital for the paper account. only consumed in --paper (shadow)
+  // mode, where the factory hands this to PaperTrader instead of the
+  // compile-time default. defaults to PaperTrader::kInitialBalance so a config
+  // that omits the key behaves exactly like today's paper runs.
+  double initial_balance = 10000.0;
+
   // strict validation of all critical bounds.
   // throws std::invalid_argument with a precise message on the first violation.
-  void Validate() const;
+  //
+  // require_venue_credentials is false for a shadow run (--paper): it only
+  // subscribes to the public websocket and never signs a request, so a blank
+  // api key is not an error there. every path that can place an order keeps
+  // the default (true) and the strict check.
+  void Validate(bool require_venue_credentials = true) const;
 
   // parse json to struct.
   // throws std::runtime_error with the failing section name on json type errors.
-  static AppConfig Load(const json& j);
+  static AppConfig Load(const json& j, bool require_venue_credentials = true);
 };
 
 // recursively walk a json tree and collapse any grid definition object

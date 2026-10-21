@@ -76,6 +76,12 @@ public:
   // longer pretends to know the book.
   bool BookDegraded() const { return book_degraded_.load(std::memory_order_acquire); }
 
+  // true while the streamer has signalled a book gap (reconnect, unexpected
+  // close, transport error). unlike book_degraded_, this is recoverable: the
+  // next real l2 snapshot clears it. new entries are refused while it is set,
+  // because the local book is not a faithful picture of the venue.
+  bool BookGap() const { return book_gap_.load(std::memory_order_acquire); }
+
   // true once the market streamer signalled a clean end of input (replay eof,
   // or the venue closed the socket) or an unrecoverable transport error. the
   // worker drains and exits; the owner should then call Stop() to flush.
@@ -102,10 +108,18 @@ private:
   // streamer callback (it never joins).
   void RequestShutdown();
 
-  // publish a structured json event to the redis pub/sub channel.
-  // action is e.g. "TRADE_OPEN" or "POSITION_CLOSED".
-  void PublishEvent(const char* action, double price, double size,
-                    int64_t timestamp);
+  // publish a TRADE_OPEN event carrying the signal that was actually placed
+  // (direction, entry, stop, target, volume). the executor has already
+  // validated the stop and sized the volume by the time this runs, so these
+  // are the levels the broker received -- not the raw trigger output.
+  void PublishOpenEvent(const TradeSignal& signal, int64_t timestamp);
+
+  // publish a POSITION_CLOSED event carrying the trade's pnl and exit reason.
+  // those only exist in the broker's trade log, so this must be called after
+  // the close has been booked. a scale-out appends one record per fragment,
+  // and the pnl reported is the sum of the fragments sharing the newest
+  // entry_time -- the whole trade, not just its final piece.
+  void PublishCloseEvent(double price, int64_t timestamp);
 
   // worker thread entry point: drains the queue and feeds the engine.
   void WorkerLoop();
@@ -163,6 +177,7 @@ private:
   std::atomic<bool> shutdown_{false};
   std::atomic<size_t> dropped_{0};
   std::atomic<bool> book_degraded_{false};
+  std::atomic<bool> book_gap_{false};
 
   // set by the finished/error sinks. kept separate from shutdown_ so the
   // owner can tell "the stream ended on its own" from "we asked it to stop".

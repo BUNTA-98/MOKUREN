@@ -35,9 +35,24 @@ private:
   int64_t last_stop_attempt_ms_ = 0;
   static constexpr int64_t kStopRetryCooldownMs = 1000;
 
+  // trailing has its own clock and its own gates. the break-even branch
+  // latches stop_moved_to_be_ on success, but the trailing branch recomputes
+  // the same trail on every tick once it is active; without a cooldown and a
+  // minimum step, that is a REST call per tick. the cooldown bounds the rate,
+  // the minimum step suppresses no-op moves (a trail that would land within
+  // 0.1R of the current stop is not worth a round-trip).
+  int64_t last_trailing_attempt_ms_ = 0;
+  static constexpr int64_t kTrailingCooldownMs = 5000;
+  static constexpr double kTrailingMinStepR = 0.1;
+
   bool CanRetryStopMove(int64_t now_ms) const {
     if (last_stop_attempt_ms_ == 0) return true;
     return now_ms - last_stop_attempt_ms_ >= kStopRetryCooldownMs;
+  }
+
+  bool CanRetryTrailing(int64_t now_ms) const {
+    if (last_trailing_attempt_ms_ == 0) return true;
+    return now_ms - last_trailing_attempt_ms_ >= kTrailingCooldownMs;
   }
 
 public:
@@ -75,6 +90,7 @@ public:
       stop_moved_to_be_ = false;
       scaled_out_ = false;
       last_stop_attempt_ms_ = 0;
+      last_trailing_attempt_ms_ = 0;
       return;
     }
 
@@ -117,6 +133,11 @@ public:
         const double after = broker_->GetCurrentPosition().stop_loss;
         if (std::abs(after - before) > 1e-12) {
           stop_moved_to_be_ = true;
+          // the trailing branch below compares against pos.stop_loss, which
+          // is the value read at the top of this call. refresh it so a
+          // break-even that just landed is not immediately re-sent as a
+          // trail move to the same price.
+          pos.stop_loss = after;
         } else {
           last_stop_attempt_ms_ = current_time;
           LOG_WARN("PositionManager: break-even move to {} did not take "
@@ -127,28 +148,33 @@ public:
     }
 
     // ratchet the stop behind price once the trailing trigger is reached.
+    // two gates keep this from becoming a REST call per tick:
+    //   - kTrailingMinStepR: a trail that would land within 0.1R of the
+    //     current stop is not worth a round-trip.
+    //   - kTrailingCooldownMs: at most one trail move every 5 seconds.
     if (enable_trailing_ && profit >= trailing_trigger_r_ * risk_distance) {
       const double trail_stop =
           is_long ? current_price - trailing_dist_r_ * risk_distance
                   : current_price + trailing_dist_r_ * risk_distance;
       // never move the stop backwards.
-      if ((is_long && trail_stop > pos.stop_loss) ||
-          (!is_long && trail_stop < pos.stop_loss)) {
-        if (CanRetryStopMove(current_time)) {
-          const double before = pos.stop_loss;
-          broker_->UpdateStopLoss(trail_stop);
-          const double after = broker_->GetCurrentPosition().stop_loss;
-          if (std::abs(after - before) <= 1e-12) {
-            last_stop_attempt_ms_ = current_time;
-            LOG_WARN("PositionManager: trail move to {} did not take "
-                     "(broker stop still {}); will retry",
-                     trail_stop, before);
-          } else {
-            // the move landed. record the attempt so the next tick does not
-            // re-send the same trail: without this the ratchet fires a REST
-            // call per tick once trailing is active.
-            last_stop_attempt_ms_ = current_time;
-          }
+      const bool improves =
+          (is_long && trail_stop > pos.stop_loss) ||
+          (!is_long && trail_stop < pos.stop_loss);
+      const bool meaningful =
+          std::abs(trail_stop - pos.stop_loss) >=
+          kTrailingMinStepR * risk_distance;
+      if (improves && meaningful && CanRetryTrailing(current_time)) {
+        const double before = pos.stop_loss;
+        broker_->UpdateStopLoss(trail_stop);
+        const double after = broker_->GetCurrentPosition().stop_loss;
+        // record the attempt whether it landed or not: a persistent reject
+        // must not turn into a per-tick retry storm, and a landed move must
+        // not be re-sent on the next tick.
+        last_trailing_attempt_ms_ = current_time;
+        if (std::abs(after - before) <= 1e-12) {
+          LOG_WARN("PositionManager: trail move to {} did not take "
+                   "(broker stop still {}); will retry after cooldown",
+                   trail_stop, before);
         }
       }
     }

@@ -99,6 +99,15 @@ def format_message(payload: dict) -> str:
             f"Time: `{payload.get('timestamp', 'n/a')}`"
         )
 
+    if action == "PROP_HALT":
+        return (
+            "\U0001F6D1 *Prop guard halt*\n"
+            f"Reason: `{payload.get('reason', 'n/a')}`\n"
+            f"Symbol: `{payload.get('symbol', 'n/a')}`\n"
+            f"Price: `{_fmt(payload.get('price'))}`\n"
+            f"Time: `{payload.get('timestamp', 'n/a')}`"
+        )
+
     # Fallback for unknown actions: dump the raw payload.
     return f"\u2139\uFE0F *Event: {action}*\n```\n{json.dumps(payload, indent=2)}\n```"
 

@@ -6,6 +6,22 @@
 #include <chrono>
 #include <cstring>
 
+namespace {
+// a zeroed snapshot is the "book gap" sentinel: the orchestrator treats a
+// frame with no bid or no ask as "the local book is no longer a faithful
+// picture of the venue" and suppresses new entries until a real snapshot
+// arrives. emitted on reconnect and on an unexpected close/error so the
+// worker learns about the gap even though the socket recovers on its own.
+L2Snapshot MakeBookGap() {
+  L2Snapshot gap{};
+  std::memset(&gap, 0, sizeof(L2Snapshot));
+  gap.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+  return gap;
+}
+}  // namespace
+
 BinanceDataStreamer::BinanceDataStreamer(const std::string& url) : url_(url) {}
 
 BinanceDataStreamer::~BinanceDataStreamer() {
@@ -21,16 +37,38 @@ void BinanceDataStreamer::Start() {
   web_socket_.setUrl(url_);
   LOG_INFO("BinanceDataStreamer: setting up message callback for URL: {}", url_);
 
-  web_socket_.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+  // the socket reconnects on its own. a dropped public feed is a transient
+  // transport failure, not the end of the run: ending the run on a single
+  // blip would make a live session unattributable against a backtest that
+  // never saw the outage.
+  web_socket_.enableAutomaticReconnection();
+
+  // first_open is captured by value and mutated by the callback: the first
+  // Open is the initial handshake (no gap to report), every subsequent Open
+  // is a reconnect and must be preceded by a book-gap frame so the worker
+  // stops trusting the local book until a real snapshot arrives.
+  web_socket_.setOnMessageCallback(
+      [this, first_open = true](const ix::WebSocketMessagePtr& msg) mutable {
     switch (msg->type) {
       case ix::WebSocketMessageType::Open:
         LOG_INFO(">>> WEBSOCKET OPENED SUCCESSFULLY <<<");
+        if (!first_open) {
+          // reconnect: the local book is stale until the next snapshot.
+          EmitL2(MakeBookGap());
+        }
+        first_open = false;
         break;
       case ix::WebSocketMessageType::Close:
         LOG_WARN(">>> WEBSOCKET CLOSED (code={}, reason={})", msg->closeInfo.code, msg->closeInfo.reason);
+        if (running_.load(std::memory_order_acquire)) {
+          EmitL2(MakeBookGap());
+        }
         break;
       case ix::WebSocketMessageType::Error:
         LOG_ERROR(">>> WEBSOCKET ERROR ({}): {} <<<", msg->errorInfo.http_status, msg->errorInfo.reason);
+        if (running_.load(std::memory_order_acquire)) {
+          EmitL2(MakeBookGap());
+        }
         break;
       case ix::WebSocketMessageType::Message:
         OnMessage(msg->str);

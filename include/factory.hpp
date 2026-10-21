@@ -102,7 +102,15 @@ struct EngineInstance {
 //
 // an unknown name is a build error, not a no-op: the run aborts before data is
 // loaded. AppConfig::Load cannot catch it, because it never interprets names.
+//
+// use_paper_broker (only meaningful when live_mode == true) is the shadow /
+// dry-run switch (--paper): the real market-data streamer is still built from
+// the venue spec, but no execution adapter is constructed. engine.broker stays
+// null and every module binds to the PaperTrader, seeded from
+// cfg.initial_balance -- live data, live signals, local fills, no order ever
+// leaving the process.
 class StrategyFactory {
 public:
-  static EngineInstance Build(const AppConfig &cfg, bool live_mode = false);
+  static EngineInstance Build(const AppConfig &cfg, bool live_mode = false,
+                              bool use_paper_broker = false);
 };

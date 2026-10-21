@@ -9,6 +9,51 @@
 #include <cmath>
 #include <utility>
 
+namespace {
+
+const char* DirectionName(SignalDirection direction) {
+  switch (direction) {
+    case SignalDirection::BUY:  return "BUY";
+    case SignalDirection::SELL: return "SELL";
+    default:                    return "NONE";
+  }
+}
+
+// the newest record in the trade log, plus the summed pnl of every record that
+// shares its entry_time. a scale-out books one record per partial exit, so the
+// last record alone reports only the final fragment of a partially closed
+// trade. contiguous-only so two trades that happen to share a millisecond
+// entry_time cannot bleed into each other.
+struct ClosedTrade {
+  bool found = false;
+  TradeRecord last{};
+  double pnl = 0.0;
+};
+
+ClosedTrade LastClosedTrade(const std::vector<TradeRecord>& history) {
+  ClosedTrade out;
+  if (history.empty()) return out;
+
+  out.found = true;
+  out.last = history.back();
+  const int64_t entry_time = out.last.entry_time;
+  for (auto it = history.rbegin(); it != history.rend(); ++it) {
+    if (it->entry_time != entry_time) break;
+    out.pnl += it->net_profit;
+  }
+  return out;
+}
+
+// fan a prepared event out to BOTH the existing pub/sub channel (telegram bot)
+// and the persistent "mokuren:trades" stream (grafana), with one identical
+// json payload.
+void PublishJson(RedisPublisher* publisher, nlohmann::json& ev) {
+  if (!publisher) return;
+  publisher->PublishTradeEvent(ev.dump());
+}
+
+} // namespace
+
 LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
                                    std::unique_ptr<IMarketStreamer> streamer,
                                    double sl_pct, double tp_pct,
@@ -45,13 +90,17 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
   // a funded balance next to a paper account halts instantly: 100k of starting
   // equity measured against a 10k paper balance is a 90% drawdown before the
   // first trade, and the guard would then refuse every entry in silence.
-  if (prop_rules.enabled && !engine_.broker &&
-      prop_rules.initial_balance > 0.0 &&
-      std::abs(prop_rules.initial_balance - PaperTrader::kInitialBalance) > 1.0) {
-    LOG_WARN("LiveOrchestrator: prop.initial_balance={} does not match the "
-             "paper account's {} -- this run starts past the total drawdown "
-             "limit and will refuse every entry",
-             prop_rules.initial_balance, PaperTrader::kInitialBalance);
+  // compare against the balance actually seeded into the paper account, not the
+  // compile-time constant: --paper seeds it from cfg.initial_balance.
+  if (prop_rules.enabled && !engine_.broker && engine_.ptrader &&
+      prop_rules.initial_balance > 0.0) {
+    const double paper_balance = engine_.ptrader->GetBalance();
+    if (std::abs(prop_rules.initial_balance - paper_balance) > 1.0) {
+      LOG_WARN("LiveOrchestrator: prop.initial_balance={} does not match the "
+               "paper account's {} -- this run starts past the total drawdown "
+               "limit and will refuse every entry",
+               prop_rules.initial_balance, paper_balance);
+    }
   }
 
   // start the async broadcaster. it owns its own worker thread and
@@ -60,20 +109,51 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
       std::move(redis_host), redis_port, "mokuren:events");
 }
 
-void LiveOrchestrator::PublishEvent(const char* action, double price,
-                                    double size, int64_t timestamp) {
+void LiveOrchestrator::PublishOpenEvent(const TradeSignal& signal,
+                                        int64_t timestamp) {
   if (!redis_publisher_) return;
 
   nlohmann::json ev;
   ev["timestamp"] = timestamp;
-  ev["action"] = action;
+  ev["action"] = "TRADE_OPEN";
+  ev["price"] = signal.entry_price;
+  ev["size"] = signal.volume;
+  ev["symbol"] = symbol_;
+  ev["direction"] = DirectionName(signal.direction);
+  ev["entry_price"] = signal.entry_price;
+  ev["stop_loss"] = signal.stop_loss;
+  ev["take_profit"] = signal.take_profit;
+  ev["volume"] = signal.volume;
+
+  PublishJson(redis_publisher_.get(), ev);
+}
+
+void LiveOrchestrator::PublishCloseEvent(double price, int64_t timestamp) {
+  IBroker* broker = ActiveBroker();
+  if (!broker || !redis_publisher_) return;
+
+  nlohmann::json ev;
+  ev["timestamp"] = timestamp;
+  ev["action"] = "POSITION_CLOSED";
   ev["price"] = price;
-  ev["size"] = size;
+  ev["size"] = broker->GetLastClosedSize();
   ev["symbol"] = symbol_;
 
-  // fan out to BOTH the existing pub/sub channel (telegram bot) and the
-  // persistent "mokuren:trades" stream (grafana). identical json payload.
-  redis_publisher_->PublishTradeEvent(ev.dump());
+  // pnl and exit_reason exist only in the trade log, and it returns by value
+  // (live brokers append from their websocket thread) -- so take one copy and
+  // read everything from it. an empty log still publishes the bare event: a
+  // close notification with no pnl beats no notification at all.
+  const std::vector<TradeRecord> history = broker->GetTradeHistory();
+  const ClosedTrade closed = LastClosedTrade(history);
+  if (closed.found) {
+    ev["pnl"] = closed.pnl;
+    ev["exit_reason"] = closed.last.exit_reason;
+    ev["direction"] = DirectionName(closed.last.direction);
+    ev["entry_price"] = closed.last.entry_price;
+    ev["exit_price"] = closed.last.exit_price;
+  }
+
+  PublishJson(redis_publisher_.get(), ev);
 }
 
 LiveOrchestrator::~LiveOrchestrator() {
@@ -92,6 +172,7 @@ bool LiveOrchestrator::Start() {
   shutdown_.store(false, std::memory_order_release);
   dropped_.store(0, std::memory_order_relaxed);
   book_degraded_.store(false, std::memory_order_release);
+  book_gap_.store(false, std::memory_order_release);
   stream_ended_.store(false, std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -138,6 +219,13 @@ bool LiveOrchestrator::Start() {
              "(equity={}) -- signals are suppressed until the wallet stream "
              "reports a balance",
              engine_.broker->GetBalance());
+  } else if (engine_.ptrader) {
+    // shadow / dry-run (--paper): real market data from the streamer, local
+    // execution. say it once at start so a shadow run is never mistaken for a
+    // live one in the audit log.
+    LOG_INFO("LiveOrchestrator: SHADOW mode -- executing against the "
+             "PaperTrader (equity={}); no orders will be sent to the venue",
+             engine_.ptrader->GetBalance());
   }
 
   // one funnel, shared with every backtest path. the live-only gates (stale
@@ -220,9 +308,7 @@ void LiveOrchestrator::Stop() {
       }
 
       if (was_open) {
-        PublishEvent("POSITION_CLOSED", final_price,
-                     broker->GetLastClosedSize(),
-                     live_bar_.timestamp_start);
+        PublishCloseEvent(final_price, live_bar_.timestamp_start);
       }
     } else {
       LOG_WARN("LiveOrchestrator: no valid price to force-close position");
@@ -300,15 +386,16 @@ void LiveOrchestrator::CheckPropGuard(int64_t now_ms, double price) {
   IBroker* broker = ActiveBroker();
   if (!broker) return;
 
-  // GetBalance() is mark-to-market equity on the venue path (wallet
-  // totalEquity, which includes open pnl) -- that is what the firm measures.
+  // venue path: GetBalance() is mark-to-market equity (wallet totalEquity,
+  // which includes open pnl) -- that is what the firm measures. it arrives
+  // asynchronously on the private wallet stream.
   //
-  // a paper account's balance only moves when a trade closes, so measuring it
-  // directly made the guard report realised drawdown and look safer than live
-  // while a losing trade was open. derive the floating leg from the open
-  // position instead. entry/exit fees are not subtracted here; on a 4-6% limit
-  // they are noise, and CheckRisk already folds them into its own drawdown
-  // tracking.
+  // paper / shadow path: there is no wallet stream at all. balance only moves
+  // when a trade closes, so the floating leg must be derived from the open
+  // position here; measuring the closed balance alone made the guard report
+  // realised drawdown and look safer than live while a losing trade was open.
+  // entry/exit fees are not subtracted; on a 4-6% limit they are noise, and
+  // CheckRisk already folds them into its own drawdown tracking.
   double equity = broker->GetBalance();
   if (engine_.ptrader && broker == engine_.ptrader.get() && price > 0.0) {
     const TradeSignal pos = broker->GetCurrentPosition();
@@ -353,7 +440,19 @@ void LiveOrchestrator::CheckPropGuard(int64_t now_ms, double price) {
   // now instead of waiting for the stop. flatten is emitted once, on the
   // transition: repeating it every print would spray reduce-only orders at a
   // venue that already closed the position.
-  PublishEvent("PROP_HALT", price, 0.0, now_ms);
+  //
+  // no closed trade exists yet, so this carries no pnl -- only the reason and
+  // the price the flatten is about to use. the POSITION_CLOSED event from
+  // PublishCloseEvent below reports the realised result of that flatten.
+  if (redis_publisher_) {
+    nlohmann::json halt;
+    halt["timestamp"] = now_ms;
+    halt["action"] = "PROP_HALT";
+    halt["price"] = price;
+    halt["symbol"] = symbol_;
+    halt["reason"] = d.reason;
+    PublishJson(redis_publisher_.get(), halt);
+  }
   LOG_ERROR("prop guard: {} -- flattening the open position at {}",
             d.reason, price);
 
@@ -370,8 +469,7 @@ void LiveOrchestrator::CheckPropGuard(int64_t now_ms, double price) {
   const bool was_open = broker->HasOpenPosition();
   broker->ClosePartial(1.0, flatten_price, now_ms, "prop_guard");
   if (was_open) {
-    PublishEvent("POSITION_CLOSED", flatten_price,
-                 broker->GetLastClosedSize(), now_ms);
+    PublishCloseEvent(flatten_price, now_ms);
   }
 }
 
@@ -430,11 +528,15 @@ void LiveOrchestrator::WorkerLoop() {
 
     // no new risk on a book we know is stale. existing positions are untouched:
     // their hard stop sits on the venue and exits still run through
-    // PositionManager / CheckRisk.
-    if (BookDegraded()) {
-      LOG_ERROR("live: refusing a {} signal: the event queue overflowed and "
-                "the local book is stale",
-                raw_sig.direction == SignalDirection::BUY ? "long" : "short");
+    // PositionManager / CheckRisk. two distinct latches feed this gate:
+    //   - book_degraded_ (queue overflow) is terminal for the run.
+    //   - book_gap_ (streamer reconnect / transport blip) clears on the next
+    //     real snapshot, so entries resume once the book is faithful again.
+    if (BookDegraded() || BookGap()) {
+      LOG_ERROR("live: refusing a {} signal: the local book is stale "
+                "(degraded={} gap={})",
+                raw_sig.direction == SignalDirection::BUY ? "long" : "short",
+                BookDegraded(), BookGap());
       return;
     }
 
@@ -465,8 +567,7 @@ void LiveOrchestrator::WorkerLoop() {
 
     // broadcast a trade-open event when a new position is established.
     if (result.opened_position) {
-      PublishEvent("TRADE_OPEN", result.signal.entry_price,
-                   result.signal.volume, ts);
+      PublishOpenEvent(result.signal, ts);
     }
   };
 
@@ -482,6 +583,26 @@ void LiveOrchestrator::WorkerLoop() {
         }
         if (engine_.htf_aggregator) {
           engine_.htf_aggregator->ProcessL2(ev.l2);
+        }
+
+        // book-gap sentinel: a frame with no bid or no ask is the streamer
+        // telling us the local book is no longer a faithful picture of the
+        // venue (reconnect, unexpected close, transport error). latch the gap
+        // and skip the rest of this frame: a zeroed price would fake a
+        // catastrophic drawdown on the paper path, and evaluating alpha
+        // against a zeroed book is worse than not evaluating at all.
+        if (ev.l2.best_bid_price <= 0.0 || ev.l2.best_ask_price <= 0.0) {
+          if (!book_gap_.exchange(true, std::memory_order_acq_rel)) {
+            LOG_WARN("LiveOrchestrator: book gap signalled by streamer; "
+                     "entries suppressed until depth recovers");
+          }
+          break;
+        }
+        // a real snapshot arrived: the book is faithful again, so clear the
+        // gap latch and let entries resume. book_degraded_ is untouched --
+        // queue overflow is terminal for the run.
+        if (book_gap_.exchange(false, std::memory_order_acq_rel)) {
+          LOG_INFO("LiveOrchestrator: book recovered; entries re-enabled");
         }
 
         // account guard on the book path too. this used to run only in the
@@ -553,9 +674,7 @@ void LiveOrchestrator::WorkerLoop() {
           // broadcast a position-closed event when the risk check
           // (sl/tp/trail/scale-out) fully closes the position.
           if (was_open && !is_open) {
-            PublishEvent("POSITION_CLOSED", ev.trade.price,
-                         broker->GetLastClosedSize(),
-                         ev.trade.timestamp);
+            PublishCloseEvent(ev.trade.price, ev.trade.timestamp);
           }
         }
 

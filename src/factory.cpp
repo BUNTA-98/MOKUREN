@@ -95,15 +95,36 @@ std::unique_ptr<ITrigger> MakeTrigger(const std::string& name, const json& p) {
 
 } // namespace
 
-EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode) {
+EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
+                                      bool use_paper_broker) {
   EngineInstance inst;
+
+  // --paper is a streaming mode: it changes the execution target, not the data
+  // source. accepting it on a backtest would silently pretend to shadow.
+  if (use_paper_broker && !live_mode) {
+    throw std::runtime_error(
+        "factory: use_paper_broker requires live_mode (shadow mode streams "
+        "real market data)");
+  }
 
   // initialize core engine parts
   inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
   inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
   
-  // pass fees and slippage to papertrader constructor
-  inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss, cfg.slippage_pct, cfg.taker_fee_pct);
+  // fees and slippage are strategy costs on every path. the starting balance is
+  // not: only a shadow run (--paper) actually executes against the paper
+  // account, so only it takes cfg.initial_balance. seeding every path would
+  // silently move the baseline of every backtest, WFA and replay that reads
+  // NetProfit -- and those results must stay comparable to the ones already
+  // recorded. a --live run ignores ptrader entirely (it has a venue adapter),
+  // so it keeps the default too.
+  const double seed_balance =
+      (live_mode && use_paper_broker) ? cfg.initial_balance
+                                      : PaperTrader::kInitialBalance;
+  inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss,
+                                               cfg.slippage_pct,
+                                               cfg.taker_fee_pct,
+                                               seed_balance);
 
   // execution venue AND market data, resolved from one spec, so the broker and
   // the streamer can never disagree about environment, host, category or
@@ -119,7 +140,7 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode) {
     inst.streamer =
         std::make_unique<BybitDataStreamer>(spec.symbol, spec.public_ws);
 
-    if (live_mode) {
+    if (live_mode && !use_paper_broker) {
       inst.broker =
           std::make_unique<BybitBroker>(cfg.api_key, cfg.api_secret, spec);
       LOG_INFO("factory: bybit live {}", mokuren::venue::Manifest(spec));
@@ -128,19 +149,29 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode) {
                  "adapter sends positionIdx=0 (one-way) orders",
                  cfg.position_mode);
       }
+    } else if (live_mode) {
+      // shadow mode: the public streamer above is real, but no execution
+      // adapter is built. engine.broker stays null, so ActiveBroker() and every
+      // IBroker consumer below bind to the PaperTrader.
+      LOG_INFO("factory: bybit shadow (paper execution) {}; no orders will be "
+               "sent",
+               mokuren::venue::Manifest(spec));
     } else {
       LOG_INFO("factory: bybit data-only {}; using the PaperTrader",
                mokuren::venue::Manifest(spec));
     }
   } else if (cfg.exchange == "binance") {
     inst.streamer = std::make_unique<BinanceDataStreamer>();
-    if (live_mode) {
+    if (live_mode && !use_paper_broker) {
       // no binance execution adapter exists. a live run here streams real data
       // into the PaperTrader, which is a legitimate rehearsal but must never
       // be mistaken for real execution: the previous silent fallthrough is
       // exactly how "bybit" looked healthy while trading nothing.
       LOG_WARN("factory: exchange is 'binance' and this run is live, but no "
                "binance execution adapter exists; orders go to the PaperTrader");
+    } else if (live_mode) {
+      LOG_INFO("factory: binance shadow (paper execution); no orders will be "
+               "sent");
     }
   } else if (cfg.exchange == "hyperliquid") {
     if (live_mode) {
@@ -169,6 +200,8 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode) {
   // arrives. GetBalance() is 0.0 before that, so PositionSizer yields no size
   // and MaxLeverageLock rejects every signal -- nothing trades until the state
   // feed is live.
+  // in shadow mode (--paper) inst.broker is null on purpose, so this resolves
+  // to the PaperTrader while the streamer keeps delivering real venue data.
   IBroker* active_broker = inst.broker ? inst.broker.get() : inst.ptrader.get();
 
   // wire trade management toggles (enable_scale_out & fraction)

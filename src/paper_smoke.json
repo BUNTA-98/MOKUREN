@@ -1,0 +1,58 @@
+{
+  "exchange": "bybit",
+  "initial_balance": 10000.0,
+
+  "environment": {
+    "interval_ms": 10000,
+    "macro_interval_ms": 900000,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0,
+    "max_cores": 2
+  },
+
+  "venue": {
+    "environment": "mainnet",
+    "category": "linear",
+    "symbol": "BTCUSDT",
+    "position_mode": "one_way",
+    "allow_mainnet": true
+  },
+
+  "execution": {
+    "taker_fee_pct": 0.0004,
+    "slippage_pct": 0.0002
+  },
+
+  "triggers": [
+    { "name": "StackedImbalance", "ratio": 1.5, "min_stacked": 2 }
+  ],
+  "filters": [],
+
+  "risk": {
+    "sl_pct": 0.002,
+    "tp_r": 3.0,
+    "risk_per_trade_pct": 0.01,
+    "min_distance_dollars": 0.0,
+    "max_daily_loss": 400.0,
+    "modules": [
+      { "name": "SinglePositionLock" },
+      { "name": "MaxStopDistanceLock", "max_stop_pct": 0.02 }
+    ]
+  },
+
+  "trade_management": {
+    "break_even": { "enabled": true, "trigger_r": 1.0, "target_r": 0.0 },
+    "trailing":   { "enabled": true, "trigger_r": 3.0, "distance_r": 1.5 },
+    "scale_out":  { "enabled": false, "trigger_r": 2.0, "fraction": 0.5 }
+  },
+
+  "prop": {
+    "enabled": true,
+    "initial_balance": 10000.0,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8,
+    "daily_reset_hour_utc": 0,
+    "flatten_on_breach": true
+  }
+}

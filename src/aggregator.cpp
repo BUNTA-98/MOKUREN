@@ -19,7 +19,12 @@ void Aggregator::ProcessL2(const L2Snapshot &l2) {
 // window slides instead of dropping the print (returning nullptr here silently
 // lost volume and left the footprint empty).
 PriceLevel *Aggregator::GetOrAddLevel(double price) {
-  double normalized_price = std::floor(price / tick_size) * tick_size;
+  // snap to the nearest tick, not down to it. 0.1 is not exact in binary, so
+  // floor(price / 0.1) maps two adjacent ticks into the same bucket about half
+  // the time (85428.30 and 85428.20 both landed on 85428.2). for a stacked
+  // imbalance that silently merges levels, which is exactly what the trigger
+  // counts. llround is symmetric and keeps distinct ticks distinct.
+  double normalized_price = std::llround(price / tick_size) * tick_size;
 
   // setup on first trade of candle. an empty touched range is exactly the
   // state after a reset, which is a more reliable signal than

@@ -2,9 +2,23 @@
 #include "logger.hpp"
 #include <cmath>
 
-PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee)
+PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee,
+                         double initial_balance)
     : max_daily_loss_(max_dl), slippage(slip), taker_fee_pct(taker_fee) {
-  // balance and peak_balance_ are initialised in-class from kInitialBalance.
+  // a shadow run (--paper) seeds the account from cfg.initial_balance so its
+  // drawdown is measured against the capital it will actually be funded with.
+  // a non-positive seed is not a valid account: UpdateDrawdown divides by
+  // peak_balance_, so 0.0 turned every drawdown into NaN instead of an error.
+  // AppConfig::Validate rejects it at the config boundary; this guard covers
+  // direct construction (tests, tooling).
+  if (!(initial_balance > 0.0) || !std::isfinite(initial_balance)) {
+    LOG_WARN("PaperTrader: invalid initial_balance={}; falling back to {}",
+             initial_balance, kInitialBalance);
+    initial_balance = kInitialBalance;
+  }
+  initial_balance_ = initial_balance;
+  balance = initial_balance;
+  peak_balance_ = initial_balance;
 }
 
 TradeSignal PaperTrader::GetCurrentPosition() const {

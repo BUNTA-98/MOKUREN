@@ -1,5 +1,6 @@
 #pragma once
 #include "aggregator.hpp"
+#include "logger.hpp"
 #include "market_context.hpp"
 #include <algorithm>
 #include <ctime>
@@ -169,9 +170,35 @@ public:
       }
     }
 
+    // the packed levels themselves, not just the stacks they produced. lo/hi
+    // separate "one side only" from "levels were merged or split by the tick
+    // grid"; bid/ask sums separate an empty tape from a one-sided one. without
+    // these the counts are unreadable: max_sell=0 on a two-level bid-only
+    // footprint is not something the counts alone can explain.
+    double lo = 0.0, hi = 0.0, bid_sum = 0.0, ask_sum = 0.0;
+    for (const auto &lvl : bar.footprint) {
+      if (lo == 0.0 || lvl.price < lo) lo = lvl.price;
+      if (lvl.price > hi) hi = lvl.price;
+      bid_sum += lvl.bid_volume;
+      ask_sum += lvl.ask_volume;
+    }
+
+    // one line per evaluated candle: an empty footprint, a run broken by a
+    // skipped level and a trigger that was never called all look identical
+    // from outside. footprint==0 means this candle had no packed levels at
+    // all; max_buy/max_sell are the longest unbroken stacks found.
+    LOG_TRACE("stacked_imbalance: footprint={} max_buy={} max_sell={} "
+              "min_stacked={} ratio={} tick={} lo={} hi={} bid={} ask={}",
+              bar.footprint.size(), max_buy_stacked, max_sell_stacked,
+              min_stacked_count, ratio_threshold, real_tick, lo, hi, bid_sum,
+              ask_sum);
+
+    // direction only. the funnel derives the stop from risk.sl_pct and the
+    // target from risk.tp_r, so this trigger states what it sees and nothing
+    // about the risk the account is willing to take.
     if (max_buy_stacked >= min_stacked_count && max_buy_stacked > max_sell_stacked)
       return TradeSignal{SignalDirection::BUY};
-      
+
     if (max_sell_stacked >= min_stacked_count && max_sell_stacked > max_buy_stacked)
       return TradeSignal{SignalDirection::SELL};
 
@@ -199,6 +226,13 @@ public:
         total_delta += (level.ask_volume - level.bid_volume);
       }
     }
+
+    // a candle close is the only place this trigger can ever speak, so one
+    // line here is the whole diagnostic: a threshold no tape can reach looks
+    // identical to a strategy that never armed.
+    LOG_TRACE("delta_absorption: delta={} threshold={} open={} close={} vol={}",
+              total_delta, min_delta_threshold_, bar.open, bar.close,
+              bar.total_volume);
 
     // buy signal: massiver verkaufsdruck aber kerze schließt grün
     if (total_delta <= -min_delta_threshold_ && bar.close > bar.open) {

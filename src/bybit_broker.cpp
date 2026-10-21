@@ -890,29 +890,34 @@ void BybitBroker::ClosePartial(double fraction, double current_price,
     (void)current_price;
     (void)current_time;
 
+    // snapshot the state we are about to reduce, then release the lock before
+    // the REST call. holding state_mutex_ across a network round-trip would
+    // block the private websocket thread (which takes the same lock on every
+    // position/execution/wallet push) for the duration of the request.
     double close_size = 0.0;
+    double size_before = 0.0;
     bool closing_long = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (position_size_ <= 0.0) return;
 
+        // a reduce needs a side. a position push whose size parsed but whose
+        // entryPrice/stopLoss threw leaves size > 0 with direction NONE, and
+        // the default "Buy" below would then add to a long instead of
+        // reducing it. refuse and let the next push resync the side.
+        if (current_position_.direction == SignalDirection::NONE) {
+            LOG_ERROR("BybitBroker: refusing to reduce {} with an unknown "
+                      "direction (size={}); waiting for the next position push",
+                      spec_.symbol, position_size_);
+            return;
+        }
+
         const double clamped = std::max(0.0, std::min(1.0, fraction));
         close_size = position_size_ * clamped;
         if (!(close_size > 0.0)) return;
 
+        size_before = position_size_;
         closing_long = current_position_.direction == SignalDirection::BUY;
-
-        // reduce optimistically: LiveOrchestrator::Stop calls this to flatten,
-        // and a repeated call must never send a second order for a position
-        // that is already gone. leaving an open position behind on shutdown is
-        // the one failure a prop account does not forgive.
-        position_size_ -= close_size;
-        if (position_size_ < 0.0) position_size_ = 0.0;
-        current_position_.volume = position_size_;
-        if (position_size_ == 0.0) {
-            current_position_.direction = SignalDirection::NONE;
-        }
-        last_closed_size_ = close_size;
     }
 
     nlohmann::json payload = {
@@ -927,5 +932,36 @@ void BybitBroker::ClosePartial(double fraction, double current_price,
     };
 
     LOG_INFO("BybitBroker: reducing position by {} ({})", close_size, reason);
-    SendRestRequest("POST", "/v5/order/create", payload.dump());
+    const int ret =
+        SendRestRequest("POST", "/v5/order/create", payload.dump());
+
+    // commit only on acceptance. the previous version decremented local size
+    // before the REST call, so a rejected close left position_size_ smaller
+    // than the venue's position and the next HasOpenPosition() disagreed with
+    // the exchange until the next position push corrected it. a rejected
+    // close must leave local state untouched so the caller can retry.
+    if (ret != 0) {
+        LOG_ERROR("BybitBroker: close of {} rejected by venue (retCode {}); "
+                  "local position unchanged", close_size, ret);
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    // the fill happened on the venue either way, so record its size before any
+    // accounting branch: POSITION_CLOSED reads this and would otherwise publish
+    // a stale (often zero) quantity on the race path below.
+    last_closed_size_ = close_size;
+    // the private position push may have already reflected this reduction
+    // (it races the REST response). only apply the delta if the local size
+    // still matches what we snapshotted, otherwise the push has already
+    // spoken and applying the delta again would double-count the close.
+    if (std::abs(position_size_ - size_before) >= 1e-9) {
+        return;
+    }
+    position_size_ -= close_size;
+    if (position_size_ < 0.0) position_size_ = 0.0;
+    current_position_.volume = position_size_;
+    if (position_size_ == 0.0) {
+        current_position_.direction = SignalDirection::NONE;
+    }
 }

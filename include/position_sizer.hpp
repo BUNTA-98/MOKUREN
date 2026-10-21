@@ -1,5 +1,6 @@
 #pragma once
 #include "ibroker.hpp"
+#include "logger.hpp"
 #include "papertrader.hpp"
 #include "strategy.hpp"
 #include <cmath>
@@ -35,6 +36,12 @@ public:
 
     // SL Weitung bei zu engem Risk
     if (risk_per_coin < min_sl_distance_) {
+      // this redefines 1R: the trigger's structural stop is replaced by a flat
+      // quote-currency distance. log it, because "the stop was widened to 25
+      // usd on a 200 usd symbol" is otherwise indistinguishable from "the
+      // strategy found no setups".
+      LOG_WARN("position_sizer: widening stop from {} to {} (entry={})",
+               risk_per_coin, min_sl_distance_, signal.entry_price);
       risk_per_coin = min_sl_distance_;
       signal.stop_loss = (signal.direction == SignalDirection::BUY) 
                          ? signal.entry_price - min_sl_distance_ 
@@ -53,6 +60,11 @@ public:
     if (max_leverage_ > 0.0) {
       double max_allowed_volume = (balance * max_leverage_) / signal.entry_price;
       if (raw_volume > max_allowed_volume) {
+          // full risk sizing would exceed the margin limit, so the trade risks
+          // less than risk_per_trade_pct -- and, with a tight structural stop,
+          // pays fees on a far larger notional than the risk implies.
+          LOG_TRACE("position_sizer: capping volume {} -> {} at max_leverage={}x",
+                    raw_volume, max_allowed_volume, max_leverage_);
           raw_volume = max_allowed_volume;
       }
     }
@@ -63,10 +75,24 @@ public:
     // an infinite volume, which is exactly the order a venue must never see.
     double rounded_volume = raw_volume;
     if (lot_step_ > 0.0) {
-      rounded_volume = std::floor(raw_volume / lot_step_) * lot_step_;
+      // binary floating point cannot represent 0.001 exactly, so a volume that
+      // is mathematically an exact multiple of the step can land a hair below
+      // it and floor to one lot less (3.0 -> 2 lots). nudge by a relative
+      // epsilon before truncating; the overshoot is far below one step.
+      const double quotient = raw_volume / lot_step_;
+      const double nudged =
+          quotient + 1e-9 * std::max(1.0, std::abs(quotient));
+      rounded_volume = std::floor(nudged) * lot_step_;
     }
 
-    if (rounded_volume <= 0.0) return TradeSignal{}; // Zu klein für die Börse
+    if (rounded_volume <= 0.0) {
+      // a signal dropped here is indistinguishable from a trigger that never
+      // fired, so say why instead of returning an empty signal into silence.
+      LOG_WARN("position_sizer: dropping signal: volume {} rounds to 0 at "
+               "lot_step={} (balance={} risk_amount={} risk_per_coin={})",
+               raw_volume, lot_step_, balance, risk_amount_usd, risk_per_coin);
+      return TradeSignal{}; // Zu klein für die Börse
+    }
 
     signal.volume = rounded_volume;
     return signal;

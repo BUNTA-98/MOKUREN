@@ -16,12 +16,17 @@ namespace mokuren {
 // stop sanity, sets entry_price = exec_price. used before sizing.
 bool PrepareSignalRisk(TradeSignal& sig, double exec_price, const char* where);
 
-// derive a missing take profit from the stop that will actually be placed.
-// used after sizing, so the target follows the placed stop rather than the
-// pre-sizing one.
+// anchor the take profit to the stop that will actually be placed. used after
+// sizing, so the target follows the placed stop rather than the pre-sizing
+// one. when the sizer widened the stop, an existing target is rescaled to keep
+// the r-multiple the trigger asked for -- otherwise the trade pays the old,
+// much smaller reward for the new, much larger risk.
+//
+// pre_sizing_risk is |entry - stop| before sizing. 0 means "unknown": a
+// missing target is still derived, but an existing one is left untouched.
 bool FinalizeTakeProfit(TradeSignal& sig, double exec_price,
                         double configured_sl_pct, double configured_tp_pct,
-                        const char* where);
+                        const char* where, double pre_sizing_risk = 0.0);
 
 struct SignalExecutionResult {
   TradeSignal signal{};         // signal actually submitted (NONE if dropped)

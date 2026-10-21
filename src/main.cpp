@@ -39,7 +39,11 @@ void RunBacktest() {
 // headless live forward-test: streams exchange data into the orchestrator.
 // loads the strategy pipeline from a json config file so websocket events
 // flow through Aggregator -> AlphaEngine -> PaperTrader instead of being dropped.
-void RunLive(const std::string& config_path) {
+//
+// use_paper_broker selects shadow mode (--paper): the real venue websocket is
+// still used, but no execution adapter is constructed, so every signal fills in
+// the in-process PaperTrader instead of leaving the process.
+void RunLive(const std::string& config_path, bool use_paper_broker) {
   std::signal(SIGINT, HandleSigint);
 
   LOG_INFO("live mode: loading config from '{}'", config_path);
@@ -57,11 +61,25 @@ void RunLive(const std::string& config_path) {
   // original grid objects for GridScanner.
   FlattenGrids(cfg_json);
 
-  AppConfig cfg = AppConfig::Load(cfg_json);
+  // a shadow run never signs a request, so it must not be forced to carry
+  // venue credentials just to load its config. every other caller uses the
+  // default (true) and keeps the strict check.
+  AppConfig cfg = AppConfig::Load(cfg_json,
+                                  /*require_venue_credentials=*/!use_paper_broker);
+
+  // shadow mode: the paper account is the account, so a prop run that does not
+  // name its own starting equity measures drawdown against the paper seed
+  // instead of deriving it from the first observation (which arrives after the
+  // first fill and therefore understates the day's start).
+  if (use_paper_broker && cfg.prop.initial_balance <= 0.0) {
+    cfg.prop.initial_balance = cfg.initial_balance;
+  }
 
   // live_mode=true is what lets the factory construct a venue adapter. the
   // backtest/WFA/replay paths keep the default (false) and can never dial out.
-  EngineInstance engine = StrategyFactory::Build(cfg, /*live_mode=*/true);
+  // use_paper_broker keeps the streamer but bypasses the adapter (shadow mode).
+  EngineInstance engine = StrategyFactory::Build(cfg, /*live_mode=*/true,
+                                                 /*use_paper_broker=*/use_paper_broker);
 
   // the streamer is built by the factory from the same resolved venue spec as
   // the broker. deciding it here, independently, is how a bybit config ended
@@ -90,7 +108,8 @@ void RunLive(const std::string& config_path) {
     return;
   }
 
-  LOG_INFO("live mode: streaming via '{}' (press ctrl-c to stop)", cfg.exchange);
+  LOG_INFO("live mode: streaming via '{}' in {} execution (press ctrl-c to stop)",
+           cfg.exchange, use_paper_broker ? "paper (shadow)" : "venue");
   LIVE_DBG("main: live loop entered, orchestrator started");
 
   while (!g_quit.load(std::memory_order_acquire)) {
@@ -120,27 +139,42 @@ int main(int argc, char** argv) {
   ix::initNetSystem();
 
   bool live_mode = false;
+  bool paper_mode = false;
   bool debug_mode = false;
   std::string config_path;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--live") == 0) {
       live_mode = true;
+    } else if (std::strcmp(argv[i], "--paper") == 0) {
+      paper_mode = true;
     } else if (std::strncmp(argv[i], "--config=", 9) == 0) {
       config_path = argv[i] + 9;
     } else if (std::strcmp(argv[i], "--debug") == 0) {
       debug_mode = true;
       mokuren::debug::g_live_debug_enabled.store(true, std::memory_order_relaxed);
+    } else {
+      // an unrecognised flag used to be ignored, which silently fell through to
+      // the interactive TUI: a typo like "--paepr" and a stale binary that
+      // predates the flag both looked like "it launched the backtest instead".
+      // the flag set is small and closed, so refuse anything else.
+      std::cerr << "error: unknown argument '" << argv[i]
+                << "' (supported: --live, --paper, --config=<path>, --debug)\n";
+      return 1;
     }
   }
 
-  if (live_mode && config_path.empty()) {
-    std::cerr << "error: --live requires --config=<path> (e.g. --config=configs/btc_scalp_v1.json)\n";
+  if (live_mode && paper_mode) {
+    std::cerr << "error: --live and --paper are mutually exclusive\n";
+    return 1;
+  }
+  if ((live_mode || paper_mode) && config_path.empty()) {
+    std::cerr << "error: --live/--paper requires --config=<path> (e.g. --config=configs/btc_scalp_v1.json)\n";
     return 1;
   }
 
   mokuren::InitLogger("logs/engine.log",
                       debug_mode ? spdlog::level::trace : spdlog::level::info,
-                      live_mode);
+                      live_mode || paper_mode);
   // pin the global level to the same threshold. spdlog::set_level(trace) was
   // unconditional, so every release run logged at trace into the rotating
   // audit file and drowned the events that matter.
@@ -149,8 +183,8 @@ int main(int argc, char** argv) {
 
   int exit_code = 0;
   try {
-    if (live_mode) {
-      RunLive(config_path);
+    if (live_mode || paper_mode) {
+      RunLive(config_path, /*use_paper_broker=*/paper_mode);
     } else {
       RunBacktest();
     }
