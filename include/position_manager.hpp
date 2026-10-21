@@ -143,6 +143,11 @@ public:
             LOG_WARN("PositionManager: trail move to {} did not take "
                      "(broker stop still {}); will retry",
                      trail_stop, before);
+          } else {
+            // the move landed. record the attempt so the next tick does not
+            // re-send the same trail: without this the ratchet fires a REST
+            // call per tick once trailing is active.
+            last_stop_attempt_ms_ = current_time;
           }
         }
       }

@@ -82,6 +82,25 @@ public:
                 eng.risk_manager->Evaluate(sized_signal, ts);
             if (final_signal.direction == SignalDirection::NONE) return;
 
+            // re-validate the stop after sizing and the risk firewall, the
+            // same way the live funnel does. a risk module that moves the
+            // stop to the wrong side is caught live and was silently accepted
+            // here, so a replay could open a trade the live path would drop.
+            {
+                const bool final_long =
+                    final_signal.direction == SignalDirection::BUY;
+                if (!(final_signal.stop_loss > 0.0) ||
+                    (final_long && final_signal.stop_loss >= exec_price) ||
+                    (!final_long && final_signal.stop_loss <= exec_price)) {
+                    LOG_ERROR("replay: dropping {} signal at {} after risk: "
+                              "stop_loss={} is missing or on the wrong side "
+                              "of entry",
+                              final_long ? "long" : "short", exec_price,
+                              final_signal.stop_loss);
+                    return;
+                }
+            }
+
             // cfg.sl_pct / cfg.tp_pct already come from the risk block:
             // AppConfig::Load resolves tp_r against sl_pct, so dividing
             // recovers the r the author wrote.

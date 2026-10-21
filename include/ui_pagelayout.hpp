@@ -1,11 +1,9 @@
-#pragma once 
+#pragma once
 
-
-struct PageLayout{
+struct PageLayout {
   int header_origin_x = 0;
   int header_origin_y = 0;
-  
-  int footer_origin_x;
-  int header_origin_y;
-  
-}
+
+  int footer_origin_x = 0;
+  int footer_origin_y = 0;
+};

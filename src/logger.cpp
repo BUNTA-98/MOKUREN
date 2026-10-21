@@ -59,6 +59,10 @@ void ShutdownLogger() {
   }
   spdlog::shutdown();
   g_logger.reset();
+  // spdlog::shutdown() tears down the thread pool, so a later InitLogger()
+  // must be allowed to rebuild it. leaving g_init_flag set made the second
+  // call a no-op and GetLogger() returned a logger whose pool was gone.
+  g_init_flag = std::once_flag{};
 }
 
 std::shared_ptr<spdlog::logger> GetLogger() {
