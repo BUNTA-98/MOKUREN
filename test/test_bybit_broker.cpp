@@ -9,7 +9,11 @@
 
 TEST_CASE("Bybit Broker Logic", "[bybit][broker]") {
     SECTION("GenerateSignature produces correct HMAC SHA256") {
-        BybitBroker broker("test_key", "test_secret", true);
+        // OfflineForTests: signing is pure logic, it must not need the venue.
+        BybitBroker broker("test_key", "test_secret",
+                           mokuren::venue::Resolve(mokuren::venue::Env::Testnet,
+                                                   "linear", "BTCUSDT"),
+                           BybitBroker::OfflineForTests{});
 
         const std::string sig = broker.GenerateSignature("payload_data", "1234567890");
 
@@ -36,7 +40,10 @@ TEST_CASE("Bybit Broker Logic", "[bybit][broker]") {
     }
 
     SECTION("HandlePrivateMessage parses position updates correctly") {
-        BybitBroker broker("dummy", "dummy", true);
+        BybitBroker broker("dummy", "dummy",
+                           mokuren::venue::Resolve(mokuren::venue::Env::Testnet,
+                                                   "linear", "BTCUSDT"),
+                           BybitBroker::OfflineForTests{});
 
         const std::string fake_json =
             R"({"topic":"position","data":[{"symbol":"BTCUSDT","side":"Buy","size":"2.5","entryPrice":"65000.0","stopLoss":"64000.0","takeProfit":"66000.0"}]})";
@@ -53,7 +60,10 @@ TEST_CASE("Bybit Broker Logic", "[bybit][broker]") {
     }
 
     SECTION("HandlePrivateMessage parses execution/fills correctly") {
-        BybitBroker broker("dummy", "dummy", true);
+        BybitBroker broker("dummy", "dummy",
+                           mokuren::venue::Resolve(mokuren::venue::Env::Testnet,
+                                                   "linear", "BTCUSDT"),
+                           BybitBroker::OfflineForTests{});
 
         const std::string fake_json =
             R"({"topic":"execution","data":[{"symbol":"BTCUSDT","execQty":"1.0","closedSize":"1.5"}]})";

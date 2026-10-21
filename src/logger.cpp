@@ -3,6 +3,7 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_sinks.h>
 
+#include <atomic>
 #include <filesystem>
 #include <mutex>
 
@@ -10,7 +11,10 @@ namespace mokuren {
 
 namespace {
 std::shared_ptr<spdlog::logger> g_logger;
-std::once_flag g_init_flag;
+// std::once_flag is not assignable, so it cannot be reset after
+// spdlog::shutdown(). an atomic flag gives the same "init once" guarantee
+// while still allowing a later InitLogger() to rebuild the thread pool.
+std::atomic<bool> g_initialized{false};
 constexpr size_t kQueueSize = 8192;
 constexpr size_t kWorkerThreads = 1;
 constexpr size_t kMaxFileSize = 10 * 1024 * 1024; // 10 MB
@@ -18,7 +22,12 @@ constexpr size_t kMaxFiles = 5;
 } // namespace
 
 void InitLogger(const std::string& log_path, spdlog::level::level_enum level, bool enable_console) {
-  std::call_once(g_init_flag, [&]() {
+  bool expected = false;
+  if (!g_initialized.compare_exchange_strong(expected, true)) {
+    return;
+  }
+
+  {
     // ensure the log directory exists
     std::filesystem::path p(log_path);
     if (p.has_parent_path()) {
@@ -50,7 +59,7 @@ void InitLogger(const std::string& log_path, spdlog::level::level_enum level, bo
 
     spdlog::register_logger(g_logger);
     spdlog::set_default_logger(g_logger);
-  });
+  }
 }
 
 void ShutdownLogger() {
@@ -60,9 +69,9 @@ void ShutdownLogger() {
   spdlog::shutdown();
   g_logger.reset();
   // spdlog::shutdown() tears down the thread pool, so a later InitLogger()
-  // must be allowed to rebuild it. leaving g_init_flag set made the second
+  // must be allowed to rebuild it. leaving the flag set made the second
   // call a no-op and GetLogger() returned a logger whose pool was gone.
-  g_init_flag = std::once_flag{};
+  g_initialized.store(false);
 }
 
 std::shared_ptr<spdlog::logger> GetLogger() {

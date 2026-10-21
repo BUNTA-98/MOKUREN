@@ -159,11 +159,10 @@ difference — and the two paths do diverge today (see P0).
         │  TradeSignal{direction, entry, stop, target, volume}
         ▼
     [live only] book_degraded_ gate                  (src/live_engine.cpp)
-    [live only] PropGuard::allow_new_entry()         (include/prop_guard.hpp)
+    [all paths] PropGuard::allow_new_entry()         (include/prop_guard.hpp)
         │
         ▼
-    stop sanity check                                (PrepareSignalRisk /
-        │                                             execute_signal)
+    stop sanity check                                (SignalExecutor)
         ▼
     PositionSizer::CalculateSize
         │
@@ -171,7 +170,7 @@ difference — and the two paths do diverge today (see P0).
     RiskManager::Evaluate    ── SinglePositionLock, MaxStopDistanceLock,
         │                       MaxLeverageLock, AntiRevengeLock
         ▼
-    [live only] stop re-validation after sizing and risk
+    stop re-validation after sizing and risk        (SignalExecutor)
         │
         ▼
     take-profit derivation (only when the strategy left it at 0)
@@ -397,8 +396,8 @@ Concrete filters currently bundled in `filter.hpp`:
 - Break-even and trailing levels are resolved as fractions of 1R through
   `ResolveLevelPct`.
 
-`PropGuard` is evaluated on every trade print (see P0: the L2 branch never
-calls `Observe`):
+`PropGuard` is evaluated on every L2 snapshot and every trade print, on live and
+backtest alike (see P0):
 
 - `Unarmed` — no usable equity, refuse entries.
 - `Normal` — trading allowed.
@@ -496,18 +495,19 @@ execution meet:
 The same five-step funnel (validate stop → size → risk modules → derive TP →
 submit) is written out in five places:
 
-| Site | File | Shared helpers | Prop guard | Venue |
+| Site | File | Funnel | Prop guard | Venue |
 |---|---|---|---|---|
-| live worker | `src/live_engine.cpp` | no — inline copy | yes | active broker |
-| grid scan | `src/mokuren.cpp` | `PrepareSignalRisk` / `FinalizeTakeProfit` | no | PaperTrader |
-| WFA in-sample | `src/mokuren.cpp` | same | no | PaperTrader |
-| WFA out-of-sample | `src/mokuren.cpp` | same | no | PaperTrader |
-| replay (single) | `ReplayManager::Run` | delegated | no | PaperTrader |
-| replay (WFA) | `src/mokuren.cpp` | same | no | PaperTrader |
+| live worker | `src/live_engine.cpp` | `SignalExecutor` | yes (L2 + trade) | active broker |
+| grid scan | `src/grid_runner.cpp` | `SignalExecutor` | yes (L2 + trade) | PaperTrader |
+| WFA in-sample | `src/wfa_runner.cpp` | `SignalExecutor` | yes (L2 + trade) | PaperTrader |
+| WFA out-of-sample | `src/wfa_runner.cpp` | `SignalExecutor` | yes (L2 + trade) | PaperTrader |
+| replay (single) | `ReplayManager::Run` | `SignalExecutor` | yes (L2 + trade) | PaperTrader |
+| replay (WFA) | `src/wfa_runner.cpp` | `SignalExecutor` | flatten only, flag discarded | PaperTrader |
 
-This table is the most useful artefact in the document: any change to sizing,
-stop validation, take-profit derivation or account limits must be made in the
-live copy *and* in the shared helpers, and the two have already diverged (P0).
+This table is the most useful artefact in the document: every site now runs the
+same funnel and the same account guard, so a change to sizing, stop validation,
+take-profit derivation or account limits is made once. The remaining asymmetry
+is the WFA replay, which flattens on a breach but does not report it.
 
 ---
 
@@ -524,16 +524,23 @@ live copy *and* in the shared helpers, and the two have already diverged (P0).
   caught live and silently accepted in the scan/WFA. Fix: one `SignalExecutor`
   (or at minimum move the helpers into a shared header) used by every path.
 
-- **`PropGuard` is live-only.** Scan, WFA and replay never construct one, so WFA
-  picks the best in-sample P&L without ever asking whether that config would have
-  breached a 4 % daily or 6 % total limit. `RunWFA` also hardcodes `10000.0` for
-  its OOS equity curve while `PaperTrader::kInitialBalance` exists and is
-  already used by `LiveOrchestrator`.
+- ~~`PropGuard` is live-only.~~ **Resolved.** Every driver constructs a guard
+  per permutation/run (`src/grid_runner.cpp`, `src/wfa_runner.cpp`,
+  `ReplayManager::Run`), seeds `initial_balance` from
+  `PaperTrader::kInitialBalance`, and refuses entries through
+  `allow_new_entry()`. The `10000.0` literals in the WFA aggregation and in the
+  Monte-Carlo shuffle now read that constant. `TestResult::prop_breached` and
+  the `PropBreached` CSV column carry the outcome out of the run. What is still
+  missing is the *decision*: WFA selects on raw profit, so a breached winner is
+  flagged but not rejected automatically, and 64-bit replay drops the flag.
 
-- **The prop guard is only observed on trade prints.** `CheckPropGuard` runs in
-  the `TRADE` branch; the L2 branch never calls `Observe`. On a quiet book a
-  floating loss can cross the daily limit without the guard noticing, because
-  `allow_new_entry()` reads a state that only trades refresh.
+- ~~The prop guard is only observed on trade prints.~~ **Resolved.**
+  `CheckPropGuard` now runs in the live `L2` branch as well, and every backtest
+  driver observes on both L2 snapshots and trade prints, so a floating loss
+  that crosses a limit on a quiet book is caught on every path. A full
+  reduction through `PaperTrader::ClosePartial` also books the win/loss ledger,
+  so a prop_guard flatten is counted rather than silently dropped from
+  `GetTotalTrades()` / `GetWinrate()`.
 
 - **No "fired" latch per bar.** A trigger that reads `history.back()` returns the
   same signal for every print in the following bar until a position is open.

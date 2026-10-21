@@ -1,4 +1,7 @@
 #include "performance_metrics.hpp"
+
+#include "papertrader.hpp"
+
 #include <cmath>
 #include <random>
 #include <algorithm>
@@ -34,7 +37,13 @@ AdvancedMetrics PerformanceMetrics::CalculateAdvancedMetrics(const std::vector<T
     double worst_dd = 0.0;
     for (int i = 0; i < 1000; i++) {
         std::shuffle(sim.begin(), sim.end(), rng);
-        double peak = 10000.0, balance = 10000.0, max_dd = 0.0;
+        // seed the shuffled path with the account's real starting balance:
+        // the drawdown percentage depends on it, so a literal here measured
+        // the simulation against a different account than the one the prop
+        // guard and the WFA aggregation report on.
+        double peak = PaperTrader::kInitialBalance;
+        double balance = PaperTrader::kInitialBalance;
+        double max_dd = 0.0;
         
         for (double r : sim) {
             balance += r;

@@ -137,6 +137,19 @@ BybitBroker::BybitBroker(const std::string& api_key,
     ConnectPrivateStream();
 }
 
+BybitBroker::BybitBroker(const std::string& api_key,
+                         const std::string& api_secret,
+                         mokuren::venue::Spec spec,
+                         OfflineForTests)
+    : api_key_(api_key), api_secret_(api_secret), spec_(spec) {
+    // same routing as the live constructor, but no network: rules_ stays
+    // invalid (so ProcessSignal refuses instead of guessing a quantity) and
+    // the websocket is never started. Stop() sees keep_alive_ == false and
+    // returns immediately, so the destructor is safe as well.
+    rest_base_url_  = spec_.rest_base;
+    private_ws_url_ = spec_.private_ws;
+}
+
 void BybitBroker::EstablishStartupTruth() {
     // time first. every signed call below depends on it, and a wrong clock
     // turns a valid key into "retCode 10004 invalid signature".

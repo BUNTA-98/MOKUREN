@@ -6,6 +6,7 @@
 #include "logger.hpp"
 #include "prop_guard.hpp"
 #include "redis_publisher.hpp"
+#include "signal_executor.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -124,6 +125,11 @@ private:
 
   EngineInstance engine_;
   std::unique_ptr<IMarketStreamer> streamer_;
+
+  // the shared execution funnel: stop validation, sizing, risk firewall,
+  // stop re-validation and take-profit derivation. constructed in Start() so
+  // it binds to the broker that is active for this run. worker-thread only.
+  std::unique_ptr<mokuren::SignalExecutor> signal_executor_;
 
   // live bars being built from incoming trades. kept outside the
   // aggregator's history so we can mutate them without const_cast.

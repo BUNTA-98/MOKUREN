@@ -29,6 +29,17 @@ public:
                 mokuren::venue::Spec spec);
     ~BybitBroker() override;
 
+    // test-only tag: opts out of EstablishStartupTruth() and the private
+    // websocket. the production constructor must reach the venue (clock,
+    // instrument rules, reconciliation) before it may trade, which makes it
+    // unusable in a unit test; signing and frame parsing are pure logic and
+    // need no socket.
+    struct OfflineForTests {};
+    BybitBroker(const std::string& api_key,
+                const std::string& api_secret,
+                mokuren::venue::Spec spec,
+                OfflineForTests);
+
     // stop the heartbeat and the private websocket. idempotent; also invoked
     // by the destructor. call this before the process exits so the socket is
     // torn down deterministically rather than during static destruction.

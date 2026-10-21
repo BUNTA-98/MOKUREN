@@ -3,6 +3,9 @@
 #include "factory.hpp"
 #include "logger.hpp"
 #include "market_context.hpp"
+#include "prop_equity.hpp"
+#include "prop_guard.hpp"
+#include "signal_executor.hpp"
 #include "trade_event.hpp"
 #include "trade_management.hpp"
 #include "ui_footprint.hpp"
@@ -17,6 +20,11 @@ struct ReplayResult {
     std::vector<Bar> history_1m;
     std::vector<Bar> history_15m;
     std::vector<TradeInfo> trades; 
+    // true if the prop guard halted new entries at any point in this replay.
+    // the flatten itself already happens inside ObserveProp; this flag is the
+    // reporting half, so a replay that would have ended a funded account is
+    // visible to the caller instead of looking like a compliant run.
+    bool prop_breached = false;
 };
 
 class ReplayManager {
@@ -58,70 +66,24 @@ public:
                      "will not fire", dataset);
         }
 
-        // one funnel for tick and candle signals, in the same order as the
-        // backtest: validate the placed stop, size, run the risk firewall, and
-        // only then derive the take profit from the stop that survived.
-        auto execute_signal = [&](TradeSignal raw_signal, double exec_price,
-                                  int64_t ts) {
-            if (raw_signal.direction == SignalDirection::NONE) return;
+        // the shared execution funnel. stop validation, sizing, the risk
+        // firewall, stop re-validation and take-profit derivation all live in
+        // SignalExecutor, so a replay cannot drift from live or from the
+        // scan/wfa paths that selected this config.
+        mokuren::SignalExecutor executor(
+            eng.ptrader.get(), eng.sizer.get(), eng.risk_manager.get(),
+            cfg.sl_pct, cfg.tp_pct, "replay");
 
-            const bool is_long = raw_signal.direction == SignalDirection::BUY;
-            if (!(raw_signal.stop_loss > 0.0) ||
-                (is_long && raw_signal.stop_loss >= exec_price) ||
-                (!is_long && raw_signal.stop_loss <= exec_price)) {
-                LOG_ERROR("replay: dropping {} signal at {}: stop_loss={} is "
-                          "missing or on the wrong side of entry",
-                          is_long ? "long" : "short", exec_price,
-                          raw_signal.stop_loss);
-                return;
-            }
-            raw_signal.entry_price = exec_price;
-
-            TradeSignal sized_signal = eng.sizer->CalculateSize(raw_signal);
-            TradeSignal final_signal =
-                eng.risk_manager->Evaluate(sized_signal, ts);
-            if (final_signal.direction == SignalDirection::NONE) return;
-
-            // re-validate the stop after sizing and the risk firewall, the
-            // same way the live funnel does. a risk module that moves the
-            // stop to the wrong side is caught live and was silently accepted
-            // here, so a replay could open a trade the live path would drop.
-            {
-                const bool final_long =
-                    final_signal.direction == SignalDirection::BUY;
-                if (!(final_signal.stop_loss > 0.0) ||
-                    (final_long && final_signal.stop_loss >= exec_price) ||
-                    (!final_long && final_signal.stop_loss <= exec_price)) {
-                    LOG_ERROR("replay: dropping {} signal at {} after risk: "
-                              "stop_loss={} is missing or on the wrong side "
-                              "of entry",
-                              final_long ? "long" : "short", exec_price,
-                              final_signal.stop_loss);
-                    return;
-                }
-            }
-
-            // cfg.sl_pct / cfg.tp_pct already come from the risk block:
-            // AppConfig::Load resolves tp_r against sl_pct, so dividing
-            // recovers the r the author wrote.
-            if (!(final_signal.take_profit > 0.0)) {
-                if (!(cfg.sl_pct > 0.0)) {
-                    LOG_ERROR("replay: cannot derive take profit from tp_pct={} "
-                              "with sl_pct={}", cfg.tp_pct, cfg.sl_pct);
-                    return;
-                }
-                const bool final_long =
-                    final_signal.direction == SignalDirection::BUY;
-                const double risk_pct =
-                    std::abs(exec_price - final_signal.stop_loss) / exec_price;
-                const double tp_pct = (cfg.tp_pct / cfg.sl_pct) * risk_pct;
-                final_signal.take_profit =
-                    final_long ? exec_price * (1.0 + tp_pct)
-                               : exec_price * (1.0 - tp_pct);
-            }
-
-            eng.ptrader->ProcessSignal(final_signal, exec_price, ts);
-        };
+        // replay parity: the same guard the scan/wfa paths use, so a replay
+        // reproduces the run that produced the config.
+        mokuren::PropRules prop_rules = cfg.prop;
+        if (prop_rules.initial_balance <= 0.0) {
+            prop_rules.initial_balance = PaperTrader::kInitialBalance;
+        }
+        mokuren::PropGuard prop_guard(prop_rules);
+        // a missing prop block must not make the gate depend on ObserveProp
+        // having armed the guard before the first signal.
+        const bool prop_on = prop_rules.enabled;
 
         Bar live_bar;
         Bar htf_bar;
@@ -145,8 +107,20 @@ public:
                     eng.aggregator->GetL2History()
                 };
 
+                const double mark = all_l2[l2_idx].best_bid_price > 0.0
+                                        ? all_l2[l2_idx].best_bid_price
+                                        : trade.price;
+                const mokuren::PropDecision pd = mokuren::ObserveProp(
+                    prop_guard, eng.ptrader.get(), mark,
+                    all_l2[l2_idx].timestamp, "replay");
+                if (pd.state == mokuren::PropState::DailyHalted ||
+                    pd.state == mokuren::PropState::TotalHalted) {
+                    result.prop_breached = true;
+                }
+
                 TradeSignal tick_signal = eng.alpha->Evaluate(tick_ctx, false);
-                if (tick_signal.direction != SignalDirection::NONE) {
+                if (tick_signal.direction != SignalDirection::NONE &&
+                    (!prop_on || prop_guard.allow_new_entry())) {
                     // cross the spread for hft execution.
                     double exec_price =
                         (tick_signal.direction == SignalDirection::BUY)
@@ -156,10 +130,19 @@ public:
                         exec_price = live_bar.close > 0.0 ? live_bar.close
                                                           : trade.price;
                     }
-                    execute_signal(tick_signal, exec_price,
-                                   all_l2[l2_idx].timestamp);
+                    executor.Execute(tick_signal, exec_price,
+                                     all_l2[l2_idx].timestamp);
                 }
                 l2_idx++;
+            }
+
+            // observe the guard before anything can act on this print.
+            const mokuren::PropDecision pd = mokuren::ObserveProp(
+                prop_guard, eng.ptrader.get(), trade.price,
+                trade.timestamp, "replay");
+            if (pd.state == mokuren::PropState::DailyHalted ||
+                pd.state == mokuren::PropState::TotalHalted) {
+                result.prop_breached = true;
             }
 
             // pass ts to pos manager
@@ -180,7 +163,9 @@ public:
             };
 
             TradeSignal candle_signal = eng.alpha->Evaluate(context, candle_finished);
-            execute_signal(candle_signal, trade.price, trade.timestamp);
+            if (!prop_on || prop_guard.allow_new_entry()) {
+                executor.Execute(candle_signal, trade.price, trade.timestamp);
+            }
         }
 
         eng.aggregator->FlushLastCandle(live_bar);

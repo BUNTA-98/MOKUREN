@@ -262,6 +262,20 @@ void PaperTrader::ClosePartial(double fraction, double current_price, int64_t cu
     // closed position and GetCurrentPosition reports one that does not exist.
     if (position_size <= 0.0) {
       position_size = 0.0;
+
+      // a full close via the partial path IS a completed trade: book it in the
+      // same win/loss/be ledger ClosePosition uses, or GetTotalTrades() and
+      // GetWinrate() silently drop every prop_guard flatten. the scan CSV
+      // reads those two, and the trade_history_ already contains the record,
+      // so leaving the counters alone reported "Trades=0, SL%=100" on a
+      // breached permutation that was flattened out of a single losing trade.
+      //
+      // scale-outs (fraction < 1.0) leave position_size > 0.0 and are still
+      // not counted here; that matches ClosePosition, which only books a trade
+      // when the position is finally emptied.
+      if (net_profit > 0.0) trades_won++;
+      else if (net_profit < 0.0) trades_lost++;
+      else trades_be++;
       entry_price = 0.0;
       current_sl_ = 0.0;
       current_tp_ = 0.0;

@@ -2,6 +2,7 @@
 
 #include "live_debug.hpp"
 #include "market_context.hpp"
+#include "signal_executor.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -138,6 +139,13 @@ bool LiveOrchestrator::Start() {
              "reports a balance",
              engine_.broker->GetBalance());
   }
+
+  // one funnel, shared with every backtest path. the live-only gates (stale
+  // book, prop guard) stay in execute_signal; everything from stop validation
+  // to submission happens inside SignalExecutor.
+  signal_executor_ = std::make_unique<mokuren::SignalExecutor>(
+      ActiveBroker(), engine_.sizer.get(), engine_.risk_manager.get(),
+      sl_pct_, tp_pct_, "live");
 
   LOG_INFO("LiveOrchestrator: starting worker thread");
   worker_ = std::thread(&LiveOrchestrator::WorkerLoop, this);
@@ -444,73 +452,21 @@ void LiveOrchestrator::WorkerLoop() {
       return;
     }
 
-    // the stop is the strategy's own risk. the engine never synthesises one
-    // from risk.sl_pct: inventing a stop would silently redefine 1R and move
-    // every r-multiple threshold for the trade.
-    if (!(raw_sig.stop_loss > 0.0) ||
-        (is_long && raw_sig.stop_loss >= exec_price) ||
-        (!is_long && raw_sig.stop_loss <= exec_price)) {
-      LOG_ERROR("live: dropping {} signal at {}: stop_loss={} is missing or on "
-                "the wrong side of entry",
-                is_long ? "long" : "short", exec_price, raw_sig.stop_loss);
+    // everything from stop validation to submission lives in the shared
+    // funnel, so live and backtest cannot drift here any more.
+    if (!signal_executor_) {
+      LOG_ERROR("live: no signal executor attached; dropping {} signal",
+                is_long ? "long" : "short");
       return;
     }
-    raw_sig.entry_price = exec_price;
 
-    TradeSignal sized = raw_sig;
-    if (engine_.sizer) {
-      sized = engine_.sizer->CalculateSize(raw_sig);
-    }
+    const mokuren::SignalExecutionResult result =
+        signal_executor_->Execute(raw_sig, exec_price, ts);
 
-    TradeSignal final_sig = sized;
-    if (engine_.risk_manager) {
-      final_sig = engine_.risk_manager->Evaluate(sized, ts);
-    }
-
-    IBroker* broker = ActiveBroker();
-    if (final_sig.direction != SignalDirection::NONE && broker) {
-      // 1R is the stop that will actually be placed, after the sizer and the
-      // risk manager had their say. sizing may widen it, and the ladder must
-      // follow the stop, not the config value.
-      const bool final_long = final_sig.direction == SignalDirection::BUY;
-      if (!(final_sig.stop_loss > 0.0) ||
-          (final_long && final_sig.stop_loss >= exec_price) ||
-          (!final_long && final_sig.stop_loss <= exec_price)) {
-        LOG_ERROR("live: dropping {} signal at {}: final stop_loss={} is "
-                  "missing or on the wrong side of entry",
-                  final_long ? "long" : "short", exec_price,
-                  final_sig.stop_loss);
-        return;
-      }
-      const double risk_pct =
-          std::abs(exec_price - final_sig.stop_loss) / exec_price;
-
-      // take profit is tp_r x placed risk. tp_pct_ was resolved from the
-      // config's tp_r and risk.sl_pct, so dividing recovers the r-multiple.
-      if (!(final_sig.take_profit > 0.0)) {
-        if (!(sl_pct_ > 0.0)) {
-          LOG_ERROR("live: cannot derive take profit from tp_pct={} with "
-                    "sl_pct={}", tp_pct_, sl_pct_);
-          return;
-        }
-        const double tp_pct = (tp_pct_ / sl_pct_) * risk_pct;
-        final_sig.take_profit = final_long ? exec_price * (1.0 + tp_pct)
-                                           : exec_price * (1.0 - tp_pct);
-      }
-
-      LOG_TRACE("LiveOrchestrator: executing signal dir={} entry={} sl={} tp={} vol={} ts={}",
-                static_cast<int>(final_sig.direction), final_sig.entry_price,
-                final_sig.stop_loss, final_sig.take_profit, final_sig.volume,
-                ts);
-
-      bool was_open = broker->HasOpenPosition();
-      broker->ProcessSignal(final_sig, exec_price, ts);
-      bool is_open = broker->HasOpenPosition();
-
-      // broadcast a trade-open event when a new position is established.
-      if (!was_open && is_open) {
-        PublishEvent("TRADE_OPEN", final_sig.entry_price, final_sig.volume, ts);
-      }
+    // broadcast a trade-open event when a new position is established.
+    if (result.opened_position) {
+      PublishEvent("TRADE_OPEN", result.signal.entry_price,
+                   result.signal.volume, ts);
     }
   };
 
@@ -527,6 +483,15 @@ void LiveOrchestrator::WorkerLoop() {
         if (engine_.htf_aggregator) {
           engine_.htf_aggregator->ProcessL2(ev.l2);
         }
+
+        // account guard on the book path too. this used to run only in the
+        // TRADE branch, so on a quiet book a floating loss could cross the
+        // daily limit without the guard noticing -- and, now that the
+        // backtest/WFA/replay paths observe on every L2 snapshot, leaving it
+        // here would make live the one path that misses a breach.
+        CheckPropGuard(ev.l2.timestamp,
+                       ev.l2.best_bid_price > 0.0 ? ev.l2.best_bid_price
+                                                  : ev.l2.best_ask_price);
 
         // guard: the bar must already be initialized by a real trade.
         // evaluating with a 0.0 close feeds garbage into the strategy.
