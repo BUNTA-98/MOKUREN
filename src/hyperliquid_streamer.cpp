@@ -26,6 +26,19 @@ double ToDouble(const nlohmann::json& v) {
   throw std::runtime_error("hyperliquid: expected a numeric field");
 }
 
+// a zeroed snapshot is the "book gap" sentinel, same contract as
+// BybitDataStreamer's: the orchestrator treats a frame with no bid or no ask as
+// "the local book is no longer a faithful picture of the venue" and suppresses
+// new entries until a real snapshot arrives. emitted on reconnect and on an
+// unexpected close/error, because the socket recovers on its own and the worker
+// would otherwise evaluate L2 triggers against a stale book in between.
+L2Snapshot MakeBookGap() {
+  L2Snapshot gap{};
+  std::memset(&gap, 0, sizeof(L2Snapshot));
+  gap.timestamp = NowMillis();
+  return gap;
+}
+
 }  // namespace
 
 HyperliquidDataStreamer::HyperliquidDataStreamer(const std::string& symbol,
@@ -65,23 +78,44 @@ void HyperliquidDataStreamer::Connect() {
   ws_.enableAutomaticReconnection();
   ws_.setPingInterval(30);
 
-  ws_.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+  // first_open is captured by value and mutated by the callback: the first
+  // Open is the initial handshake (no gap to report), every subsequent Open is
+  // a reconnect and must be preceded by a book-gap frame so the worker stops
+  // trusting the local book until a real snapshot arrives.
+  ws_.setOnMessageCallback(
+      [this, first_open = true](const ix::WebSocketMessagePtr& msg) mutable {
     switch (msg->type) {
       case ix::WebSocketMessageType::Open:
         LOG_INFO(">>> HYPERLIQUID WEBSOCKET OPENED <<<");
-        // the subscription is only valid once the handshake completed.
-        SendSubscription();
+        if (!first_open) {
+          // reconnect: the local book is stale until the next l2Book snapshot.
+          EmitL2(MakeBookGap());
+        }
+        first_open = false;
         connected_ = true;
+        // the subscription is only valid once the handshake completed, and it
+        // must be re-sent on every Open: the venue does not remember a
+        // subscription across a new socket.
+        SendSubscription();
         break;
       case ix::WebSocketMessageType::Close:
         LOG_WARN(">>> HYPERLIQUID WEBSOCKET CLOSED (code={}, reason={})",
                  msg->closeInfo.code, msg->closeInfo.reason);
         connected_ = false;
+        // running_ is cleared by Stop() before ws_.stop(), so a close observed
+        // while it is still set was not asked for. report a gap, not an error:
+        // the socket will reconnect.
+        if (running_.load(std::memory_order_acquire)) {
+          EmitL2(MakeBookGap());
+        }
         break;
       case ix::WebSocketMessageType::Error:
         LOG_ERROR(">>> HYPERLIQUID WEBSOCKET ERROR ({}): {} <<<",
                   msg->errorInfo.http_status, msg->errorInfo.reason);
         connected_ = false;
+        if (running_.load(std::memory_order_acquire)) {
+          EmitL2(MakeBookGap());
+        }
         break;
       case ix::WebSocketMessageType::Message:
         HandleMessage(msg->str);
@@ -94,18 +128,26 @@ void HyperliquidDataStreamer::Connect() {
 
 void HyperliquidDataStreamer::SendSubscription() {
   // built from symbol_ so a non-BTC instance subscribes to its own asset.
+  //
+  // two frames, one per channel: "subscription" accepts a single object. the
+  // trades feed is not optional -- the bar aggregator only advances on
+  // TradeEvents, so an l2Book-only session closes no candle and evaluates no
+  // trigger, which is indistinguishable from a quiet market.
+  //
   // NOTE: nlohmann orders object keys alphabetically, so the emitted string is
   //   {"method":"subscribe","subscription":{"coin":"BTC","type":"l2Book"}}
   // which differs cosmetically from the hand-written literal but is the same
   // JSON document.
-  nlohmann::json sub;
-  sub["method"] = "subscribe";
-  sub["subscription"]["type"] = "l2Book";
-  sub["subscription"]["coin"] = symbol_;
+  for (const char* type : {"l2Book", "trades"}) {
+    nlohmann::json sub;
+    sub["method"] = "subscribe";
+    sub["subscription"]["type"] = type;
+    sub["subscription"]["coin"] = symbol_;
 
-  const std::string payload = sub.dump();
-  LIVE_DBG("hyperliquid: subscribing with {}", payload);
-  ws_.send(payload);
+    const std::string payload = sub.dump();
+    LIVE_DBG("hyperliquid: subscribing with {}", payload);
+    ws_.send(payload);
+  }
 }
 
 void HyperliquidDataStreamer::HandleMessage(const std::string& payload) {
@@ -130,20 +172,70 @@ void HyperliquidDataStreamer::HandleMessage(const std::string& payload) {
     return;
   }
   // subscriptionResponse / pong / unsubscribed frames land here.
-  if (channel != "l2Book") {
+  if (channel != "l2Book" && channel != "trades") {
     LIVE_DBG("hyperliquid: ignoring channel '{}'", channel);
     return;
   }
-  if (!root.contains("data") || !root["data"].is_object()) {
-    LIVE_DBG("hyperliquid: l2Book frame without data object, dropping");
+  if (!root.contains("data")) {
+    LIVE_DBG("hyperliquid: '{}' frame without data, dropping", channel);
     return;
   }
 
   try {
-    HandleOrderBook(root["data"]);
+    if (channel == "l2Book") {
+      // l2Book carries a single object.
+      if (!root["data"].is_object()) {
+        LIVE_DBG("hyperliquid: l2Book frame without data object, dropping");
+        return;
+      }
+      HandleOrderBook(root["data"]);
+    } else {
+      // trades carries an array of fills.
+      HandleTrades(root["data"]);
+    }
   } catch (const std::exception& e) {
     LOG_WARN("HyperliquidDataStreamer: failed to handle '{}' event: {}",
              channel, e.what());
+  }
+}
+
+void HyperliquidDataStreamer::HandleTrades(const nlohmann::json& data) {
+  // trades payload: an array of fills.
+  //   [{"coin":"BTC","side":"B","px":"65000.0","sz":"0.01",
+  //     "time":<ms>,"hash":"0x...","tid":123}, ...]
+  // "side" is the AGGRESSOR side: "B" lifted the ask, "A" hit the bid. that is
+  // the inverse of is_buyer_maker, which asks whether the maker was the buyer
+  // (i.e. the taker sold) -- same convention as BybitDataStreamer's "S" field.
+  if (!data.is_array()) {
+    LIVE_DBG("hyperliquid: trades data is not an array, dropping frame");
+    return;
+  }
+
+  for (const auto& fill : data) {
+    if (!fill.is_object()) continue;
+    if (!fill.contains("px") || !fill.contains("sz") || !fill.contains("side")) {
+      LIVE_DBG("hyperliquid: trade without px/sz/side, dropping");
+      continue;
+    }
+
+    TradeEvent ev{};
+    ev.price = ToDouble(fill["px"]);
+    ev.quantity = ToDouble(fill["sz"]);
+    // "time" is the exchange timestamp in ms. fall back to wall-clock
+    // milliseconds so the event still carries a usable ts if it is absent.
+    if (fill.contains("time") && fill["time"].is_number_integer()) {
+      ev.timestamp = fill["time"].get<int64_t>();
+    } else {
+      ev.timestamp = NowMillis();
+    }
+    ev.is_buyer_maker = (fill["side"].get<std::string>() == "A");
+
+    LOG_INFO("LIVE TRADE | Price: {:.2f}, Qty: {:.4f}, IsMaker: {}", ev.price,
+             ev.quantity, ev.is_buyer_maker);
+    LIVE_DBG("hyperliquid: TRADE PARSED ts={} price={} qty={} is_buyer_maker={}",
+             ev.timestamp, ev.price, ev.quantity, ev.is_buyer_maker);
+
+    EmitTrade(ev);
   }
 }
 

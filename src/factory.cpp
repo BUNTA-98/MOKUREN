@@ -4,6 +4,7 @@
 #include "bybit_broker.hpp"
 #include "bybit_streamer.hpp"
 #include "hyperliquid_broker.hpp"
+#include "hyperliquid_streamer.hpp"
 #include "venue_spec.hpp"
 
 #include <limits>
@@ -174,17 +175,40 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
                "sent");
     }
   } else if (cfg.exchange == "hyperliquid") {
-    if (live_mode) {
-      // no market-data streamer exists for hyperliquid, so a live run would
-      // evaluate signals against another venue's data -- or none at all.
+    if (live_mode && !use_paper_broker) {
+      // no hyperliquid execution adapter is wired here, so a --live run has
+      // nothing to send orders to. --paper is the supported rehearsal: real
+      // public market data, local fills.
       throw std::runtime_error(
-          "factory: no market-data streamer for exchange 'hyperliquid'");
+          "factory: no execution adapter for exchange 'hyperliquid' "
+          "(--paper streams hyperliquid data into the PaperTrader)");
     }
-    // a backtest must never dial out to an exchange. the adapter also trades
-    // nothing until its websocket state feed is populated, so constructing it
-    // here turned a hyperliquid-named backtest into a silent no-op.
-    LOG_INFO("factory: exchange is 'hyperliquid' but this run is not live; "
-             "using the PaperTrader");
+    if (live_mode) {
+      // shadow mode: the public streamer is real, but no execution adapter is
+      // built. inst.broker stays null, so ActiveBroker() and every IBroker
+      // consumer below bind to the PaperTrader.
+      //
+      // the coin is cfg.symbol verbatim. hyperliquid subscribes by bare coin
+      // ("BTC"), so translating a pair name behind the operator's back would
+      // make a config mean something it does not say; say it out loud instead.
+      if (cfg.symbol.find("USDT") != std::string::npos ||
+          cfg.symbol.find("USDC") != std::string::npos) {
+        LOG_WARN("factory: venue.symbol='{}' looks like a pair, but hyperliquid "
+                 "subscribes by bare coin (e.g. 'BTC'); the venue will reject "
+                 "this subscription",
+                 cfg.symbol);
+      }
+      inst.streamer = std::make_unique<HyperliquidDataStreamer>(cfg.symbol);
+      LOG_INFO("factory: hyperliquid shadow (paper execution) symbol={}; no "
+               "orders will be sent",
+               cfg.symbol);
+    } else {
+      // a backtest must never dial out to an exchange. the adapter also trades
+      // nothing until its websocket state feed is populated, so constructing it
+      // here turned a hyperliquid-named backtest into a silent no-op.
+      LOG_INFO("factory: exchange is 'hyperliquid' but this run is not live; "
+               "using the PaperTrader");
+    }
   } else {
     // Validate() already rejects this, but the factory must not rely on it:
     // falling through would silently paper-trade a typo.

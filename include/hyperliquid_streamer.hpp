@@ -13,9 +13,13 @@
 // Live market-data adapter for the Hyperliquid public websocket API.
 //
 // Owns a single ix::WebSocket connection to wss://api.hyperliquid.xyz/ws and
-// subscribes to the public l2Book feed as soon as the socket opens. Frames are
-// mapped onto L2Snapshot and dispatched through the IMarketStreamer L2
-// callback -- register it with SetL2Callback() before calling Start().
+// subscribes to the public l2Book AND trades feeds as soon as the socket
+// opens. Book frames become L2Snapshots (SetL2Callback), fills become
+// TradeEvents (SetTradeCallback).
+//
+// register BOTH callbacks before calling Start(): the bar aggregator only
+// advances on trades, so a session that received nothing but book frames never
+// closes a candle and never evaluates a trigger.
 class HyperliquidDataStreamer : public IMarketStreamer {
 public:
   // default stream: hyperliquid public endpoint for BTC.
@@ -41,6 +45,8 @@ public:
   void HandleMessage(const std::string& payload);
   // maps the "data" object of one l2Book push onto an L2Snapshot.
   void HandleOrderBook(const nlohmann::json& data);
+  // maps the "data" array of one trades push onto TradeEvents.
+  void HandleTrades(const nlohmann::json& data);
 
 private:
   // registers the url, the reconnect policy and the message callback.
