@@ -31,9 +31,15 @@ const EnsureLogger kEnsureLogger;
 // A config Load accepts AND Build can wire. The trigger is a real factory
 // name: Validate only checks that names are non-empty, so a typo passes Load
 // and aborts in Build.
+//
+// the venue is hyperliquid on purpose: Load() runs with the default
+// require_venue_credentials=true, and bybit would then demand an api_key,
+// which has nothing to do with what these cases test. binance is no longer an
+// accepted venue -- its depth-1 book cannot feed the depth triggers -- so it
+// failed Validate() before any wiring assertion ran.
 json BaseConfig() {
   return json::parse(R"({
-    "exchange": "binance",
+    "exchange": "hyperliquid",
     "environment": {
       "interval_ms": 60000,
       "macro_interval_ms": 900000,
@@ -243,6 +249,8 @@ TEST_CASE("Factory: engine-level guards", "[factory]") {
   }
 
   SECTION("a hyperliquid backtest uses the PaperTrader, never the venue") {
+    // BaseConfig() is already hyperliquid; spelled out so this case still
+    // reads as the venue-specific one if the fixture venue ever changes.
     json j = BaseConfig();
     j["exchange"] = "hyperliquid";
 

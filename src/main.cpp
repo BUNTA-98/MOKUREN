@@ -97,15 +97,50 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
   // the account's survival rules travel with the config, not with the broker:
   // the guard must behave the same whether orders go to the paper account or
   // to a funded venue.
+  // the venue name selects the data-integrity profile (which channels are
+  // required) and labels the startup report. leaving it at the ctor default
+  // made every run look like an unknown venue: the strict profile still
+  // applies, but the report could not say which venue passed or which one got
+  // checked, and the per-venue streamer is NOT re-derived here -- it comes
+  // from the factory, above.
   LiveOrchestrator orchestrator(std::move(engine), std::move(streamer),
                                 cfg.sl_pct, cfg.tp_pct,
                                 /*redis_host=*/"127.0.0.1", /*redis_port=*/6379,
                                 cfg.symbol,
-                                /*prop_rules=*/cfg.prop);
+                                /*prop_rules=*/cfg.prop,
+                                /*venue=*/cfg.exchange);
 
-  if (!orchestrator.Start()) {
-    LOG_ERROR("live mode: failed to start orchestrator");
-    return;
+  // --- startup data-integrity gate -----------------------------------------
+  // the engine is not armed until every required channel has produced
+  // well-formed frames for the configured soak. that same connection then
+  // trades, so a venue which passes the checks cannot behave differently on a
+  // second handshake -- which is exactly what a separate probe process gave us.
+  if (!orchestrator.Start(cfg.probe)) {
+    const mokuren::integrity::ProbeReport report =
+        orchestrator.PreflightReport();
+    std::cout << "\n" << report.ToString();
+    LOG_ERROR("live mode: startup data-integrity checks failed: {}",
+              report.reason);
+
+    if (cfg.probe_abort_on_failure) {
+      // fail closed. a feed that cannot produce a clean book is not a feed
+      // worth trading, and a half-blind engine is worse than no engine.
+      throw std::runtime_error(
+          "live mode: refusing to trade on a feed that failed its startup "
+          "checks (" + report.reason + ")");
+    }
+
+    // on_failure=warn is an operator override for a venue being debugged. it
+    // reconnects without the gate, which is precisely the gap the gate exists
+    // to remove -- hence opt-in, logged, and never the default.
+    LOG_WARN("live mode: startup_probe.on_failure=warn -- starting WITHOUT the "
+             "startup checks (a second handshake, ungated)");
+    if (!orchestrator.Start()) {
+      throw std::runtime_error("live mode: failed to start orchestrator");
+    }
+  } else {
+    // the "ok / ok" table: one row per channel plus the verdict.
+    std::cout << orchestrator.PreflightReport().ToString();
   }
 
   LOG_INFO("live mode: streaming via '{}' in {} execution (press ctrl-c to stop)",

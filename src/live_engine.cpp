@@ -6,10 +6,18 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <utility>
 
 namespace {
+
+int64_t NowMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
 
 const char* DirectionName(SignalDirection direction) {
   switch (direction) {
@@ -59,15 +67,19 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
                                    double sl_pct, double tp_pct,
                                    std::string redis_host, int redis_port,
                                    std::string symbol,
-                                   mokuren::PropRules prop_rules)
+                                   mokuren::PropRules prop_rules,
+                                   std::string venue)
     : engine_(std::move(engine)),
       streamer_(std::move(streamer)),
       sl_pct_(sl_pct),
       tp_pct_(tp_pct),
       symbol_(std::move(symbol)),
+      venue_(std::move(venue)),
       prop_guard_(prop_rules) {
-  LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={} symbol={})",
-           kMaxQueueDepth, sl_pct_, tp_pct_, symbol_);
+  LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={} "
+           "symbol={} venue={})",
+           kMaxQueueDepth, sl_pct_, tp_pct_, symbol_,
+           venue_.empty() ? "unknown" : venue_);
 
   // say out loud whether the account's survival rules are enforced. a prop run
   // with the guard off is the one configuration where a single bad day ends
@@ -162,6 +174,14 @@ LiveOrchestrator::~LiveOrchestrator() {
 }
 
 bool LiveOrchestrator::Start() {
+  // no startup checks: arm on the first frame. equivalent to the pre-gate
+  // behaviour -- except that frames are still validated once the engine is
+  // armed, and end-of-run errors still arrive through the router.
+  return Start(mokuren::integrity::ProbeCriteria::Disabled());
+}
+
+bool LiveOrchestrator::Start(
+    const mokuren::integrity::ProbeCriteria& criteria) {
   bool expected = false;
   if (!running_.compare_exchange_strong(expected, true,
                                         std::memory_order_acq_rel)) {
@@ -184,6 +204,9 @@ bool LiveOrchestrator::Start() {
   // instead of quietly re-deriving it from a reduced equity.
   prop_guard_.Reset();
   last_prop_decision_ = mokuren::PropDecision{};
+  // drop the previous run's gate so PreflightReport() cannot answer with a
+  // stale verdict after a restart.
+  router_.reset();
 
   if (!streamer_) {
     LOG_ERROR("LiveOrchestrator::Start: no streamer attached");
@@ -191,15 +214,27 @@ bool LiveOrchestrator::Start() {
     return false;
   }
 
-  // wire the streamer callbacks into our queue before starting it.
-  streamer_->SetTradeCallback([this](const TradeEvent& t) { OnTrade(t); });
-  streamer_->SetL2Callback([this](const L2Snapshot& s) { OnL2(s); });
-  // without these, a clean end of stream and a dropped socket both look like
-  // a market that simply went quiet: the worker waits on an empty queue
-  // forever and the owner never learns the run is over.
-  streamer_->SetFinishedCallback([this]() { OnStreamFinished(); });
-  streamer_->SetErrorCallback(
-      [this](const std::string& message) { OnStreamError(message); });
+  // --- startup gate ---------------------------------------------------------
+  // the router becomes the streamer's ONLY callback target, installed before
+  // Start(): the connection that passes the checks is the connection that
+  // trades, so no load balancer or rate limiter gets a second chance to behave
+  // differently across a probe-then-reconnect gap.
+  //
+  // the finished/error sinks matter as much as the data ones: without them a
+  // clean end of stream and a dropped socket both look like a market that went
+  // quiet, and the worker waits on an empty queue forever.
+  const std::string venue_name = venue_.empty() ? "unknown" : venue_;
+  router_ = std::make_unique<mokuren::integrity::FeedRouter>(
+      venue_name, mokuren::integrity::ProfileForVenue(venue_name), criteria,
+      NowMillis());
+
+  router_->SetLiveSink(mokuren::integrity::LiveSink{
+      [this](const TradeEvent& t) { OnTrade(t); },
+      [this](const L2Snapshot& s) { OnL2(s); },
+      [this]() { OnStreamFinished(); },
+      [this](const std::string& message) { OnStreamError(message); },
+  });
+  router_->Attach(*streamer_);
 
   // startup ping: lets us verify the redis integration without waiting
   // for the first trade to arrive.
@@ -238,11 +273,85 @@ bool LiveOrchestrator::Start() {
   LOG_INFO("LiveOrchestrator: starting worker thread");
   worker_ = std::thread(&LiveOrchestrator::WorkerLoop, this);
 
-  LOG_INFO("LiveOrchestrator: starting market streamer");
+  LOG_INFO("LiveOrchestrator: starting market streamer (startup checks: "
+           "trades>={} l2>={} for >={}ms, timeout {}ms)",
+           criteria.min_trades, criteria.min_l2_frames,
+           criteria.min_duration_ms, criteria.timeout_ms);
   streamer_->Start();
+
+  // --- wait for the gate, then arm -----------------------------------------
+  // poll rather than spin: the gate enforces both the minimum soak and the hard
+  // timeout itself, so this loop only has to notice the verdict.
+  constexpr int64_t kPollIntervalMs = 20;
+  constexpr int64_t kProgressIntervalMs = 5000;
+  int64_t next_progress_ms = NowMillis() + kProgressIntervalMs;
+  mokuren::integrity::ProbeState gate_state = router_->Poll(NowMillis());
+  while (gate_state == mokuren::integrity::ProbeState::Probing) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+    const int64_t now = NowMillis();
+    gate_state = router_->Poll(now);
+
+    // a one-minute soak is indistinguishable from a hang without this: the
+    // process sits silent for 60s and then either prints a table or exits.
+    // the counts come from the same report the caller prints on failure, so
+    // the progress line and the verdict cannot disagree. the plain Start()
+    // passes Disabled(), where Poll() is Ready on the first call, so this
+    // never logs on the ungated path.
+    if (gate_state == mokuren::integrity::ProbeState::Probing &&
+        now >= next_progress_ms) {
+      const mokuren::integrity::ProbeReport r = router_->Report();
+      LOG_INFO("LiveOrchestrator: startup checks in progress ({} ms): "
+               "trades={} l2={} rejected={}",
+               r.elapsed_ms, r.trades.delivered, r.l2.delivered,
+               r.trades.rejected() + r.l2.rejected());
+      next_progress_ms = now + kProgressIntervalMs;
+    }
+  }
+
+  // teardown for a run that never armed. deliberately not Stop(): that path
+  // flushes the last candle and force-closes the position, and here nothing
+  // traded. a flatten at a price taken from a book the gate just rejected
+  // would book a phantom loss.
+  auto abort_startup = [this]() {
+    streamer_->Stop();
+    RequestShutdown();
+    if (worker_.joinable()) worker_.join();
+    running_.store(false, std::memory_order_release);
+
+    // drain the broadcaster before returning. Stop() cannot do it on this
+    // path: it early-returns on running_ == false, and the destructor calls
+    // it. the startup ping was queued before the checks ran, so without this
+    // the one record saying "a process started and then refused to trade" is
+    // the one that never reaches redis.
+    if (redis_publisher_) {
+      redis_publisher_->Flush();
+    }
+  };
+
+  if (gate_state != mokuren::integrity::ProbeState::Ready) {
+    const mokuren::integrity::ProbeReport report = router_->Report();
+    LOG_ERROR("LiveOrchestrator: startup checks FAILED after {} ms: {}",
+              report.elapsed_ms, report.reason);
+    abort_startup();
+    return false;
+  }
+
+  if (!router_->BeginRunning(NowMillis())) {
+    LOG_ERROR("LiveOrchestrator: gate reported Ready but the router refused to "
+              "arm (no live sink installed)");
+    abort_startup();
+    return false;
+  }
 
   LOG_INFO("LiveOrchestrator: live run started");
   return true;
+}
+
+mokuren::integrity::ProbeReport LiveOrchestrator::PreflightReport() const {
+  // the router outlives the probe on both outcomes: on Ready it keeps
+  // validating every frame, on Failed the owner reads the reason here after
+  // Start() returned false.
+  return router_ ? router_->Report() : mokuren::integrity::ProbeReport{};
 }
 
 void LiveOrchestrator::Stop() {
@@ -321,8 +430,14 @@ void LiveOrchestrator::Stop() {
     redis_publisher_->Flush();
   }
 
-  LOG_INFO("LiveOrchestrator: stopped (dropped={})",
-           dropped_.load(std::memory_order_relaxed));
+  // two distinct counts. dropped_ is queue overflow: frames the engine was
+  // entitled to but could not keep up with. rejected_frames are frames the
+  // router refused before they were ever queued (crossed books, stale
+  // snapshots). a run that reconciles badly against the venue's own tape is
+  // usually explained by the second number, not the first.
+  LOG_INFO("LiveOrchestrator: stopped (dropped={} rejected_frames={})",
+           dropped_.load(std::memory_order_relaxed),
+           router_ ? router_->DroppedWhileRunning() : 0);
 }
 
 void LiveOrchestrator::OnTrade(const TradeEvent& t) {

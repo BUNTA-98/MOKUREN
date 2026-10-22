@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <initializer_list>
 #include <sstream>
 
@@ -221,9 +222,17 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   // whitelist the venue name. a typo used to skip the credential check above
   // and then fall through the factory's string comparison into a silent
   // paper-trading run.
-  if (exchange != "binance" && exchange != "bybit" &&
-      exchange != "hyperliquid") {
-    fail("exchange must be one of 'binance', 'bybit', 'hyperliquid' (got '" +
+  //
+  // binance is deliberately absent. its spot bookTicker feed is depth-1 only
+  // (and the futures stream, the one with real depth, is not available to this
+  // deployment), so it cannot satisfy the strategy's depth triggers -- and
+  // worse, the startup gate cannot catch it: one level per side is a valid
+  // L2Snapshot, so the preflight would report "l2 ok" while
+  // StackedImbalance/SpoofHunter read zeroed level-2 slots. listing a venue
+  // whose feed can pass the checks but cannot feed the alpha is worse than not
+  // listing it at all.
+  if (exchange != "bybit" && exchange != "hyperliquid") {
+    fail("exchange must be one of 'bybit', 'hyperliquid' (got '" +
          exchange + "')");
   }
   if (category != "linear" && category != "spot" && category != "inverse") {
@@ -325,6 +334,28 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   if (tm_config.scale_out_fraction < 0.1 || tm_config.scale_out_fraction > 0.9) {
     fail("trade_management.scale_out.fraction must be in [0.1, 0.9] (got " +
          std::to_string(tm_config.scale_out_fraction) + ")");
+  }
+
+  // --- startup probe ---
+  // a gate whose soak is longer than its own timeout can never pass: the
+  // deadline fires first on every single run, and the failure reads as "the
+  // venue is broken" rather than "those two numbers are impossible".
+  if (probe.timeout_ms < probe.min_duration_ms) {
+    fail("startup_probe.timeout_ms (" + std::to_string(probe.timeout_ms) +
+         ") must be >= startup_probe.min_duration_ms (" +
+         std::to_string(probe.min_duration_ms) + ")");
+  }
+  if (probe.timeout_ms < 0 || probe.min_duration_ms < 0) {
+    fail("startup_probe.min_duration_ms and timeout_ms must be >= 0 ms");
+  }
+  // a requirement deeper than the engine can store can never be met: every
+  // frame would be rejected as shallow, and the gate would report "the ven-
+  // ue is broken" rather than "that number is impossible".
+  if (probe.min_l2_depth > static_cast<uint64_t>(MAX_L2_DEPTH)) {
+    fail("startup_probe.min_l2_depth (" +
+         std::to_string(probe.min_l2_depth) +
+         ") exceeds the maximum book depth this engine stores (" +
+         std::to_string(MAX_L2_DEPTH) + ")");
   }
 
   // --- components ---
@@ -572,7 +603,7 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   });
 
   // --- exchange ---
-  // read the data source ("binance" or "bybit") from the config. accepts the
+  // read the data source ("bybit" or "hyperliquid") from the config. accepts the
   // key either at the top level or nested under "environment".
   ParseSection("exchange", [&]() {
     // never default the venue. a missing key used to mean "binance", which
@@ -705,6 +736,72 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
         throw std::runtime_error(
             "config error: prop.initial_balance must be >= 0");
       }
+    }
+  }
+
+  // --- startup data-integrity gate ---
+  // sits next to prop rather than under a strategy block: like the account's
+  // survival limits, this is an operational precondition, not a tuning knob.
+  if (j.contains("startup_probe") && j["startup_probe"].is_object()) {
+    const auto& p = j["startup_probe"];
+
+    const std::string preset = SafeString(p, "preset", "");
+    if (preset == "production") {
+      cfg.probe = mokuren::integrity::ProbeCriteria::Production();
+    } else if (preset == "development") {
+      cfg.probe = mokuren::integrity::ProbeCriteria::Development();
+    } else if (!preset.empty()) {
+      throw std::runtime_error(
+          "config error: startup_probe.preset must be 'development' or "
+          "'production' (got '" + preset + "')");
+    }
+
+    // negative values are rejected rather than clamped: a typo like
+    // "min_trades": -1000 would otherwise wrap through uint64_t and read as an
+    // astronomically high minimum.
+    auto read_count = [&p](const char* key, uint64_t fallback) -> uint64_t {
+      if (!p.contains(key)) return fallback;
+      const double v = SafeNumber(p, key, -1.0);
+      if (!(v >= 0.0) || !std::isfinite(v)) {
+        throw std::runtime_error(
+            "config error: startup_probe." + std::string(key) +
+            " must be a finite number >= 0");
+      }
+      return static_cast<uint64_t>(v);
+    };
+    auto read_ms = [&p](const char* key, int64_t fallback) -> int64_t {
+      if (!p.contains(key)) return fallback;
+      const double v = SafeNumber(p, key, -1.0);
+      if (!(v >= 0.0) || !std::isfinite(v)) {
+        throw std::runtime_error(
+            "config error: startup_probe." + std::string(key) +
+            " must be a finite number >= 0 (milliseconds)");
+      }
+      return static_cast<int64_t>(v);
+    };
+
+    // explicit keys win over the preset: soak for a minute, but lower the frame
+    // counts for a thin instrument.
+    cfg.probe.min_trades = read_count("min_trades", cfg.probe.min_trades);
+    cfg.probe.min_l2_frames =
+        read_count("min_l2_frames", cfg.probe.min_l2_frames);
+    cfg.probe.min_duration_ms =
+        read_ms("min_duration_ms", cfg.probe.min_duration_ms);
+    cfg.probe.timeout_ms = read_ms("timeout_ms", cfg.probe.timeout_ms);
+    cfg.probe.max_reconnects = static_cast<uint32_t>(
+        read_count("max_reconnects", cfg.probe.max_reconnects));
+    cfg.probe.min_l2_depth =
+        read_count("min_l2_depth", cfg.probe.min_l2_depth);
+
+    const std::string on_failure = SafeString(p, "on_failure", "");
+    if (on_failure == "abort") {
+      cfg.probe_abort_on_failure = true;
+    } else if (on_failure == "warn") {
+      cfg.probe_abort_on_failure = false;
+    } else if (!on_failure.empty()) {
+      throw std::runtime_error(
+          "config error: startup_probe.on_failure must be 'abort' or 'warn' "
+          "(got '" + on_failure + "')");
     }
   }
 

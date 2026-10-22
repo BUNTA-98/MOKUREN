@@ -21,8 +21,17 @@ TEST_CASE("Config Parser Basics", "[config]") {
         // the trigger is a real factory name: "OrderbookImbalance" is a
         // filter, and Load never interprets names, so a typo here would only
         // surface as a StrategyFactory abort long after this test passes.
+        // hyperliquid, not bybit: Load() runs with the default
+        // require_venue_credentials=true, and bybit then refuses a blank
+        // api_key. binance is no longer an accepted venue at all (its depth-1
+        // book cannot feed the depth triggers), so naming it here failed
+        // Validate() before a single assertion ran.
+        //
+        // NOTE: the comment above is C++, not JSON. nlohmann has no comment
+        // syntax, so a "//" line inside the raw literal is a parse error at
+        // the first slash -- which is exactly how this test failed.
         json custom_json = R"({
-            "exchange": "binance",
+            "exchange": "hyperliquid",
             "environment": {
                 "interval_ms": 60000,
                 "macro_interval_ms": 900000,
@@ -46,7 +55,7 @@ TEST_CASE("Config Parser Basics", "[config]") {
         
         AppConfig cfg = AppConfig::Load(custom_json);
         
-        REQUIRE(cfg.exchange == "binance");
+        REQUIRE(cfg.exchange == "hyperliquid");
         REQUIRE(cfg.tick_size == 0.5);
         REQUIRE(cfg.sl_pct == 0.01);
         REQUIRE(cfg.max_daily_loss == 500.0);
@@ -56,14 +65,17 @@ TEST_CASE("Config Parser Basics", "[config]") {
     }
 }
 
-TEST_CASE("AppConfig struct defaults are unchanged", "[config]") {
+TEST_CASE("AppConfig struct defaults hold apart from the venue", "[config]") {
     // defaults of a directly constructed AppConfig (tests, tooling). Load
     // never applies them: it requires every key that changes a run. these are
     // the four assertions the old "applies defaults for missing keys" section
     // made against Load, restored here against the struct that still owns them.
     const AppConfig cfg{};
 
-    REQUIRE(cfg.exchange == "binance");
+    // the venue is the one default that changed: it is now empty, so a
+    // directly-constructed AppConfig cannot silently stream a venue nobody
+    // selected. the failure that produces is pinned by the case below.
+    REQUIRE(cfg.exchange.empty());
     REQUIRE(cfg.interval_ms == 60000);
     REQUIRE(cfg.macro_interval_ms == 900000);
     REQUIRE(cfg.vwap_reset_hour == 0);
@@ -91,6 +103,27 @@ TEST_CASE("AppConfig struct defaults are unchanged", "[config]") {
     REQUIRE(cfg.tm_config.trailing_dist_pct == 0.004);
     REQUIRE(cfg.tm_config.scale_out_trigger_pct == 0.006);
     REQUIRE(cfg.tm_config.scale_out_fraction == 0.5);
+}
+
+TEST_CASE("a default-constructed AppConfig refuses to validate without a venue",
+          "[config]") {
+    // this is the behaviour the empty exchange default exists for. a default
+    // that named a venue is how a config-less caller (tests, tooling) ended up
+    // streaming binance data for an account configured elsewhere.
+    const AppConfig cfg{};
+
+    REQUIRE_THROWS_AS(cfg.Validate(/*require_venue_credentials=*/false),
+                      std::invalid_argument);
+
+    // false above: the venue check must not depend on credentials, or a shadow
+    // run would get past it. assert the message names the venue so a future
+    // failure here is not mistaken for one of the other Validate() rules.
+    try {
+        cfg.Validate(/*require_venue_credentials=*/false);
+        FAIL("Validate() accepted an AppConfig with no exchange");
+    } catch (const std::invalid_argument& e) {
+        REQUIRE(std::string(e.what()).find("exchange") != std::string::npos);
+    }
 }
 
 TEST_CASE("Grid Scanner Logic", "[grid]") {

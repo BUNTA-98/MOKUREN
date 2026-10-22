@@ -1,6 +1,5 @@
 #include "factory.hpp"
 
-#include "binance_streamer.hpp"
 #include "bybit_broker.hpp"
 #include "bybit_streamer.hpp"
 #include "hyperliquid_broker.hpp"
@@ -160,19 +159,6 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
     } else {
       LOG_INFO("factory: bybit data-only {}; using the PaperTrader",
                mokuren::venue::Manifest(spec));
-    }
-  } else if (cfg.exchange == "binance") {
-    inst.streamer = std::make_unique<BinanceDataStreamer>();
-    if (live_mode && !use_paper_broker) {
-      // no binance execution adapter exists. a live run here streams real data
-      // into the PaperTrader, which is a legitimate rehearsal but must never
-      // be mistaken for real execution: the previous silent fallthrough is
-      // exactly how "bybit" looked healthy while trading nothing.
-      LOG_WARN("factory: exchange is 'binance' and this run is live, but no "
-               "binance execution adapter exists; orders go to the PaperTrader");
-    } else if (live_mode) {
-      LOG_INFO("factory: binance shadow (paper execution); no orders will be "
-               "sent");
     }
   } else if (cfg.exchange == "hyperliquid") {
     if (live_mode && !use_paper_broker) {

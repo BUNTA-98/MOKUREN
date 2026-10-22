@@ -1,5 +1,6 @@
 #include "hyperliquid_streamer.hpp"
 
+#include "data_integrity.hpp"
 #include "live_debug.hpp"
 #include "logger.hpp"
 
@@ -27,17 +28,16 @@ double ToDouble(const nlohmann::json& v) {
 }
 
 // a zeroed snapshot is the "book gap" sentinel, same contract as
-// BybitDataStreamer's: the orchestrator treats a frame with no bid or no ask as
+// BybitDataStreamer's: the FeedRouter treats a frame with no bid or no ask as
 // "the local book is no longer a faithful picture of the venue" and suppresses
 // new entries until a real snapshot arrives. emitted on reconnect and on an
 // unexpected close/error, because the socket recovers on its own and the worker
 // would otherwise evaluate L2 triggers against a stale book in between.
-L2Snapshot MakeBookGap() {
-  L2Snapshot gap{};
-  std::memset(&gap, 0, sizeof(L2Snapshot));
-  gap.timestamp = NowMillis();
-  return gap;
-}
+//
+// the shape is owned by mokuren::integrity (IsBookGap), not by this file: both
+// producers must emit the identical sentinel, or the consumer recognises one
+// venue's drop and sleeps through the other's.
+L2Snapshot MakeBookGap() { return mokuren::integrity::MakeBookGap(NowMillis()); }
 
 }  // namespace
 

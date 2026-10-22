@@ -93,8 +93,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
-enable_testing()
-
+# no enable_testing() / no ctest: this project has exactly one test runner and
+# it is the Catch2 binary (Catch2WithMain) at build/engine_tests. registering
+# the same cases with a second runner meant two sources of truth for pass/fail,
+# and an exit code CI could read from either.
+#
 # collect test files
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "test/*.cpp")
 
@@ -121,26 +124,19 @@ target_link_libraries(engine_tests PRIVATE
   CURL::libcurl
 )
 
-# register the Catch2 test cases with CTest. without this,
-# `ctest` finds nothing: enable_testing() alone only enables the machinery.
-include(Catch)
-catch_discover_tests(engine_tests)
-
-# --- read-only venue doctor ---
-# explicit source list, kept outside the src/*.cpp globs: engine_tests must not
-# link this tool, and it owns its own main().
-add_executable(venue_doctor
-  tools/venue_doctor.cpp
-  src/venue_spec.cpp
-)
-
-target_include_directories(venue_doctor PRIVATE include ${ixwebsocket_SOURCE_DIR})
-
-target_link_libraries(venue_doctor PRIVATE
-  Threads::Threads
-  nlohmann_json::nlohmann_json
-  ixwebsocket
-  OpenSSL::SSL
-  OpenSSL::Crypto
-  CURL::libcurl
-)
+# run with ./build/engine_tests (or ./build/engine_tests "*router*" to narrow).
+#
+# the [.live] cases are opt-in and hidden to Catch2, so the plain run never
+# touches a socket:
+#   ./build/engine_tests "[.live]"
+# there is deliberately no make target wrapping that. a target named after a
+# diagnostic reads like a second program, and it is not one: the operator-facing
+# version of this check is `mokuren` itself, which runs the same gate on start,
+# prints the same table, and refuses to arm on failure.
+# NOTE: the startup probe used to be a separate `venue_doctor` executable. it
+# is not one any more, on purpose. its checks now live in
+# include/data_integrity.hpp, include/startup_gate.hpp and
+# include/feed_router.hpp -- sources picked up by the src/*.cpp glob above --
+# and are exercised by test/test_data_integrity.cpp under engine_tests. one
+# implementation, compiled into the same binary that trades, so the preflight
+# verdict and the live gate can never disagree about what "valid" means.

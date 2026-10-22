@@ -1,6 +1,7 @@
 #pragma once
 #include "aggregator.hpp"
 #include "factory.hpp"
+#include "feed_router.hpp"
 #include "ibroker.hpp"
 #include "live_streamer.hpp"
 #include "logger.hpp"
@@ -43,7 +44,8 @@ public:
                    std::string redis_host = "127.0.0.1",
                    int redis_port = 6379,
                    std::string symbol = "BTCUSDT",
-                   mokuren::PropRules prop_rules = {});
+                   mokuren::PropRules prop_rules = {},
+                   std::string venue = "");
   ~LiveOrchestrator();
 
   // non-copyable / non-movable (owns threads and a unique engine).
@@ -51,7 +53,32 @@ public:
   LiveOrchestrator& operator=(const LiveOrchestrator&) = delete;
 
   // start the worker thread and the streamer. returns false if already running.
+  //
+  // this is the ungated entry point: it arms on the first frame, which is the
+  // pre-gate behaviour apart from one improvement -- every frame still goes
+  // through the validator once armed, so a NaN price or a mis-sorted book stops
+  // the run instead of feeding the engine.
   bool Start();
+
+  // Start with explicit startup checks.
+  //
+  // The streamer is connected exactly once: a FeedRouter becomes its only
+  // callback target before Start(), and holds every frame back until the gate
+  // has seen enough well-formed traffic on every channel the venue profile
+  // marks required. Only then is the engine armed, so the connection that
+  // passed the checks is the one that trades -- there is no probe-then-
+  // reconnect gap.
+  //
+  // Returns false if the run is already started or the checks failed;
+  // PreflightReport() says which channel and why. On failure the streamer is
+  // stopped and the worker joined: nothing was armed, so nothing is left to
+  // unwind -- in particular the end-of-run flatten is skipped, because "close
+  // at the last price" on a book the gate rejected would invent a position.
+  bool Start(const mokuren::integrity::ProbeCriteria& criteria);
+
+  // per-channel result of the startup checks. valid after Start() returns,
+  // including on failure, so the caller can print it and refuse to run.
+  mokuren::integrity::ProbeReport PreflightReport() const;
 
   // stop the streamer, drain the queue, and join the worker. idempotent.
   void Stop();
@@ -140,6 +167,11 @@ private:
   EngineInstance engine_;
   std::unique_ptr<IMarketStreamer> streamer_;
 
+  // owns the startup gate and validates every frame, both while probing and
+  // while running. constructed in Start(), before the streamer is started, so
+  // the streamer's only callback target is the router.
+  std::unique_ptr<mokuren::integrity::FeedRouter> router_;
+
   // the shared execution funnel: stop validation, sizing, risk firewall,
   // stop re-validation and take-profit derivation. constructed in Start() so
   // it binds to the broker that is active for this run. worker-thread only.
@@ -156,6 +188,10 @@ private:
 
   // symbol used in broadcast events (e.g. "BTCUSDT").
   std::string symbol_;
+
+  // venue name, used to look up the StartupGate profile. empty means "unknown",
+  // which falls back to the strict profile: both channels required.
+  std::string venue_;
 
   // funded-account survival limits. one policy, evaluated identically on the
   // paper and venue paths: an account limit is not a strategy parameter, and

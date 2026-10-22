@@ -1,29 +1,53 @@
 #include "bybit_streamer.hpp"
 
+#include "data_integrity.hpp"
 #include "live_debug.hpp"
 #include "logger.hpp"
 
 #include <chrono>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 namespace {
 // bybit v5 drops connections that stay silent for ~30s, so ping well under it.
 constexpr int kHeartbeatIntervalMs = 20000;
 constexpr int kHeartbeatSliceMs = 100;
 
-// a zeroed snapshot is the "book gap" sentinel: the orchestrator treats a
-// frame with no bid or no ask as "the local book is no longer a faithful
-// picture of the venue" and suppresses new entries until a real snapshot
-// arrives. emitted on reconnect and on an unexpected close/error so the
-// worker learns about the gap even though the socket recovers on its own.
+int64_t NowMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// a zeroed snapshot is the "book gap" sentinel: the FeedRouter treats a frame
+// with no bid or no ask as "the local book is no longer a faithful picture of
+// the venue" and suppresses new entries until a real snapshot arrives. emitted
+// on reconnect and on an unexpected close/error so the worker learns about the
+// gap even though the socket recovers on its own.
+//
+// the shape is owned by mokuren::integrity (IsBookGap), not by this file: the
+// producer and the consumer of a sentinel must not each keep their own copy of
+// what it looks like, or the day one of them grows a field the other one stops
+// recognising the drop.
 L2Snapshot MakeBookGap() {
-  L2Snapshot gap{};
-  std::memset(&gap, 0, sizeof(L2Snapshot));
-  gap.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::system_clock::now().time_since_epoch())
-                      .count();
-  return gap;
+  return mokuren::integrity::MakeBookGap(NowMillis());
+}
+
+// ["price","size"] decimal-string pairs -> typed levels. malformed entries are
+// skipped rather than aborting the frame: one bad level must not cost the
+// whole book update, and a non-positive quantity (an erase) is a legitimate
+// level, not junk.
+void ParseLevels(const nlohmann::json& levels,
+                 std::vector<mokuren::OrderBook::Level>& out) {
+  if (!levels.is_array()) return;
+  out.reserve(levels.size());
+  for (const auto& level : levels) {
+    if (!level.is_array() || level.size() < 2) continue;
+    if (!level.at(0).is_string() || !level.at(1).is_string()) continue;
+    out.emplace_back(std::stod(level.at(0).get<std::string>()),
+                     std::stod(level.at(1).get<std::string>()));
+  }
 }
 }  // namespace
 
@@ -59,6 +83,11 @@ void BybitDataStreamer::Start() {
     switch (msg->type) {
       case ix::WebSocketMessageType::Open:
         LOG_INFO(">>> WEBSOCKET OPENED SUCCESSFULLY <<<");
+        // a new socket has no book. the local maps belong to the previous
+        // connection, and the first snapshot on this one will rebuild them.
+        ResetOrderBook();
+        // this connection is live again, so it owes no further gap report.
+        connection_gap_reported_.store(false, std::memory_order_relaxed);
         if (!first_open) {
           // reconnect: the local book is stale until the next snapshot.
           EmitL2(MakeBookGap());
@@ -73,14 +102,26 @@ void BybitDataStreamer::Start() {
         // close observed while it is still set was not asked for. report a
         // book gap (not an error): the socket will reconnect, and the worker
         // must stop trusting the local book until it does.
-        if (running_.load(std::memory_order_acquire)) {
+        // the book is stale whether or not we are shutting down, so it is
+        // dropped unconditionally; only the sentinel is conditional. Error and
+        // Close both land here for one failed connection, and the gate counts
+        // every sentinel as a reconnect, so the report is latched.
+        ResetOrderBook();
+        if (running_.load(std::memory_order_acquire) &&
+            !connection_gap_reported_.load(std::memory_order_relaxed)) {
+          connection_gap_reported_.store(true, std::memory_order_relaxed);
           EmitL2(MakeBookGap());
         }
         break;
       }
       case ix::WebSocketMessageType::Error:
         LOG_ERROR(">>> WEBSOCKET ERROR ({}): {} <<<", msg->errorInfo.http_status, msg->errorInfo.reason);
-        if (running_.load(std::memory_order_acquire)) {
+        // the Error that precedes a Close: report the gap here, and let the
+        // Close that follows see the latch and stay quiet.
+        ResetOrderBook();
+        if (running_.load(std::memory_order_acquire) &&
+            !connection_gap_reported_.load(std::memory_order_relaxed)) {
+          connection_gap_reported_.store(true, std::memory_order_relaxed);
           EmitL2(MakeBookGap());
         }
         break;
@@ -121,7 +162,7 @@ void BybitDataStreamer::SendSubscription() {
   nlohmann::json sub;
   sub["op"] = "subscribe";
   sub["args"] = {std::string("publicTrade.") + symbol_,
-                 std::string("orderbook.1.") + symbol_};
+                 std::string("orderbook.50.") + symbol_};
 
   const std::string payload = sub.dump();
   LIVE_DBG("websocket: subscribing with {}", payload);
@@ -129,17 +170,40 @@ void BybitDataStreamer::SendSubscription() {
 }
 
 void BybitDataStreamer::HeartbeatLoop() {
+  auto last_ping = std::chrono::steady_clock::now();
   while (keep_alive_.load(std::memory_order_acquire)) {
-    // sleep in small slices so Stop() is not blocked for a full interval.
-    for (int waited = 0; waited < kHeartbeatIntervalMs;
-         waited += kHeartbeatSliceMs) {
-      if (!keep_alive_.load(std::memory_order_acquire)) return;
-      std::this_thread::sleep_for(std::chrono::milliseconds(kHeartbeatSliceMs));
+    // sleep in small slices so Stop() is not blocked for a full interval, and
+    // so the resync watchdog is checked on a 100ms cadence rather than the 20s
+    // ping cadence: a resync that waits out a heartbeat interval is
+    // indistinguishable from a dead feed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(kHeartbeatSliceMs));
+    if (!keep_alive_.load(std::memory_order_acquire)) return;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_ping >= std::chrono::milliseconds(kHeartbeatIntervalMs)) {
+      last_ping = now;
+      LIVE_DBG("websocket: sending heartbeat ping");
+      web_socket_.send("{\"op\":\"ping\"}");
     }
 
+    if (!running_.load(std::memory_order_acquire)) continue;
+    if (!resync_.ShouldReconnect(NowMillis())) continue;
+
+    LOG_WARN("BybitDataStreamer: order book still unusable after the resync "
+             "grace period; forcing a reconnect (a new socket always replays "
+             "a snapshot, a duplicate subscription is not guaranteed to)");
+    resync_.OnReconnectAttempted(NowMillis());
+    // the loss was already reported where the book was invalidated, so the
+    // Close that follows must not report it a second time. Open clears this
+    // and reports the reconnect itself.
+    connection_gap_reported_.store(true, std::memory_order_relaxed);
+    web_socket_.stop();
+    // ixwebsocket needs the old transport torn down before start() takes a
+    // fresh one; without this pause start() can observe the stopping socket
+    // and do nothing, leaving the feed dead rather than resynced.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     if (!keep_alive_.load(std::memory_order_acquire)) return;
-    LIVE_DBG("websocket: sending heartbeat ping");
-    web_socket_.send("{\"op\":\"ping\"}");
+    web_socket_.start();
   }
 }
 
@@ -170,7 +234,7 @@ void BybitDataStreamer::OnMessage(const std::string& payload) {
   try {
     if (topic.rfind("publicTrade.", 0) == 0) {
       HandlePublicTrade(data);
-    } else if (topic.rfind("orderbook.1.", 0) == 0) {
+    } else if (topic.rfind("orderbook.50.", 0) == 0) {
       HandleOrderBook(data);
     }
   } catch (const std::exception& e) {
@@ -203,49 +267,117 @@ void BybitDataStreamer::HandlePublicTrade(const nlohmann::json& data) {
   }
 }
 
-void BybitDataStreamer::HandleOrderBook(const nlohmann::json& data) {
-  // orderbook.1 payload:
-  //   { "s":"BTCUSDT", "b":[["price","size"]], "a":[["price","size"]],
-  //     "ts":ms, "type":"snapshot" }
-  L2Snapshot snap{};
-  std::memset(&snap, 0, sizeof(L2Snapshot));
-
-  // "ts" is the matching-engine timestamp in ms. fall back to wall-clock
-  // milliseconds so the snapshot still carries a usable ts if it is absent.
-  if (data.contains("ts") && data["ts"].is_number_integer()) {
-    snap.timestamp = data["ts"].get<int64_t>();
-  } else {
-    snap.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
+void BybitDataStreamer::ResetOrderBook() {
+  book_.Clear();
+  // while running, an unusable book starts the resync clock. before the engine
+  // is armed there is nothing to resync: the startup gate decides whether a
+  // feed that never produced a book is fit to run.
+  if (running_.load(std::memory_order_acquire)) {
+    resync_.OnBookInvalidated(NowMillis());
   }
+}
 
-  // top of book (level 1). entries are [price, size] string pairs.
-  // delta frames may carry an empty side (a level being removed), so bail out
-  // instead of letting at(0) throw and drop the whole frame.
-  const auto& bids = data.at("b");
-  const auto& asks = data.at("a");
-  if (bids.empty() || asks.empty()) {
-    LIVE_DBG("websocket: orderbook side empty, dropping frame");
-    return;
-  }
+void BybitDataStreamer::RequestOrderBookSnapshot() {
+  nlohmann::json sub;
+  sub["op"] = "subscribe";
+  // only the book topic: re-subscribing publicTrade would replay trades that
+  // are already aggregated into the current candle.
+  sub["args"] = {std::string("orderbook.50.") + symbol_};
+  const std::string payload = sub.dump();
+  LIVE_DBG("websocket: requesting orderbook snapshot with {}", payload);
+  web_socket_.send(payload);
+}
 
-  snap.best_bid_price = std::stod(bids.at(0).at(0).get<std::string>());
-  snap.best_bid_qty   = std::stod(bids.at(0).at(1).get<std::string>());
-  snap.best_ask_price = std::stod(asks.at(0).at(0).get<std::string>());
-  snap.best_ask_qty   = std::stod(asks.at(0).at(1).get<std::string>());
+void BybitDataStreamer::EmitOrderBook(int64_t ts_ms) {
+  // a one-sided book is a resync in progress, not a market state. publishing
+  // nothing lets the engine keep its last good book, the same way it does
+  // across a gap; publishing a half-book would be rejected as BookSideEmpty,
+  // which is fatal, and would end a live run over a transient.
+  if (book_.empty()) return;
 
-  // orderbook.1 only carries level 1; the remaining depth stays zeroed by
-  // the memset above.
-  snap.bids[0].price = snap.best_bid_price;
-  snap.bids[0].qty   = snap.best_bid_qty;
-  snap.asks[0].price = snap.best_ask_price;
-  snap.asks[0].qty   = snap.best_ask_qty;
+  const L2Snapshot snap = book_.ToSnapshot(ts_ms);
 
-  LOG_INFO("LIVE L2   | Best Bid: {:.2f} ({:.4f}) | Best Ask: {:.2f} ({:.4f})", snap.best_bid_price, snap.best_bid_qty, snap.best_ask_price, snap.best_ask_qty);
+  LOG_INFO("LIVE L2   | Best Bid: {:.2f} ({:.4f}) | Best Ask: {:.2f} ({:.4f})",
+           snap.best_bid_price, snap.best_bid_qty, snap.best_ask_price,
+           snap.best_ask_qty);
   LIVE_DBG("websocket: L2 PARSED ts={} bid={} bid_qty={} ask={} ask_qty={}",
            snap.timestamp, snap.best_bid_price, snap.best_bid_qty,
            snap.best_ask_price, snap.best_ask_qty);
 
   EmitL2(snap);
+}
+
+void BybitDataStreamer::HandleOrderBook(const nlohmann::json& data) {
+  // orderbook.50 payload:
+  //   { "s":"BTCUSDT", "b":[["price","size"], ...], "a":[["price","size"], ...],
+  //     "ts":ms, "type":"snapshot"|"delta", "u":<update id>, "seq":<cross seq> }
+  //
+  // "type" decides everything. a snapshot is the complete top 50 and replaces
+  // the local book; a delta carries ONLY the levels whose size changed, so
+  // forwarding it as a snapshot would hand the engine a book that lost every
+  // level the delta did not mention. there is no safe guess for a frame
+  // without "type", so it is dropped instead of assumed to be a snapshot.
+  //
+  // the application rules are OrderBook's; this function only maps json onto
+  // them and decides what the socket should do about a gap.
+  if (!data.contains("type") || !data["type"].is_string()) {
+    LIVE_DBG("websocket: orderbook frame without type, dropping");
+    return;
+  }
+  const std::string type = data["type"].get<std::string>();
+
+  int64_t ts_ms = NowMillis();
+  if (data.contains("ts") && data["ts"].is_number_integer()) {
+    ts_ms = data["ts"].get<int64_t>();
+  }
+
+  const bool has_u = data.contains("u") && data["u"].is_number_integer();
+  const int64_t update_id = has_u ? data["u"].get<int64_t>() : 0;
+
+  std::vector<mokuren::OrderBook::Level> bids;
+  std::vector<mokuren::OrderBook::Level> asks;
+  if (data.contains("b")) ParseLevels(data.at("b"), bids);
+  if (data.contains("a")) ParseLevels(data.at("a"), asks);
+
+  mokuren::OrderBook::ApplyResult result =
+      mokuren::OrderBook::ApplyResult::Ignored;
+  if (type == "snapshot") {
+    result = book_.ApplySnapshot(bids, asks, update_id);
+  } else if (type == "delta") {
+    result = book_.ApplyDelta(bids, asks, update_id);
+  } else {
+    LIVE_DBG("websocket: unknown orderbook type '{}', dropping", type);
+    return;
+  }
+
+  switch (result) {
+    case mokuren::OrderBook::ApplyResult::Ignored:
+      // a delta with no snapshot behind it. the resync clock is already
+      // running from whichever reset dropped the book, so there is nothing to
+      // do here but wait for the replay.
+      LIVE_DBG("websocket: orderbook {} ignored (no snapshot yet)", type);
+      return;
+    case mokuren::OrderBook::ApplyResult::GapDetected:
+      // a missed delta leaves a removed level present or a grown level small,
+      // and nothing downstream can detect it: the frame that results is
+      // structurally valid. resync instead of trading on it.
+      LOG_WARN("BybitDataStreamer: orderbook update gap (u={}); resyncing "
+               "from a fresh snapshot",
+               update_id);
+      ResetOrderBook();
+      EmitL2(MakeBookGap());
+      RequestOrderBookSnapshot();
+      return;
+    case mokuren::OrderBook::ApplyResult::Applied:
+      break;
+  }
+
+  // only a snapshot that left both sides populated ends the wait. a one-sided
+  // snapshot means the venue is still filling the book, and telling the
+  // watchdog otherwise would leave it waiting forever.
+  if (type == "snapshot" && !book_.empty()) {
+    resync_.OnSnapshotApplied();
+  }
+
+  EmitOrderBook(ts_ms);
 }

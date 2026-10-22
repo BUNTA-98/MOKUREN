@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "prop_guard.hpp"
+#include "startup_gate.hpp"
 #include "venue_spec.hpp"
 
 using json = nlohmann::json;
@@ -73,7 +74,12 @@ struct TradeManagementConfig {
 struct AppConfig {
   // environment settings
   std::string filepath = "";
-  std::string exchange = "binance";
+  // never default the venue. this used to say "binance", which meant a
+  // directly-constructed AppConfig (tests, tooling) streamed a venue nobody
+  // selected. Load() already refuses a config without the key; the default is
+  // only a safety net for code that bypasses Load, so it is empty and fails
+  // Validate() loudly.
+  std::string exchange = "";
   std::string api_key = "";
   std::string api_secret = "";
   // fail safe: default to testnet so a missing or misspelled key in the
@@ -98,6 +104,22 @@ struct AppConfig {
   // by one guard on every path, independent of sl_pct/tp_r -- a strategy's
   // per-trade risk and the account's lifetime limits are different questions.
   mokuren::PropRules prop;
+
+  // startup data-integrity gate. the live path does not arm the engine until
+  // every channel the venue profile marks required has delivered well-formed
+  // frames for at least probe.min_duration_ms. Development() is the default so
+  // a config that says nothing still gets checked, just quickly; set
+  // "startup_probe": {"preset": "production"} for the one-minute soak.
+  //
+  // probe.min_l2_depth is the one knob to check when switching strategies: it
+  // must match the deepest "levels" param among the configured triggers, or
+  // the depth triggers will index levels the feed never carried.
+  mokuren::integrity::ProbeCriteria probe =
+      mokuren::integrity::ProbeCriteria::Development();
+  // false means "start anyway when the checks fail". only ever right for a
+  // shadow run against a venue being debugged: the point of the gate is that a
+  // feed which cannot produce a clean book must not be traded on.
+  bool probe_abort_on_failure = true;
 
   int interval_ms = 60000;
   int macro_interval_ms = 900000;
