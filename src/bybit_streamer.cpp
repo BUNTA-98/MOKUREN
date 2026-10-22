@@ -97,7 +97,17 @@ void BybitDataStreamer::Start() {
         SendSubscription();
         break;
       case ix::WebSocketMessageType::Close: {
-        LOG_WARN(">>> WEBSOCKET CLOSED (code={}, reason={})", msg->closeInfo.code, msg->closeInfo.reason);
+        // a close we asked for is not a fault: Stop() clears running_ before
+        // stopping the socket, so the flag still being set here is what
+        // distinguishes a dropped feed from a clean shutdown. logging both at
+        // warning level made every normal exit look like something went wrong.
+        if (running_.load(std::memory_order_acquire)) {
+          LOG_WARN(">>> WEBSOCKET CLOSED (code={}, reason={})",
+                   msg->closeInfo.code, msg->closeInfo.reason);
+        } else {
+          LOG_INFO(">>> WEBSOCKET CLOSED (code={}, reason={})",
+                   msg->closeInfo.code, msg->closeInfo.reason);
+        }
         // running_ is cleared by Stop() *before* web_socket_.stop(), so a
         // close observed while it is still set was not asked for. report a
         // book gap (not an error): the socket will reconnect, and the worker
@@ -219,6 +229,20 @@ void BybitDataStreamer::OnMessage(const std::string& payload) {
     return;
   }
 
+  // bybit answers a subscribe with {"success":true|false,"ret_msg":...} and no
+  // "topic". a REJECTION looks the same shape, so the guard below discarded it
+  // as an ack: a refused topic and a quiet feed were indistinguishable, which
+  // is exactly what made the l2=0 investigation ambiguous.
+  if (root.contains("success") && root["success"].is_boolean()) {
+    if (!root["success"].get<bool>()) {
+      LOG_ERROR("BybitDataStreamer: request REJECTED: {}", root.dump());
+    } else {
+      LOG_DEBUG("BybitDataStreamer: {} ack: {}", root.value("op", ""),
+                root.value("ret_msg", ""));
+    }
+    return;
+  }
+
   // subscribe/ping acks and pong frames carry no topic; drop them quietly.
   if (!root.contains("topic") || !root.contains("data")) {
     LIVE_DBG("websocket: envelope missing topic/data keys, dropping frame");
@@ -228,14 +252,17 @@ void BybitDataStreamer::OnMessage(const std::string& payload) {
   const std::string& topic = root["topic"].get_ref<const std::string&>();
   const nlohmann::json& data = root["data"];
 
-  LOG_DEBUG("Bybit raw stream name: {}", topic);
+  // one topic line, not two: the LOG_DEBUG that used to sit here said the same
+  // thing as the LIVE_DBG below and fired once per orderbook frame.
   LIVE_DBG("websocket: topic={}", topic);
 
   try {
     if (topic.rfind("publicTrade.", 0) == 0) {
       HandlePublicTrade(data);
     } else if (topic.rfind("orderbook.50.", 0) == 0) {
-      HandleOrderBook(data);
+      // the ENVELOPE, not "data": bybit puts "type" and "ts" a level up.
+      // passing "data" made HandleOrderBook's first guard fail on every frame.
+      HandleOrderBook(root);
     }
   } catch (const std::exception& e) {
     LOG_WARN("BybitDataStreamer: failed to handle '{}' event: {}", topic, e.what());
@@ -251,15 +278,28 @@ void BybitDataStreamer::HandlePublicTrade(const nlohmann::json& data) {
   }
 
   for (const auto& trade : data) {
+    // one malformed entry must not cost the whole batch. .at() on a missing
+    // field throws, and letting that reach OnMessage's catch dropped every
+    // trade after it in the same array -- one bad print silently losing the
+    // nineteen good ones behind it.
     TradeEvent ev{};
-    ev.price = std::stod(trade.at("p").get<std::string>());
-    ev.quantity = std::stod(trade.at("v").get<std::string>());
-    ev.timestamp = trade.at("T").get<int64_t>();
-    // "S" is the taker side: "Sell" -> aggressive SELL (bid hit) -> maker buy.
-    // "Buy" -> aggressive BUY (ask lift) -> maker sell.
-    ev.is_buyer_maker = (trade.at("S").get<std::string>() == "Sell");
+    try {
+      ev.price = std::stod(trade.at("p").get<std::string>());
+      ev.quantity = std::stod(trade.at("v").get<std::string>());
+      ev.timestamp = trade.at("T").get<int64_t>();
+      // "S" is the taker side: "Sell" -> aggressive SELL (bid hit) -> maker
+      // buy. "Buy" -> aggressive BUY (ask lift) -> maker sell.
+      ev.is_buyer_maker = (trade.at("S").get<std::string>() == "Sell");
+    } catch (const std::exception& e) {
+      LOG_WARN("BybitDataStreamer: skipping malformed trade entry: {}",
+               e.what());
+      continue;
+    }
 
-    LOG_INFO("LIVE TRADE | Price: {:.2f}, Qty: {:.4f}, IsMaker: {}", ev.price, ev.quantity, ev.is_buyer_maker);
+    // no INFO per raw trade: on a liquid pair that is tens of lines a second,
+    // and it buried the one line that mattered. the validator counts every
+    // trade it accepts and the book heartbeat below shows the feed is alive;
+    // what a single venue print does not deserve is a log line of its own.
     LIVE_DBG("websocket: TRADE PARSED ts={} price={} qty={} is_buyer_maker={}",
              ev.timestamp, ev.price, ev.quantity, ev.is_buyer_maker);
 
@@ -268,11 +308,16 @@ void BybitDataStreamer::HandlePublicTrade(const nlohmann::json& data) {
 }
 
 void BybitDataStreamer::ResetOrderBook() {
+  // a fresh connection has lost nothing: it has not been given a book yet.
+  // arming the watchdog unconditionally made every Open start a 3s countdown,
+  // and with max_reconnects=0 that turned a healthy start into "feed
+  // reconnected 1 time(s)" 3.1s in, before the first snapshot could arrive.
+  // only a book that existed and is now gone is a loss worth resyncing.
+  const bool had_book = book_.has_snapshot();
   book_.Clear();
-  // while running, an unusable book starts the resync clock. before the engine
-  // is armed there is nothing to resync: the startup gate decides whether a
-  // feed that never produced a book is fit to run.
-  if (running_.load(std::memory_order_acquire)) {
+  // before the engine is armed there is nothing to resync either: the startup
+  // gate decides whether a feed that never produced a book is fit to run.
+  if (had_book && running_.load(std::memory_order_acquire)) {
     resync_.OnBookInvalidated(NowMillis());
   }
 }
@@ -297,9 +342,23 @@ void BybitDataStreamer::EmitOrderBook(int64_t ts_ms) {
 
   const L2Snapshot snap = book_.ToSnapshot(ts_ms);
 
-  LOG_INFO("LIVE L2   | Best Bid: {:.2f} ({:.4f}) | Best Ask: {:.2f} ({:.4f})",
-           snap.best_bid_price, snap.best_bid_qty, snap.best_ask_price,
-           snap.best_ask_qty);
+  // per-frame INFO is a flood, not a signal: orderbook.50 pushes tens of
+  // frames a second, so this buried everything that mattered and grew the log
+  // file without bound. once a second is enough to see the feed is alive and
+  // roughly where the book is.
+  //
+  // measured on a steady clock, not on the venue's "ts": a delta carrying a
+  // slightly older timestamp would make the subtraction negative and silence
+  // the heartbeat until the venue clock caught up, which reads as a dead feed.
+  static auto last_info = std::chrono::steady_clock::now() -
+                          std::chrono::seconds(2);
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_info >= std::chrono::seconds(1)) {
+    last_info = now;
+    LOG_INFO("LIVE L2   | Best Bid: {:.2f} ({:.4f}) | Best Ask: {:.2f} ({:.4f})",
+             snap.best_bid_price, snap.best_bid_qty, snap.best_ask_price,
+             snap.best_ask_qty);
+  }
   LIVE_DBG("websocket: L2 PARSED ts={} bid={} bid_qty={} ask={} ask_qty={}",
            snap.timestamp, snap.best_bid_price, snap.best_bid_qty,
            snap.best_ask_price, snap.best_ask_qty);
@@ -307,37 +366,55 @@ void BybitDataStreamer::EmitOrderBook(int64_t ts_ms) {
   EmitL2(snap);
 }
 
-void BybitDataStreamer::HandleOrderBook(const nlohmann::json& data) {
-  // orderbook.50 payload:
-  //   { "s":"BTCUSDT", "b":[["price","size"], ...], "a":[["price","size"], ...],
-  //     "ts":ms, "type":"snapshot"|"delta", "u":<update id>, "seq":<cross seq> }
+void BybitDataStreamer::HandleOrderBook(const nlohmann::json& envelope) {
+  // bybit v5 orderbook.50 message:
+  //   { "topic": "orderbook.50.BTCUSDT",
+  //     "type":  "snapshot" | "delta",              <- envelope level
+  //     "ts":    <matching-engine ms>,              <- envelope level
+  //     "data":  { "s": "BTCUSDT",
+  //                "b": [["price","size"], ...],
+  //                "a": [["price","size"], ...],
+  //                "u": <update id>, "seq": <cross seq> } }
   //
-  // "type" decides everything. a snapshot is the complete top 50 and replaces
-  // the local book; a delta carries ONLY the levels whose size changed, so
-  // forwarding it as a snapshot would hand the engine a book that lost every
-  // level the delta did not mention. there is no safe guess for a frame
-  // without "type", so it is dropped instead of assumed to be a snapshot.
+  // "type" is NOT inside "data". reading it there is why every book frame was
+  // dropped by the guard below before a single level was parsed: l2 delivered
+  // zero frames and reported zero rejections, because the frame never reached
+  // the parser. "ts" was misread the same way and silently fell back to the
+  // local clock, which made every frame look fresh to the staleness check.
   //
-  // the application rules are OrderBook's; this function only maps json onto
-  // them and decides what the socket should do about a gap.
-  if (!data.contains("type") || !data["type"].is_string()) {
-    LIVE_DBG("websocket: orderbook frame without type, dropping");
+  // the parameter is the envelope. a bare "data" object is still detected and
+  // read for levels, but it carries no "type", so it is dropped rather than
+  // guessed at: a delta forwarded as a snapshot is a book that silently lost
+  // every level the delta did not mention.
+  //
+  // the drop reasons below are LOG_DEBUG, not LIVE_DBG: LIVE_DBG is gated on
+  // g_live_debug_enabled, which is off by default, so those messages were
+  // invisible during exactly the investigation they existed for.
+  const nlohmann::json* levels_ptr = &envelope;
+  if (envelope.contains("data") && envelope["data"].is_object()) {
+    levels_ptr = &envelope["data"];
+  }
+  const nlohmann::json& levels = *levels_ptr;
+
+  if (!envelope.contains("type") || !envelope["type"].is_string()) {
+    LOG_DEBUG("BybitDataStreamer: orderbook frame without envelope type, "
+              "dropping (no levels applied)");
     return;
   }
-  const std::string type = data["type"].get<std::string>();
+  const std::string type = envelope["type"].get<std::string>();
 
   int64_t ts_ms = NowMillis();
-  if (data.contains("ts") && data["ts"].is_number_integer()) {
-    ts_ms = data["ts"].get<int64_t>();
+  if (envelope.contains("ts") && envelope["ts"].is_number_integer()) {
+    ts_ms = envelope["ts"].get<int64_t>();
   }
 
-  const bool has_u = data.contains("u") && data["u"].is_number_integer();
-  const int64_t update_id = has_u ? data["u"].get<int64_t>() : 0;
+  const bool has_u = levels.contains("u") && levels["u"].is_number_integer();
+  const int64_t update_id = has_u ? levels["u"].get<int64_t>() : 0;
 
   std::vector<mokuren::OrderBook::Level> bids;
   std::vector<mokuren::OrderBook::Level> asks;
-  if (data.contains("b")) ParseLevels(data.at("b"), bids);
-  if (data.contains("a")) ParseLevels(data.at("a"), asks);
+  if (levels.contains("b")) ParseLevels(levels.at("b"), bids);
+  if (levels.contains("a")) ParseLevels(levels.at("a"), asks);
 
   mokuren::OrderBook::ApplyResult result =
       mokuren::OrderBook::ApplyResult::Ignored;
@@ -346,16 +423,18 @@ void BybitDataStreamer::HandleOrderBook(const nlohmann::json& data) {
   } else if (type == "delta") {
     result = book_.ApplyDelta(bids, asks, update_id);
   } else {
-    LIVE_DBG("websocket: unknown orderbook type '{}', dropping", type);
+    LOG_DEBUG("BybitDataStreamer: unknown orderbook type '{}', dropping", type);
     return;
   }
 
   switch (result) {
     case mokuren::OrderBook::ApplyResult::Ignored:
-      // a delta with no snapshot behind it. the resync clock is already
-      // running from whichever reset dropped the book, so there is nothing to
-      // do here but wait for the replay.
-      LIVE_DBG("websocket: orderbook {} ignored (no snapshot yet)", type);
+      // a delta with no snapshot behind it. before the engine is armed the
+      // startup gate owns the decision; while running, the resync clock was
+      // started by whichever reset dropped the book, so there is nothing to do
+      // here but wait for the replay.
+      LOG_DEBUG("BybitDataStreamer: orderbook {} ignored (no snapshot yet)",
+                type);
       return;
     case mokuren::OrderBook::ApplyResult::GapDetected:
       // a missed delta leaves a removed level present or a grown level small,
