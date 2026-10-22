@@ -1,0 +1,64 @@
+{
+  "api_key": "",
+  "api_secret": "",
+  "backtest": {
+    "config_profile": "configs/spoofhunter_testnet.json",
+    "wfa_in_sample_days": 14,
+    "wfa_mode": false,
+    "wfa_out_of_sample_days": 7,
+    "wfa_step_days": 7
+  },
+  "environment": {
+    "dataset": "data/2026/woche",
+    "exchange": "hyperliquid",
+    "interval_ms": 60000,
+    "macro_interval_ms": 900000,
+    "max_cores": 0,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
+  },
+  "execution": {
+    "slippage_pct": 0.0002,
+    "taker_fee_pct": 0.0004
+  },
+  "filters": [
+    {
+      "active": false,
+      "name": "MacroTrend"
+    }
+  ],
+  "is_testnet": true,
+  "risk": {
+    "max_daily_loss": 400.0,
+    "min_distance_dollars": 10.0,
+    "modules": [
+      {
+        "active": true,
+        "name": "SinglePositionLock"
+      }
+    ],
+    "risk_per_trade_pct": 0.02,
+    "sl_price_pct": 0.004,
+    "tp_r": 3.0
+  },
+  "trade_management": {
+    "break_even": {
+      "enabled": false
+    },
+    "scale_out": {
+      "enabled": false
+    },
+    "trailing": {
+      "enabled": false
+    }
+  },
+  "triggers": [
+    {
+      "active": true,
+      "drop_threshold": 0.9,
+      "lookback_ms": 500,
+      "min_wall_qty": 1.0,
+      "name": "SpoofHunter"
+    }
+  ]
+}

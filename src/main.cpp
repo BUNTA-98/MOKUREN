@@ -4,12 +4,14 @@
 #include "live_engine.hpp"
 #include "config_parser.hpp"
 #include "factory.hpp"
+#include "feed_router.hpp"
 
 #include <ixwebsocket/IXNetSystem.h>
 
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -34,6 +36,118 @@ void RunBacktest() {
     std::cerr << "fataler fehler: " << e.what() << "\n";
     throw;
   }
+}
+
+int64_t NowMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// --probe: connect to the venue's public feed, run it through the same
+// StartupGate the live path uses, print the report and exit.
+//
+// The engine is never constructed, so a probe cannot arm, cannot fill and
+// cannot touch the account -- which is what makes it safe to run against a
+// venue at any time, including on a fresh box before keys are installed.
+//
+// This is what the deleted venue_doctor should have been: not a second
+// implementation of "is this data good", but the same implementation with the
+// trading detached. The streamer comes from the same factory live mode uses,
+// so a probe cannot pass on a streamer live mode would not pick.
+//
+// NOTE ON DEPTH: the gate checks whatever the config asks for. A config with
+// no "startup_probe" block gets Development(), whose min_l2_depth is 2, so a
+// probe with defaults proves "the book is at least 2 deep", not "at least 20".
+// To verify the depth the strategy actually needs, set min_l2_depth explicitly
+// in the config being probed.
+int RunProbe(const std::string& config_path) {
+  std::signal(SIGINT, HandleSigint);
+
+  LOG_INFO("probe: loading config from '{}'", config_path);
+
+  std::ifstream cfg_file(config_path);
+  if (!cfg_file.is_open()) {
+    throw std::runtime_error("failed to open config file: " + config_path);
+  }
+
+  json cfg_json;
+  cfg_file >> cfg_json;
+  FlattenGrids(cfg_json);
+
+  // a probe signs nothing: it needs the public feed and nothing else. demanding
+  // credentials here would make the check useless on exactly the machines that
+  // need it most.
+  AppConfig cfg =
+      AppConfig::Load(cfg_json, /*require_venue_credentials=*/false);
+
+  // built exactly as live mode builds it. use_paper_broker keeps a venue
+  // execution adapter out of the process; the pipeline is constructed but
+  // never started, so no trigger ever sees a frame.
+  EngineInstance engine = StrategyFactory::Build(
+      cfg, /*live_mode=*/true, /*use_paper_broker=*/true);
+  if (!engine.streamer) {
+    throw std::runtime_error("probe: no market-data streamer for exchange '" +
+                             cfg.exchange + "'");
+  }
+
+  const std::string venue = cfg.exchange;
+  mokuren::integrity::FeedRouter router(
+      venue, mokuren::integrity::ProfileForVenue(venue), cfg.probe,
+      NowMillis());
+  router.Attach(*engine.streamer);
+
+  LOG_INFO("probe: checking {} via the public feed (trades>={} l2>={} "
+           "depth>={} for >={}ms, timeout {}ms)",
+           venue, cfg.probe.min_trades, cfg.probe.min_l2_frames,
+           cfg.probe.min_l2_depth, cfg.probe.min_duration_ms,
+           cfg.probe.timeout_ms);
+
+  engine.streamer->Start();
+
+  // the same cadence and progress line as LiveOrchestrator::Start: a soak must
+  // not look like a hang, and ctrl-c must leave no socket behind.
+  constexpr int64_t kPollIntervalMs = 20;
+  constexpr int64_t kProgressIntervalMs = 5000;
+  int64_t next_progress_ms = NowMillis() + kProgressIntervalMs;
+
+  mokuren::integrity::ProbeState state = router.Poll(NowMillis());
+  while (state == mokuren::integrity::ProbeState::Probing) {
+    if (g_quit.load(std::memory_order_acquire)) {
+      LOG_INFO("probe: interrupted");
+      engine.streamer->Stop();
+      return 130;  // 128 + SIGINT, the conventional shell code
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+    const int64_t now = NowMillis();
+    state = router.Poll(now);
+
+    if (state == mokuren::integrity::ProbeState::Probing &&
+        now >= next_progress_ms) {
+      const mokuren::integrity::ProbeReport r = router.Report();
+      LOG_INFO("probe: in progress ({} ms): trades={} l2={} rejected={}",
+               r.elapsed_ms, r.trades.delivered, r.l2.delivered,
+               r.trades.rejected() + r.l2.rejected());
+      next_progress_ms = now + kProgressIntervalMs;
+    }
+  }
+
+  engine.streamer->Stop();
+
+  const mokuren::integrity::ProbeReport report = router.Report();
+  std::cout << "\n" << report.ToString() << std::flush;
+
+  if (!report.passed()) {
+    LOG_ERROR("probe: {} FAILED: {}", venue, report.reason);
+    std::cerr << "probe failed: " << report.reason << "\n";
+    // a failed probe is an answer, not a crash: exit non-zero without throwing
+    // so the report above stays the last thing on the terminal.
+    return 1;
+  }
+
+  LOG_INFO("probe: {} passed in {} ms", venue, report.elapsed_ms);
+  return 0;
 }
 
 // headless live forward-test: streams exchange data into the orchestrator.
@@ -175,6 +289,7 @@ int main(int argc, char** argv) {
 
   bool live_mode = false;
   bool paper_mode = false;
+  bool probe_mode = false;
   bool debug_mode = false;
   std::string config_path;
   for (int i = 1; i < argc; ++i) {
@@ -182,6 +297,8 @@ int main(int argc, char** argv) {
       live_mode = true;
     } else if (std::strcmp(argv[i], "--paper") == 0) {
       paper_mode = true;
+    } else if (std::strcmp(argv[i], "--probe") == 0) {
+      probe_mode = true;
     } else if (std::strncmp(argv[i], "--config=", 9) == 0) {
       config_path = argv[i] + 9;
     } else if (std::strcmp(argv[i], "--debug") == 0) {
@@ -193,23 +310,29 @@ int main(int argc, char** argv) {
       // predates the flag both looked like "it launched the backtest instead".
       // the flag set is small and closed, so refuse anything else.
       std::cerr << "error: unknown argument '" << argv[i]
-                << "' (supported: --live, --paper, --config=<path>, --debug)\n";
+                << "' (supported: --live, --paper, --probe, --config=<path>, "
+                   "--debug)\n";
       return 1;
     }
   }
 
-  if (live_mode && paper_mode) {
-    std::cerr << "error: --live and --paper are mutually exclusive\n";
+  // exactly one run mode. --probe is a sibling of --live/--paper, not a flag on
+  // top of them: "probe and then trade" is what --live already does (it arms
+  // only once the gate passes), and "probe instead of trading" is this.
+  const int modes_selected =
+      (live_mode ? 1 : 0) + (paper_mode ? 1 : 0) + (probe_mode ? 1 : 0);
+  if (modes_selected > 1) {
+    std::cerr << "error: --live, --paper and --probe are mutually exclusive\n";
     return 1;
   }
-  if ((live_mode || paper_mode) && config_path.empty()) {
-    std::cerr << "error: --live/--paper requires --config=<path> (e.g. --config=configs/btc_scalp_v1.json)\n";
+  if (modes_selected == 1 && config_path.empty()) {
+    std::cerr << "error: --live/--paper/--probe requires --config=<path> (e.g. --config=configs/btc_scalp_v1.json)\n";
     return 1;
   }
 
   mokuren::InitLogger("logs/engine.log",
                       debug_mode ? spdlog::level::trace : spdlog::level::info,
-                      live_mode || paper_mode);
+                      live_mode || paper_mode || probe_mode);
   // pin the global level to the same threshold. spdlog::set_level(trace) was
   // unconditional, so every release run logged at trace into the rotating
   // audit file and drowned the events that matter.
@@ -218,7 +341,11 @@ int main(int argc, char** argv) {
 
   int exit_code = 0;
   try {
-    if (live_mode || paper_mode) {
+    if (probe_mode) {
+      // returns an exit code instead of throwing: a failing feed is an answer,
+      // and the report it printed is the useful output, not a stack trace.
+      exit_code = RunProbe(config_path);
+    } else if (live_mode || paper_mode) {
       RunLive(config_path, /*use_paper_broker=*/paper_mode);
     } else {
       RunBacktest();

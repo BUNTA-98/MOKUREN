@@ -3,7 +3,6 @@ binance/
 data/
 runs/
 venv/
-configs/
 build/
 cryptohft/
 logs/
@@ -11,3 +10,4 @@ logs/
 .env
 live_debug.log
 notes.txt
+*.sec.json

@@ -1,0 +1,81 @@
+{
+  "exchange": "bybit",
+
+  "venue": {
+    "environment": "mainnet",
+    "category": "linear",
+    "symbol": "BTCUSDT",
+    "position_mode": "one_way",
+    "allow_mainnet": true
+  },
+
+  "initial_balance": 10000.0,
+
+  "environment": {
+    "filepath": "",
+    "interval_ms": 60000,
+    "macro_interval_ms": 300000,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
+  },
+
+  "startup_probe": {
+    "preset": "development",
+    "min_trades": 10,
+    "min_l2_frames": 20,
+    "min_l2_depth": 20,
+    "min_duration_ms": 3000,
+    "timeout_ms": 30000,
+    "max_reconnects": 0,
+    "on_failure": "abort"
+  },
+
+  "execution": {
+    "taker_fee_pct": 0.00055,
+    "slippage_pct": 0.0005
+  },
+
+  "prop": {
+    "enabled": false
+  },
+
+  "risk": {
+    "sl_pct": 0.01,
+    "tp_r": 2.0,
+    "risk_per_trade_pct": 0.005,
+    "max_daily_loss": 1000.0,
+    "min_distance_dollars": 0.0,
+    "modules": [
+      { "name": "SinglePositionLock" },
+      { "name": "MaxStopDistanceLock" }
+    ]
+  },
+
+  "trade_management": {
+    "break_even": {
+      "trigger_r": 1.0,
+      "target_r": 0.0
+    },
+    "trailing": {
+      "enabled": true,
+      "trigger_r": 1.0,
+      "distance_r": 0.5
+    },
+    "scale_out": {
+      "enabled": true,
+      "trigger_r": 2.0,
+      "fraction": 0.5
+    }
+  },
+
+  "triggers": [
+    { "name": "StackedImbalance", "levels": 2 },
+    { "name": "DeltaAbsorption" }
+  ],
+
+  "filters": [
+    { "name": "MinVolume" },
+    { "name": "OrderbookImbalance" },
+    { "name": "Volatility" }
+  ]
+}
