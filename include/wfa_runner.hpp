@@ -18,12 +18,19 @@ public:
   using ProgressCallback = std::function<void(int, int)>;
   using ResultCallback   = std::function<void(const TestResult&)>;
 
+  // `dataset_path` is the dataset the caller resolved; empty means "read the
+  // config". same rule and same reason as GridRunner::Run.
   void RunWFA(const std::string& config_path,
               StatusCallback on_status,
               ProgressCallback on_progress,
-              ResultCallback on_result);
+              ResultCallback on_result,
+              const std::string& dataset_path = "");
 
-  ReplayResult ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs);
+  // `dataset_path` is the dataset the replay should read; empty falls back to
+  // the first window's environment.dataset. every window is sliced from the
+  // same file, so prints and book cannot come from two different recordings.
+  ReplayResult ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
+                         const std::string& dataset_path = "");
 };
 
 } // namespace mokuren

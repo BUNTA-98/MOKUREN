@@ -29,7 +29,16 @@ struct ReplayResult {
 
 class ReplayManager {
 public:
-    static ReplayResult Run(const std::vector<TradeEvent>& all_trades, const nlohmann::json& winning_config) {
+    // `dataset_path` is the dataset the caller resolved (the scanner hands over
+    // the path from the selected profile); empty falls back to the config's
+    // environment.dataset. an explicit path wins, so the prints and the book
+    // always come from the same file.
+    //
+    // throws std::runtime_error when the recording is damaged (see
+    // DataManager::LoadAllL2Snapshots). the caller decides whether that is a
+    // status line or an empty result; this function does not swallow it.
+    static ReplayResult Run(const std::vector<TradeEvent>& all_trades, const nlohmann::json& winning_config,
+                            const std::string& dataset_path = "") {
         ReplayResult result;
         if (all_trades.empty()) return result;
 
@@ -56,9 +65,14 @@ public:
         // book too. running candle-only made an orderflow strategy evaluate as
         // if every snapshot were empty, and the replay disagreed with the
         // backtest that selected the config.
+        // resolving the book from the config while the caller handed over a
+        // different path is how a replay ended up evaluating one recording's
+        // prints against another recording's book.
         const std::string dataset =
-            winning_config.value("environment", nlohmann::json::object())
-                .value("dataset", "data");
+            !dataset_path.empty()
+                ? dataset_path
+                : winning_config.value("environment", nlohmann::json::object())
+                      .value("dataset", "data");
         const std::vector<L2Snapshot> all_l2 =
             DataManager::LoadAllL2Snapshots(dataset);
         if (all_l2.empty()) {

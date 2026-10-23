@@ -17,6 +17,14 @@ public:
     // by mokuren_record. A recording carries both channels and its own
     // metadata, so both loaders read the same file path and neither builds a
     // side cache for it.
+    //
+    // Both THROW std::runtime_error when a recording decoded with an error, a
+    // block was unusable, or records had to be dropped. A recording with
+    // skipped book blocks is not a shorter dataset, it is a book-blind one --
+    // and a caller that got a vector back would run on it and report "no
+    // setups" on a market that was moving. The message names the counts, so it
+    // doubles as the diagnosis. An EMPTY channel is still returned as-is: a
+    // trade-only recording is a legitimate dataset.
     static std::vector<TradeEvent> LoadAllTrades(const std::string& dataset_path);
     static std::vector<L2Snapshot> LoadAllL2Snapshots(const std::string& dataset_path);
     

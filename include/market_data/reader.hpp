@@ -55,6 +55,12 @@ struct SessionData {
   uint64_t records_read = 0;   // raw records in blocks, before any skip
   uint64_t trades_skipped = 0;
   uint64_t l2_skipped = 0;
+  // Blocks this reader could not use: a failed payload checksum, an
+  // unimplemented codec, or a payload past the end of the recording. Distinct
+  // from the per-record skips above because a whole block's worth of data is
+  // gone -- and which block it was is not something the surviving records can
+  // tell you.
+  uint64_t blocks_skipped = 0;
   std::vector<std::string> warnings;
 
   // Non-empty when reading stopped early (bad magic mid-file, short read).

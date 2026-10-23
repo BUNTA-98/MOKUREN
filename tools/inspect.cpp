@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -90,8 +91,20 @@ int main(int argc, char** argv) {
   // Two passes on purpose: this is what the replay does (trades first, then
   // book), so a doubled read of a large recording is a property of the path
   // being measured, not an accident of this tool re-reading it.
-  const std::vector<TradeEvent> trades = DataManager::LoadAllTrades(dataset);
-  const std::vector<L2Snapshot> l2 = DataManager::LoadAllL2Snapshots(dataset);
+  //
+  // DataManager refuses a damaged recording instead of returning a short
+  // channel; here that refusal IS the diagnosis, so print it and stop rather
+  // than letting it escape as a stack trace.
+  std::vector<TradeEvent> trades;
+  std::vector<L2Snapshot> l2;
+  try {
+    trades = DataManager::LoadAllTrades(dataset);
+    l2 = DataManager::LoadAllL2Snapshots(dataset);
+  } catch (const std::exception& e) {
+    std::cerr << "dataset refused: " << e.what() << "\n";
+    mokuren::ShutdownLogger();
+    return EXIT_FAILURE;
+  }
 
   PrintSpan("trades", trades);
   PrintSpan("l2", l2);

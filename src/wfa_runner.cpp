@@ -28,7 +28,8 @@ namespace mokuren {
 void WfaRunner::RunWFA(const std::string &config_path,
                        StatusCallback on_status,
                        ProgressCallback on_progress,
-                       ResultCallback on_result) {
+                       ResultCallback on_result,
+                       const std::string &dataset_path) {
     nlohmann::json base_json;
     try {
         std::ifstream file(config_path);
@@ -44,17 +45,33 @@ void WfaRunner::RunWFA(const std::string &config_path,
         return;
     }
 
-    std::string active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+    // an explicit path wins over the config: it is the one the operator
+    // actually selected. the fallback keeps CLI/test callers working.
+    std::string active_dataset = dataset_path;
+    if (active_dataset.empty()) {
+        active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+    }
     on_status("LOADING DATASET FOR WFA: " + active_dataset);
     
-    std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
+    // a damaged recording throws from the loader. surface the reason on the
+    // status line instead of running every window on a book-blind file.
+    std::vector<TradeEvent> all_trades;
+    std::vector<L2Snapshot> all_l2;
+    try {
+        all_trades = DataManager::LoadAllTrades(active_dataset);
+        all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
+    } catch (const std::exception& e) {
+        LOG_ERROR("wfa: {}", e.what());
+        on_status(std::string("ERR: DATASET: ") + e.what());
+        return;
+    }
+
     if (all_trades.empty()) {
         LOG_ERROR("wfa: no trades found in dataset {}", active_dataset);
         on_status("ERR: NO TRADES FOUND IN DATASET");
         return;
     }
 
-    std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
     if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
 
     LOG_INFO("wfa start: dataset={} trades={}", active_dataset, all_trades.size());
@@ -417,19 +434,35 @@ void WfaRunner::RunWFA(const std::string &config_path,
     on_status("WFA COMPLETE");
 }
 
-ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs) {
+ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
+                                  const std::string& dataset_path) {
     ReplayResult result{};
     if (wfa_configs.empty()) return result;
 
-    std::string active_dataset = wfa_configs[0].config.value("environment", nlohmann::json::object()).value("dataset", "data");
+    // the caller may have resolved the dataset from the selected profile; only
+    // fall back to the first window's config when it did not.
+    std::string active_dataset = dataset_path;
+    if (active_dataset.empty()) {
+        active_dataset = wfa_configs[0].config.value("environment", nlohmann::json::object()).value("dataset", "data");
+    }
     LOG_INFO("replay wfa: dataset={} windows={}", active_dataset, wfa_configs.size());
-    std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
+
+    // a replay is a diagnostic: report a damaged recording and return the
+    // empty result instead of unwinding through the UI that asked for it.
+    std::vector<TradeEvent> all_trades;
+    std::vector<L2Snapshot> all_l2;
+    try {
+        all_trades = DataManager::LoadAllTrades(active_dataset);
+        all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
+    } catch (const std::exception& e) {
+        LOG_ERROR("replay wfa: {}", e.what());
+        return result;
+    }
+
     if (all_trades.empty()) {
         LOG_ERROR("replay wfa: no trades found in dataset {}", active_dataset);
         return result;
     }
-
-    std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
 
     for (const auto& wfa_cfg : wfa_configs) {
         AppConfig cfg = AppConfig::Load(wfa_cfg.config);

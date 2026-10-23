@@ -32,7 +32,8 @@ namespace mokuren {
 void GridRunner::Run(const std::string &config_path,
                      StatusCallback on_status,
                      ProgressCallback on_progress,
-                     ResultCallback on_result) {
+                     ResultCallback on_result,
+                     const std::string &dataset_path) {
     std::ifstream file(config_path);
     if (!file.is_open()) {
         LOG_ERROR("grid search: config not found: {}", config_path);
@@ -60,23 +61,41 @@ void GridRunner::Run(const std::string &config_path,
         return;
     }
     
-    std::string active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+    // an explicit path wins over the config: it is the one the operator
+    // actually selected. the fallback keeps CLI/test callers working.
+    std::string active_dataset = dataset_path;
+    if (active_dataset.empty()) {
+        active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+    }
     LOG_INFO("grid search start: config={} dataset={} permutations={}",
              config_path, active_dataset, runs.size());
     on_status("LOADING DATASET: " + active_dataset);
     
-    // load full dataset to ram via data manager
-    std::vector<TradeEvent> all_trades = DataManager::LoadAllTrades(active_dataset);
+    // load full dataset to ram via data manager.
+    //
+    // a damaged recording throws instead of returning a short vector; the
+    // message goes to the status line so the operator sees the reason, not a
+    // scan that quietly evaluated nothing.
+    std::vector<TradeEvent> all_trades;
+    std::vector<L2Snapshot> all_l2;
+    try {
+        all_trades = DataManager::LoadAllTrades(active_dataset);
+        all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
+    } catch (const std::exception& e) {
+        LOG_ERROR("grid search: {}", e.what());
+        on_status(std::string("ERR: DATASET: ") + e.what());
+        return;
+    }
+
     if (all_trades.empty()) {
         LOG_ERROR("grid search: no trades found in dataset {}", active_dataset);
         on_status("ERR: NO TRADES FOUND IN DATASET");
         return;
     }
 
-    std::vector<L2Snapshot> all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
     if (all_l2.empty()) {
-        LOG_WARN("grid search: no L2 data (L2_cache_v3.bin) found for {}", active_dataset);
-        on_status("WARN: NO L2 DATA (L2_cache_v3.bin) FOUND");
+        LOG_WARN("grid search: no L2 data found for {}", active_dataset);
+        on_status("WARN: NO L2 DATA FOUND");
     } else {
         if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
     }

@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -34,6 +35,41 @@ void ReportSessionIssues(const std::string& path,
     for (const auto& warning : session.warnings) {
         log->warn("session '{}': {}", path, warning);
     }
+}
+
+// Refuses a recording the reader has already told us is damaged. Reporting it
+// through the logger is not enough: under the TUI that file is written, never
+// read, and the run proceeds on the surviving records.
+//
+// Keyed on `error`, the block/record skip counters -- NOT on warnings alone.
+// An unknown record kind is forward compatibility (a newer recorder adding
+// funding marks must not make this build reject the file), and a metadata
+// checksum mismatch costs session labels, not records.
+void RequireCleanSession(const std::string& path,
+                         const mokuren::mdf::SessionData& session) {
+    if (session.error.empty() && session.blocks_skipped == 0 &&
+        session.trades_skipped == 0 && session.l2_skipped == 0) {
+        return;
+    }
+
+    std::string reason =
+        session.error.empty() ? "recording dropped records" : session.error;
+    if (session.blocks_skipped > 0) {
+        reason += "; " + std::to_string(session.blocks_skipped) +
+                  " block(s) unusable";
+    }
+    if (session.trades_skipped > 0) {
+        reason += "; " + std::to_string(session.trades_skipped) +
+                  " trade record(s) unusable";
+    }
+    if (session.l2_skipped > 0) {
+        reason += "; " + std::to_string(session.l2_skipped) +
+                  " book record(s) unusable, so the run would be book-blind";
+    }
+    if (!session.warnings.empty()) {
+        reason += "; first warning: " + session.warnings.front();
+    }
+    throw std::runtime_error("dataset '" + path + "': " + reason);
 }
 
 // Reads a whole L2 cache. false means missing, truncated, or carrying a partial
@@ -169,6 +205,7 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
         mokuren::mdf::SessionData session =
             mokuren::mdf::ReadSessionFile(dataset_path);
         ReportSessionIssues(dataset_path, session);
+        RequireCleanSession(dataset_path, session);
         return std::move(session.trades);
     }
 
@@ -291,6 +328,7 @@ std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &datas
         mokuren::mdf::SessionData session =
             mokuren::mdf::ReadSessionFile(dataset_path);
         ReportSessionIssues(dataset_path, session);
+        RequireCleanSession(dataset_path, session);
         return std::move(session.l2);
     }
 

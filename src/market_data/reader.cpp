@@ -419,6 +419,7 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
           std::to_string(block.payload_size) +
           " payload bytes past the end of the recording; stopping here "
           "(truncated write)");
+      ++out.blocks_skipped;
       break;
     }
     const uint64_t next = payload_offset + block.payload_size;
@@ -440,6 +441,7 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
           "block at offset " + std::to_string(offset) +
           " failed its checksum; skipping " +
           std::to_string(block.record_count) + " record(s)");
+      ++out.blocks_skipped;
       offset = next;
       continue;
     }
@@ -448,6 +450,7 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
           "block at offset " + std::to_string(offset) + " uses block codec " +
           std::to_string(block.codec) +
           ", which this reader does not implement; skipping");
+      ++out.blocks_skipped;
       offset = next;
       continue;
     }
