@@ -56,8 +56,10 @@ L2Snapshot GoodBook(int64_t ts = 1000, double bid = 100.0, double ask = 100.5) {
 // same code path as the production criteria.
 ProbeCriteria FastCriteria() {
   ProbeCriteria c;
-  c.min_trades = 1;
-  c.min_l2_frames = 1;
+  // a positive rate with a zero window still requires one frame per channel:
+  // that floor is what these cases rely on, not the magnitude of the rate.
+  c.min_trades_per_min = 60;
+  c.min_l2_frames_per_min = 60;
   c.min_duration_ms = 0;
   c.timeout_ms = 10000;
   c.max_reconnects = 0;

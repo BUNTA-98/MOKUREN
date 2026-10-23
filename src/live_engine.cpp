@@ -273,10 +273,15 @@ bool LiveOrchestrator::Start(
   LOG_INFO("LiveOrchestrator: starting worker thread");
   worker_ = std::thread(&LiveOrchestrator::WorkerLoop, this);
 
+  // rates, not counts: print the threshold as the gate judges it, so this line
+  // and the eventual verdict cannot describe two different criteria. depth is
+  // included because it is now a startup precondition in its own right -- a
+  // feed at the right rate but too shallow fails before the soak ends.
   LOG_INFO("LiveOrchestrator: starting market streamer (startup checks: "
-           "trades>={} l2>={} for >={}ms, timeout {}ms)",
-           criteria.min_trades, criteria.min_l2_frames,
-           criteria.min_duration_ms, criteria.timeout_ms);
+           "trades>={}/min l2>={}/min depth>={} for >={}ms, timeout {}ms)",
+           criteria.min_trades_per_min, criteria.min_l2_frames_per_min,
+           criteria.min_l2_depth, criteria.min_duration_ms,
+           criteria.timeout_ms);
   streamer_->Start();
 
   // --- wait for the gate, then arm -----------------------------------------

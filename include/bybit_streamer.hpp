@@ -98,4 +98,11 @@ private:
   // atomic because the heartbeat thread sets it before forcing a reconnect and
   // the callback thread reads it on Close.
   std::atomic<bool> connection_gap_reported_{false};
+
+  // the heartbeat does not open the new socket itself. it flags the request and
+  // stops the old one; the Close handler -- already on the callback thread --
+  // starts the replacement. tearing down and rebuilding on one thread is what
+  // guarantees the stale Close cannot wipe a snapshot the new connection has
+  // already delivered.
+  std::atomic<bool> reconnect_requested_{false};
 };

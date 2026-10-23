@@ -32,11 +32,18 @@ void PropGuard::Reset() {
 }
 
 double PropGuard::daily_drawdown() const {
+  // a disabled guard has no limits in effect, so a percentage is meaningless:
+  // Observe() returns before anchoring anything, leaving last_equity_ at zero,
+  // and (initial - last) / initial then reads as a total loss. nothing can
+  // block or size here, but "total_dd=100%" on a healthy shadow run is exactly
+  // the line that gets misread during an incident.
+  if (!rules_.enabled) return 0.0;
   if (!(day_start_equity_ > 0.0)) return 0.0;
   return (day_start_equity_ - last_equity_) / day_start_equity_;
 }
 
 double PropGuard::total_drawdown() const {
+  if (!rules_.enabled) return 0.0;
   if (!(initial_equity_ > 0.0)) return 0.0;
   return (initial_equity_ - last_equity_) / initial_equity_;
 }

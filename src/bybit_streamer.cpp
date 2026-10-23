@@ -122,6 +122,18 @@ void BybitDataStreamer::Start() {
           connection_gap_reported_.store(true, std::memory_order_relaxed);
           EmitL2(MakeBookGap());
         }
+
+        // a reconnect the heartbeat asked for completes here, on the callback
+        // thread, after the book was cleared above. starting it from the
+        // heartbeat thread instead let a late Close run ResetOrderBook() after
+        // the new connection's snapshot had landed -- wiping a good book and
+        // leaving l2 silent until the next one.
+        if (reconnect_requested_.exchange(false, std::memory_order_acq_rel) &&
+            running_.load(std::memory_order_acquire)) {
+          LOG_INFO("BybitDataStreamer: reopening the socket after a resync "
+                   "request");
+          web_socket_.start();
+        }
         break;
       }
       case ix::WebSocketMessageType::Error:
@@ -207,13 +219,14 @@ void BybitDataStreamer::HeartbeatLoop() {
     // Close that follows must not report it a second time. Open clears this
     // and reports the reconnect itself.
     connection_gap_reported_.store(true, std::memory_order_relaxed);
+
+    // request only. the Close handler runs on the callback thread and owns
+    // book_, so the new socket is opened there -- after teardown, never
+    // concurrently with it. if no Close ever arrives (the socket was already
+    // dead) stop() is a no-op, the flag stays set, and OnReconnectAttempted
+    // above has widened the backoff so this retries at a sane cadence.
+    reconnect_requested_.store(true, std::memory_order_release);
     web_socket_.stop();
-    // ixwebsocket needs the old transport torn down before start() takes a
-    // fresh one; without this pause start() can observe the stopping socket
-    // and do nothing, leaving the feed dead rather than resynced.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (!keep_alive_.load(std::memory_order_acquire)) return;
-    web_socket_.start();
   }
 }
 

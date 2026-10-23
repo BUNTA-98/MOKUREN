@@ -782,9 +782,10 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
 
     // explicit keys win over the preset: soak for a minute, but lower the frame
     // counts for a thin instrument.
-    cfg.probe.min_trades = read_count("min_trades", cfg.probe.min_trades);
-    cfg.probe.min_l2_frames =
-        read_count("min_l2_frames", cfg.probe.min_l2_frames);
+    cfg.probe.min_trades_per_min = read_count(
+        "min_trades_per_min", cfg.probe.min_trades_per_min);
+    cfg.probe.min_l2_frames_per_min = read_count(
+        "min_l2_frames_per_min", cfg.probe.min_l2_frames_per_min);
     cfg.probe.min_duration_ms =
         read_ms("min_duration_ms", cfg.probe.min_duration_ms);
     cfg.probe.timeout_ms = read_ms("timeout_ms", cfg.probe.timeout_ms);

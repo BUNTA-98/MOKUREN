@@ -91,8 +91,10 @@ L2Snapshot GoodBook(int64_t ts) {
 // the thresholds turned all the way down.
 ProbeCriteria FastCriteria() {
   ProbeCriteria c;
-  c.min_trades = 1;
-  c.min_l2_frames = 1;
+  // rate form, zero window: the floor of one frame per required channel is
+  // what arms the gate here, exactly as min_trades/min_l2_frames = 1 did.
+  c.min_trades_per_min = 60;
+  c.min_l2_frames_per_min = 60;
   c.min_duration_ms = 0;
   c.timeout_ms = 10000;
   c.max_reconnects = 0;

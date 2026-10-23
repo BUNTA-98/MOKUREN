@@ -1,5 +1,6 @@
 #include "startup_gate.hpp"
 
+#include <cmath>
 #include <sstream>
 #include <utility>
 
@@ -35,11 +36,13 @@ StartupGate::StartupGate(std::string venue, VenueProfile profile,
   report_.venue = std::move(venue);
   report_.trades.channel = "trades";
   report_.trades.required = profile_.trades_required;
-  report_.trades.min_required =
-      profile_.trades_required ? criteria_.min_trades : 0;
+  // min_required is not a fixed number any more: it is re-derived from the
+  // rate at each evaluation, so a report row says how many frames the window
+  // so far should have produced instead of a count tuned for one market hour.
+  report_.trades.min_required = 0;
   report_.l2.channel = "l2";
   report_.l2.required = profile_.l2_required;
-  report_.l2.min_required = profile_.l2_required ? criteria_.min_l2_frames : 0;
+  report_.l2.min_required = 0;
   l2_limits_.min_depth = criteria_.min_l2_depth;
 }
 
@@ -141,11 +144,37 @@ ProbeState StartupGate::EvaluateLocked(int64_t now_ms) {
                       std::to_string(criteria_.max_reconnects) + ")");
   }
 
-  // 4. every required channel on its own, plus the minimum wall time.
-  const bool trades_ok = !profile_.trades_required ||
-                         report_.trades.delivered >= criteria_.min_trades;
+  // 4. sustained rate on every required channel, plus the minimum window.
+  //    the rate is converted to a count for the window so far, which keeps
+  //    ChannelReport::passed() meaningful and lets a row still say how many
+  //    frames it needed.
+  //
+  //    a positive rate always demands at least one frame. without that floor
+  //    a large rate multiplied by a small elapsed time rounds to zero, and a
+  //    silent channel would "pass" -- the regression ChannelReport::passed()
+  //    was written to prevent.
+  const double minutes = static_cast<double>(elapsed) / 60000.0;
+  auto required_count = [minutes](uint64_t per_min) -> uint64_t {
+    if (per_min == 0) return 0;
+    if (!(minutes > 0.0)) return 1;
+    const auto scaled = static_cast<uint64_t>(
+        std::ceil(static_cast<double>(per_min) * minutes));
+    return scaled > 0 ? scaled : 1;
+  };
+  if (profile_.trades_required) {
+    report_.trades.min_required =
+        required_count(criteria_.min_trades_per_min);
+  }
+  if (profile_.l2_required) {
+    report_.l2.min_required =
+        required_count(criteria_.min_l2_frames_per_min);
+  }
+
+  const bool trades_ok =
+      !profile_.trades_required ||
+      report_.trades.delivered >= report_.trades.min_required;
   const bool l2_ok = !profile_.l2_required ||
-                     report_.l2.delivered >= criteria_.min_l2_frames;
+                     report_.l2.delivered >= report_.l2.min_required;
   if (trades_ok && l2_ok && elapsed >= criteria_.min_duration_ms) {
     state_ = ProbeState::Ready;
     report_.state = ProbeState::Ready;
@@ -168,13 +197,27 @@ ProbeState StartupGate::FailLocked(std::string reason) {
 
 std::string StartupGate::ShortfallLocked() const {
   std::ostringstream os;
-  os << "not enough well-formed data after " << report_.elapsed_ms << " ms:";
+  const double minutes = report_.elapsed_ms > 0
+                             ? static_cast<double>(report_.elapsed_ms) / 60000.0
+                             : 0.0;
+  // the observed rate, not just the count. "259 frames" says nothing without
+  // the window it arrived in, and the bare count is what made the old failure
+  // read as a broken feed instead of a slow hour.
+  auto observed_per_min = [minutes](uint64_t delivered) -> long long {
+    if (!(minutes > 0.0)) return 0;
+    return static_cast<long long>(static_cast<double>(delivered) / minutes);
+  };
+
+  os << "not enough sustained data after " << report_.elapsed_ms << " ms:";
   if (profile_.trades_required) {
-    os << " trades " << report_.trades.delivered << "/"
-       << criteria_.min_trades;
+    os << " trades " << report_.trades.delivered << " ("
+       << observed_per_min(report_.trades.delivered) << "/min, need "
+       << criteria_.min_trades_per_min << "/min)";
   }
   if (profile_.l2_required) {
-    os << " l2 " << report_.l2.delivered << "/" << criteria_.min_l2_frames;
+    os << " l2 " << report_.l2.delivered << " ("
+       << observed_per_min(report_.l2.delivered) << "/min, need "
+       << criteria_.min_l2_frames_per_min << "/min)";
   }
   return os.str();
 }

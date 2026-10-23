@@ -20,19 +20,23 @@
   },
 
   "startup_probe": {
-    "preset": "development",
-    "min_trades": 10,
-    "min_l2_frames": 20,
+    "preset": "production",
     "min_l2_depth": 20,
-    "min_duration_ms": 3000,
-    "timeout_ms": 30000,
-    "max_reconnects": 0,
     "on_failure": "abort"
   },
 
   "execution": {
     "taker_fee_pct": 0.0004,
     "slippage_pct": 0.0002
+  },
+
+   "prop": {
+    "enabled": true,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8,
+    "daily_reset_hour_utc": 0,
+    "flatten_on_breach": true
   },
 
   "risk": {
@@ -68,9 +72,9 @@
     {
       "name": "SpoofHunter",
       "active": true,
-      "lookback_ms": 500,
-      "min_wall_qty": 1.0,
-      "drop_threshold": 0.9
+      "lookback_ms": 2000,
+      "min_wall_qty": 0.8,
+      "drop_threshold": 0.5
     }
   ],
 

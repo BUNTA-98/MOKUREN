@@ -97,11 +97,14 @@ int RunProbe(const std::string& config_path) {
       NowMillis());
   router.Attach(*engine.streamer);
 
-  LOG_INFO("probe: checking {} via the public feed (trades>={} l2>={} "
-           "depth>={} for >={}ms, timeout {}ms)",
-           venue, cfg.probe.min_trades, cfg.probe.min_l2_frames,
-           cfg.probe.min_l2_depth, cfg.probe.min_duration_ms,
-           cfg.probe.timeout_ms);
+  // rates, not counts: print the threshold as it will be judged, so the line
+  // in the log matches the verdict instead of describing a criterion the gate
+  // no longer applies.
+  LOG_INFO("probe: checking {} via the public feed (trades>={}/min "
+           "l2>={}/min depth>={} for >={}ms, timeout {}ms)",
+           venue, cfg.probe.min_trades_per_min,
+           cfg.probe.min_l2_frames_per_min, cfg.probe.min_l2_depth,
+           cfg.probe.min_duration_ms, cfg.probe.timeout_ms);
 
   engine.streamer->Start();
 
@@ -337,7 +340,18 @@ int main(int argc, char** argv) {
   // unconditional, so every release run logged at trace into the rotating
   // audit file and drowned the events that matter.
   spdlog::set_level(debug_mode ? spdlog::level::trace : spdlog::level::info);
-  LOG_INFO("engine starting up");
+  // record the exact invocation once. the log carries no pid and no command
+  // line, so two sessions with different configs are indistinguishable once
+  // they share a file -- which is how an old `test.json` launch was mistaken
+  // for the run under investigation.
+  {
+    std::string invocation;
+    for (int i = 1; i < argc; ++i) {
+      if (!invocation.empty()) invocation += ' ';
+      invocation += argv[i];
+    }
+    LOG_INFO("engine starting up (argv: {})", invocation);
+  }
 
   int exit_code = 0;
   try {
