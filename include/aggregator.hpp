@@ -162,6 +162,12 @@ private:
   // per-snapshot copy cost.
   L2RingBuffer l2_history_{}; // <--- NEU: Der Puffer im Arbeitsspeicher
 
+  // bumped by ProcessL2. AttachLatestL2 compares it against the value it last
+  // copied into the bar and skips the copy when nothing has moved, because the
+  // bytes it would write are identical.
+  uint64_t l2_generation_ = 0;
+  uint64_t bar_l2_generation_ = 0;
+
   // valid-but-empty snapshot returned before any l2 data has arrived.
   static const L2Snapshot &EmptyL2() {
     static const L2Snapshot empty{};
@@ -185,6 +191,11 @@ private:
     min_touched_idx_ = MAX_GRID_LEVELS;
     max_touched_idx_ = -1;
   }
+
+  // copy the newest book into the bar, but only when it changed since the last
+  // copy. defined in aggregator.cpp: it needs the ring buffer and the
+  // generation counter, and it is not worth inlining into the header.
+  void AttachLatestL2(Bar &bar);
 
   // widen the tracked touched-index range
   void TrackTouched(int idx) {

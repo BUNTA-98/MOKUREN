@@ -12,6 +12,27 @@ void Aggregator::ProcessL2(const L2Snapshot &l2) {
            l2.timestamp, l2.best_bid_price, l2.best_ask_price);
   // single copy: the ring buffer is now the only owner of the snapshot.
   l2_history_.push(l2); // <--- NEU: pushes snapshot into o(1) buffer
+  ++l2_generation_;
+}
+
+// Copies the newest book into the bar, but only when it has changed since the
+// previous copy.
+//
+// live_bar.last_l2 has to hold the newest snapshot at every evaluation, and
+// ProcessTrade is where it is attached. The book moves far less often than the
+// tape prints: even on a quiet session there are more trades than book frames
+// (1264 vs 811 in recordings/btc_probe.mkn), and in a burst it is many prints
+// per frame. Each of those was re-copying the identical 688-byte struct -- the
+// largest per-print cost in the replay loop, larger than the ring push.
+// Comparing a counter keeps the copy exact (the bytes would be identical) and
+// removes all but the first.
+//
+// ResetBar() deliberately preserves last_l2, so the marker stays valid across a
+// candle roll: the bar still holds the snapshot from bar_l2_generation_.
+void Aggregator::AttachLatestL2(Bar &bar) {
+  if (bar_l2_generation_ == l2_generation_) return;
+  bar.last_l2 = GetLatestL2();
+  bar_l2_generation_ = l2_generation_;
 }
 
 // gets price level from grid or creates new one.
@@ -187,8 +208,9 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
   
   live_bar.vwap = current_metrics_.vwap;
   
-  // attach current l2 state to running candle
-  live_bar.last_l2 = GetLatestL2();
+  // attach current l2 state to running candle (skipped when the book has not
+  // moved since the previous attach -- see AttachLatestL2)
+  AttachLatestL2(live_bar);
 
   // initialize timer
   if (next_close_time == 0) {
@@ -230,8 +252,11 @@ bool Aggregator::ProcessTrade(Bar &live_bar, const TradeEvent &trade) {
     live_bar.ResetBar(new_start);
     ResetWorkspace(); 
     
-    // attach fresh l2 state directly to newly started candle
-    live_bar.last_l2 = GetLatestL2();
+    // last_l2 is deliberately NOT re-attached here. ResetBar() preserves it
+    // precisely so the first evaluation of a new candle still sees the book,
+    // and no L2 frame can arrive inside ProcessTrade -- so GetLatestL2() would
+    // return the snapshot already attached above, i.e. a redundant 688-byte
+    // copy at every candle boundary.
   }
 
   // assign data to current timeframe

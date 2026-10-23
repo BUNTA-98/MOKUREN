@@ -90,50 +90,81 @@ public:
 
         size_t l2_idx = 0;
 
+        // end of the session as the data sees it, not as the last bar sees it.
+        // set by every applied book frame; used to timestamp the forced close.
+        int64_t session_end_ts = 0;
+
+        // most recent print, for the one-sided-book fallback mark. kept outside
+        // the loop because the drain below runs with no trade in scope.
+        double last_price = 0.0;
+
+        // Apply one book frame and let the engine react to it.
+        //
+        // Factored out because it now runs from two places: the catch-up before
+        // a print, and the drain after the final print. A second copy of this
+        // block would be a second implementation of "what the engine does when
+        // the book moves", and the two would diverge the first time either one
+        // changed -- with the drain silently doing less than the main loop,
+        // which is the failure mode it exists to prevent.
+        auto process_l2_frame = [&](size_t idx) {
+            eng.aggregator->ProcessL2(all_l2[idx]);
+            eng.htf_aggregator->ProcessL2(all_l2[idx]);
+
+            MarketContext tick_ctx{
+                eng.aggregator->GetHistory(),
+                live_bar,
+                htf_bar,
+                eng.aggregator->GetSessionMetrics(),
+                eng.aggregator->GetLatestL2(),
+                eng.aggregator->GetL2History()
+            };
+
+            // best bid, or the last print when the frame arrived one-sided: a
+            // zero mark would make the guard read as Unarmed and refuse entries
+            // for a reason that has nothing to do with the account.
+            const double mark = all_l2[idx].best_bid_price > 0.0
+                                    ? all_l2[idx].best_bid_price
+                                    : last_price;
+            const mokuren::PropDecision pd = mokuren::ObserveProp(
+                prop_guard, eng.ptrader.get(), mark, all_l2[idx].timestamp,
+                "replay");
+            if (pd.state == mokuren::PropState::DailyHalted ||
+                pd.state == mokuren::PropState::TotalHalted) {
+                result.prop_breached = true;
+            }
+
+            TradeSignal tick_signal = eng.alpha->Evaluate(tick_ctx, false);
+            if (tick_signal.direction != SignalDirection::NONE &&
+                (!prop_on || prop_guard.allow_new_entry())) {
+                // cross the spread for hft execution.
+                double exec_price =
+                    (tick_signal.direction == SignalDirection::BUY)
+                        ? all_l2[idx].best_ask_price
+                        : all_l2[idx].best_bid_price;
+                if (exec_price <= 0.0) {
+                    exec_price = live_bar.close > 0.0 ? live_bar.close : mark;
+                }
+                executor.Execute(tick_signal, exec_price,
+                                 all_l2[idx].timestamp);
+            }
+            session_end_ts = all_l2[idx].timestamp;
+        };
+
         for (const auto &trade : all_trades) {
-            // replay the book up to this trade, then evaluate tick triggers
-            // against it -- mirrors the backtest l2 catch-up loop.
+            // Strict `<`, not `<=`. live_streamer.hpp guarantees that at an
+            // identical timestamp the print is emitted BEFORE the book update,
+            // and the triggers depend on that to decide whether the book moved
+            // before or after the print. With `<=` the replay applied the book
+            // frame first, handing the strategy a book the live run had not
+            // seen yet. A frame sharing this print's millisecond is applied
+            // after this print, at the top of the next iteration.
+            //
+            // last_price is set before the catch-up so the fallback mark keeps
+            // matching against the print being evaluated, as it did inline.
+            last_price = trade.price;
             while (l2_idx < all_l2.size() &&
-                   all_l2[l2_idx].timestamp <= trade.timestamp) {
-                eng.aggregator->ProcessL2(all_l2[l2_idx]);
-                eng.htf_aggregator->ProcessL2(all_l2[l2_idx]);
-
-                MarketContext tick_ctx{
-                    eng.aggregator->GetHistory(),
-                    live_bar,
-                    htf_bar,
-                    eng.aggregator->GetSessionMetrics(),
-                    eng.aggregator->GetLatestL2(),
-                    eng.aggregator->GetL2History()
-                };
-
-                const double mark = all_l2[l2_idx].best_bid_price > 0.0
-                                        ? all_l2[l2_idx].best_bid_price
-                                        : trade.price;
-                const mokuren::PropDecision pd = mokuren::ObserveProp(
-                    prop_guard, eng.ptrader.get(), mark,
-                    all_l2[l2_idx].timestamp, "replay");
-                if (pd.state == mokuren::PropState::DailyHalted ||
-                    pd.state == mokuren::PropState::TotalHalted) {
-                    result.prop_breached = true;
-                }
-
-                TradeSignal tick_signal = eng.alpha->Evaluate(tick_ctx, false);
-                if (tick_signal.direction != SignalDirection::NONE &&
-                    (!prop_on || prop_guard.allow_new_entry())) {
-                    // cross the spread for hft execution.
-                    double exec_price =
-                        (tick_signal.direction == SignalDirection::BUY)
-                            ? all_l2[l2_idx].best_ask_price
-                            : all_l2[l2_idx].best_bid_price;
-                    if (exec_price <= 0.0) {
-                        exec_price = live_bar.close > 0.0 ? live_bar.close
-                                                          : trade.price;
-                    }
-                    executor.Execute(tick_signal, exec_price,
-                                     all_l2[l2_idx].timestamp);
-                }
-                l2_idx++;
+                   all_l2[l2_idx].timestamp < trade.timestamp) {
+                process_l2_frame(l2_idx++);
             }
 
             // observe the guard before anything can act on this print.
@@ -168,8 +199,35 @@ public:
             }
         }
 
+        // Book frames after the final print. The catch-up above only runs while
+        // there is a trade to catch up for, so a recording whose book outlives
+        // its last fill was truncated at that fill: the tail was never applied
+        // and a book-only signal in it was never evaluated.
+        while (l2_idx < all_l2.size()) process_l2_frame(l2_idx++);
+
         eng.aggregator->FlushLastCandle(live_bar);
-        eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
+
+        // Close at the end of the session, not the start of the last bar. The
+        // exit timestamp drives the candle/exit mapping in ReplayResult, so a
+        // position carried past the final print was reported as closed at that
+        // bar's open -- up to a minute early, and before the stop that may have
+        // taken it out.
+        //
+        // The price needs the same care as the timestamp. ResetBar() zeroes
+        // close, and ProcessTrade only restores it on the next print, so a final
+        // bar with no trades leaves close == 0.0 -- and FlushLastCandle skips an
+        // empty bar entirely, so nothing repairs it. Closing at that price books
+        // a total loss and writes 0 into the trade log. The drain above makes
+        // this reachable in the ordinary case (book frames outliving the last
+        // print), so fall back to the last print, then to the last closed bar.
+        double end_price = live_bar.close;
+        if (!(end_price > 0.0)) end_price = last_price;
+        if (!(end_price > 0.0) && !eng.aggregator->GetHistory().empty()) {
+            end_price = eng.aggregator->GetHistory().back().close;
+        }
+        eng.ptrader->CloseOpenPositionAtEnd(
+            end_price,
+            session_end_ts > 0 ? session_end_ts : live_bar.timestamp_start);
 
         result.history_1m = eng.aggregator->GetHistory();
         result.history_15m = eng.htf_aggregator->GetHistory();

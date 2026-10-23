@@ -62,6 +62,20 @@ FetchContent_MakeAvailable(ixwebsocket)
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "include/*.hpp")
 
+# market data format i/o, named explicitly on top of the glob.
+#
+# engine_tests used a non-recursive glob, so src/market_data/*.cpp was never in
+# its source list: the files compiled into `mokuren` and not into the tests, and
+# the only symptom was undefined mokuren::mdf::* at link time -- three steps from
+# the cause. keep these listed so a stale configure cannot hide them again;
+# remove-then-append keeps each file compiled exactly once.
+set(MARKET_DATA_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/market_data/reader.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/market_data/writer.cpp
+)
+list(REMOVE_ITEM SOURCES ${MARKET_DATA_SOURCES})
+list(APPEND SOURCES ${MARKET_DATA_SOURCES})
+
 # main executable
 add_executable(mokuren ${SOURCES} ${HEADERS})
 
@@ -104,9 +118,14 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "test/*.cpp")
 # test executable
 add_executable(engine_tests ${TEST_SOURCES})
 
-# collect engine code without main.cpp
-file(GLOB ENGINE_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+# collect engine code without main.cpp. RECURSE, matching the main target: the
+# non-recursive glob silently dropped every source under src/market_data/, and a
+# header-only include made that look like a linking problem rather than a
+# missing compilation unit.
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 list(REMOVE_ITEM ENGINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+list(REMOVE_ITEM ENGINE_SOURCES ${MARKET_DATA_SOURCES})
+list(APPEND ENGINE_SOURCES ${MARKET_DATA_SOURCES})
 
 # attach engine code and include dirs
 target_sources(engine_tests PRIVATE ${ENGINE_SOURCES} ${HEADERS})
@@ -116,6 +135,59 @@ target_include_directories(engine_tests PRIVATE src include ${ixwebsocket_SOURCE
 target_link_libraries(engine_tests PRIVATE 
   Catch2::Catch2WithMain
   nlohmann_json::nlohmann_json
+  spdlog::spdlog
+  ixwebsocket
+  PkgConfig::HIREDIS
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
+)
+
+# --- market data recorder ---
+#
+# a separate binary, not a --record flag on `mokuren`. recording is not trading,
+# and a switch that can turn a live session into a recorder mid-run is a way to
+# lose the session. it links the engine sources minus main.cpp on purpose: the
+# recording has to be produced by the parser that trades, or it is evidence about
+# a different program.
+add_executable(mokuren_record tools/record.cpp ${ENGINE_SOURCES} ${HEADERS})
+
+target_include_directories(mokuren_record PRIVATE
+  include
+  ${ixwebsocket_SOURCE_DIR}
+)
+
+target_link_libraries(mokuren_record PRIVATE
+  Threads::Threads
+  nlohmann_json::nlohmann_json
+  PkgConfig::NOTCURSES
+  spdlog::spdlog
+  ixwebsocket
+  PkgConfig::HIREDIS
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
+)
+
+# --- dataset verification ---
+#
+# reads a dataset through DataManager, i.e. through the same two calls the
+# replay makes, and prints the span it got back. the point is to catch the gap
+# between "the file decodes" and "the backtest can use it": wrong units, an
+# empty channel, an order the Slice* helpers rely on. linking the engine
+# sources (not a trimmed reader-only subset) is what makes the answer apply to
+# the binary that trades.
+add_executable(mokuren_inspect tools/inspect.cpp ${ENGINE_SOURCES} ${HEADERS})
+
+target_include_directories(mokuren_inspect PRIVATE
+  include
+  ${ixwebsocket_SOURCE_DIR}
+)
+
+target_link_libraries(mokuren_inspect PRIVATE
+  Threads::Threads
+  nlohmann_json::nlohmann_json
+  PkgConfig::NOTCURSES
   spdlog::spdlog
   ixwebsocket
   PkgConfig::HIREDIS

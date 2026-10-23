@@ -12,6 +12,11 @@
 
 class DataManager {
 public:
+    // `dataset_path` is either the historical directory layout (trades.csv /
+    // L2.csv, cached as .bin next to them) or a single .mkn recording written
+    // by mokuren_record. A recording carries both channels and its own
+    // metadata, so both loaders read the same file path and neither builds a
+    // side cache for it.
     static std::vector<TradeEvent> LoadAllTrades(const std::string& dataset_path);
     static std::vector<L2Snapshot> LoadAllL2Snapshots(const std::string& dataset_path);
     

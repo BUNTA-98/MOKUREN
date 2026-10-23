@@ -1,5 +1,7 @@
 #include "data_manager.hpp"
 #include "csv_parser.hpp"
+#include "logger.hpp"
+#include "market_data/reader.hpp"
 #include "timestamp_utils.hpp"
 #include <filesystem>
 #include <system_error>
@@ -13,6 +15,26 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+// A damaged recording is still usable data, so this reports and returns: the
+// only failure that loses a session outright is the caller finding no records,
+// and even then the reason is in the log instead of being swallowed.
+void ReportSessionIssues(const std::string& path,
+                         const mokuren::mdf::SessionData& session) {
+    if (session.error.empty() && session.warnings.empty()) return;
+
+    // No std::cerr fallback: under the TUI a stray write lands on the notcurses
+    // plane and turns a data problem into a rendering bug.
+    const auto log = mokuren::GetLogger();
+    if (!log) return;
+
+    if (!session.error.empty()) {
+        log->error("session '{}': {}", path, session.error);
+    }
+    for (const auto& warning : session.warnings) {
+        log->warn("session '{}': {}", path, warning);
+    }
+}
 
 // Reads a whole L2 cache. false means missing, truncated, or carrying a partial
 // trailing record. The caller drops the file and rebuilds from the CSV, so a
@@ -140,6 +162,16 @@ bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::stri
 }
 
 std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_path) {
+    // a recorded session replaces the whole CSV/cache pipeline: one file, both
+    // channels, metadata that says what it is. checked first so a dataset path
+    // pointing at a recording is never probed for trades.csv.
+    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+        mokuren::mdf::SessionData session =
+            mokuren::mdf::ReadSessionFile(dataset_path);
+        ReportSessionIssues(dataset_path, session);
+        return std::move(session.trades);
+    }
+
     fs::path path = dataset_path;
     fs::path csv_file = path / "trades.csv";
     
@@ -250,6 +282,18 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
 
 
 std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &dataset_path) {
+    // same branch as LoadAllTrades: a recording is one file holding both
+    // channels, so neither loader looks for a side cache beside it. reading it
+    // twice per run is the price of not holding a decoded session in memory
+    // across a grid search, and it is a linear pass over the same bytes the
+    // legacy .bin cache would read.
+    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+        mokuren::mdf::SessionData session =
+            mokuren::mdf::ReadSessionFile(dataset_path);
+        ReportSessionIssues(dataset_path, session);
+        return std::move(session.l2);
+    }
+
     fs::path path = dataset_path;
     // bumped to v3 together with the L2Snapshot layout change (dropping the
     // pragma pack widened a record from 200 to 688 bytes). a stale v2 cache
