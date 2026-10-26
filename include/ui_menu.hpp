@@ -129,6 +129,12 @@ private:
         try { return std::stod(str); } catch (...) { return 0.0; }
     }
 
+    // `only_dirs` lists datasets: the directory layout (a folder holding
+    // trades.csv / L2.csv) and .mkn recordings. Recordings were missing from
+    // this list because only directories were collected, so a .mkn could never
+    // be picked even though DataManager::LoadAll has accepted one since the mdf
+    // reader landed -- from the UI, "not listed" and "rejected by the loader"
+    // look identical.
     std::vector<std::string> ScanDirectory(const std::string& folder, bool only_dirs = false) {
         std::vector<std::string> options;
         options.push_back(folder);
@@ -136,7 +142,13 @@ private:
             if (fs::exists(folder)) {
                 for (const auto& entry : fs::recursive_directory_iterator(folder)) {
                     if (only_dirs) {
-                        if (entry.is_directory()) {
+                        // a .mkn recording is a dataset in its own right: one
+                        // file carries both prints and book, so it sits beside
+                        // the csv directories rather than inside one.
+                        const bool is_recording =
+                            entry.is_regular_file() &&
+                            entry.path().extension() == ".mkn";
+                        if (entry.is_directory() || is_recording) {
                             options.push_back(entry.path().string());
                         }
                     } else {
@@ -149,7 +161,9 @@ private:
             }
         } catch (...) {}
         
-        if (options.empty()) options.push_back(only_dirs ? "NO_DATASETS_FOUND" : "NO_FILES_FOUND");
+        // options always holds `folder` itself, so the old empty() check could
+        // never fire: a missing data directory looked like a valid, empty list.
+        if (options.size() <= 1) options.push_back(only_dirs ? "NO_DATASETS_FOUND" : "NO_FILES_FOUND");
         return options;
     }
 

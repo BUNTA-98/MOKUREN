@@ -56,7 +56,26 @@ public:
     }
 
     // noch keine valide historie gefunden (buffer füllt sich noch)
-    if (!past_l2) return signal;
+    if (!past_l2) {
+        // the ring buffer holds a fixed 1024 frames. a feed that pushes more
+        // than 1024 / lookback_ms frames per second never reaches back far
+        // enough, and this trigger then stays silent for the whole run -- no
+        // signal, no error, indistinguishable from a strategy that found no
+        // setups. report the span actually available, the way the other two
+        // triggers report theirs.
+        const size_t age = context.l2_history.count > 0
+                               ? context.l2_history.count - 1
+                               : 0;
+        const L2Snapshot* oldest = context.l2_history.get_history(age);
+        const int64_t span_ms =
+            (oldest && current_l2.timestamp > oldest->timestamp)
+                ? (current_l2.timestamp - oldest->timestamp)
+                : 0;
+        LOG_TRACE("spoof_hunter: need {}ms of book history, buffer holds {} "
+                  "frames spanning {}ms",
+                  lookback_ms_, context.l2_history.count, span_ms);
+        return signal;
+    }
 
     // aggregierte orderbuch-tiefe vorbereiten
     double past_bid_qty = 0.0, past_ask_qty = 0.0;

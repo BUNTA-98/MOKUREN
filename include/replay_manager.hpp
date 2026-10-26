@@ -37,12 +37,33 @@ public:
     // throws std::runtime_error when the recording is damaged (see
     // DataManager::LoadAllL2Snapshots). the caller decides whether that is a
     // status line or an empty result; this function does not swallow it.
+    //
+    // This overload loads the book itself. A caller that already has both
+    // channels -- which is every caller holding a .mkn, since one file carries
+    // both -- must use the overload below, or the recording is decoded twice.
     static ReplayResult Run(const std::vector<TradeEvent>& all_trades, const nlohmann::json& winning_config,
                             const std::string& dataset_path = "") {
+        const std::string dataset =
+            !dataset_path.empty()
+                ? dataset_path
+                : winning_config.value("environment", nlohmann::json::object())
+                      .value("dataset", "data");
+        return Run(all_trades, DataManager::LoadAllL2Snapshots(dataset),
+                   winning_config, dataset);
+    }
+
+    // Book supplied by the caller. `dataset` is used for logging only; it must
+    // name the file the two vectors actually came from, so a replay never
+    // evaluates one recording's prints against another recording's book.
+    static ReplayResult Run(const std::vector<TradeEvent>& all_trades,
+                            const std::vector<L2Snapshot>& all_l2,
+                            const nlohmann::json& winning_config,
+                            const std::string& dataset) {
         ReplayResult result;
         if (all_trades.empty()) return result;
 
-        AppConfig cfg = AppConfig::Load(winning_config);
+        // replay is a backtest: no broker, no signed requests.
+        AppConfig cfg = AppConfig::Load(winning_config, false);
         // the scan/wfa paths overwrite the resolved risk with ResolveRiskPcts
         // before building, and its legacy precedence (sl_price_pct first)
         // differs from AppConfig::Load's (sl_pct first) when a config carries
@@ -65,16 +86,9 @@ public:
         // book too. running candle-only made an orderflow strategy evaluate as
         // if every snapshot were empty, and the replay disagreed with the
         // backtest that selected the config.
-        // resolving the book from the config while the caller handed over a
-        // different path is how a replay ended up evaluating one recording's
-        // prints against another recording's book.
-        const std::string dataset =
-            !dataset_path.empty()
-                ? dataset_path
-                : winning_config.value("environment", nlohmann::json::object())
-                      .value("dataset", "data");
-        const std::vector<L2Snapshot> all_l2 =
-            DataManager::LoadAllL2Snapshots(dataset);
+        // the book arrives with the prints, from the same read of the same
+        // file. resolving it separately is how a replay ended up evaluating
+        // one recording's prints against another recording's book.
         if (all_l2.empty()) {
             LOG_WARN("replay: no L2 snapshots for dataset '{}'; tick triggers "
                      "will not fire", dataset);

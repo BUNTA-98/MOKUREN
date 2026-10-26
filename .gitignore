@@ -11,3 +11,6 @@ logs/
 live_debug.log
 notes.txt
 *.sec.json
+*.sec.txt
+configs/dev/
+*.sec.*

@@ -364,6 +364,29 @@ std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &datas
     return l2_data;
 }
 
+DataManager::LoadedDataset DataManager::LoadAll(const std::string &dataset_path) {
+    // a recording is decoded once and both channels come out of the same read
+    // of the same bytes. the directory layout keeps its two independent loads:
+    // trades and L2 are separate files there, so "one pass" would only be a
+    // fiction.
+    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+        mokuren::mdf::SessionData session =
+            mokuren::mdf::ReadSessionFile(dataset_path);
+        ReportSessionIssues(dataset_path, session);
+        RequireCleanSession(dataset_path, session);
+
+        LoadedDataset loaded;
+        loaded.trades = std::move(session.trades);
+        loaded.l2 = std::move(session.l2);
+        return loaded;
+    }
+
+    LoadedDataset loaded;
+    loaded.trades = LoadAllTrades(dataset_path);
+    loaded.l2 = LoadAllL2Snapshots(dataset_path);
+    return loaded;
+}
+
 bool DataManager::ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status) {
     if (trades.empty() || l2.empty()) return true; 
     

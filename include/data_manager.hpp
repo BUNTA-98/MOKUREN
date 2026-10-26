@@ -27,6 +27,18 @@ public:
     // trade-only recording is a legitimate dataset.
     static std::vector<TradeEvent> LoadAllTrades(const std::string& dataset_path);
     static std::vector<L2Snapshot> LoadAllL2Snapshots(const std::string& dataset_path);
+
+    // Both channels from a single pass over the dataset. A .mkn recording is
+    // one file, so calling the two loaders above decoded it twice: twice the
+    // I/O, and on a recording that is still being written the second pass can
+    // see more blocks than the first -- pairing a trade vector with an L2
+    // vector from a different moment of the file. Callers that need both
+    // channels must use this.
+    struct LoadedDataset {
+        std::vector<TradeEvent> trades;
+        std::vector<L2Snapshot> l2;
+    };
+    static LoadedDataset LoadAll(const std::string& dataset_path);
     
     static bool ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status);
     

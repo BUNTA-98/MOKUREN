@@ -23,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -55,7 +56,8 @@ void GridRunner::Run(const std::string &config_path,
     // validate once, on the driver thread. a config error inside a worker was
     // caught by the per-run handler and reported as "no trades".
     try {
-        ValidateRunConfig(runs.front().full_json, "grid search");
+        // a backtest never signs a request, so a blank api_key is not an error
+        ValidateRunConfig(runs.front().full_json, "grid search", false);
     } catch (const std::exception& e) {
         on_status(std::string("ERR: CONFIG: ") + e.what());
         return;
@@ -79,8 +81,11 @@ void GridRunner::Run(const std::string &config_path,
     std::vector<TradeEvent> all_trades;
     std::vector<L2Snapshot> all_l2;
     try {
-        all_trades = DataManager::LoadAllTrades(active_dataset);
-        all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
+        // one pass over the dataset. for a .mkn recording this is the
+        // difference between decoding the file once and decoding it twice.
+        DataManager::LoadedDataset dataset = DataManager::LoadAll(active_dataset);
+        all_trades = std::move(dataset.trades);
+        all_l2 = std::move(dataset.l2);
     } catch (const std::exception& e) {
         LOG_ERROR("grid search: {}", e.what());
         on_status(std::string("ERR: DATASET: ") + e.what());
@@ -148,7 +153,9 @@ void GridRunner::Run(const std::string &config_path,
                 // worker: that calls std::terminate and kills the whole scan.
                 try {
                 const auto& run = runs[idx];
-                AppConfig cfg = AppConfig::Load(run.full_json);
+                // same reason as ValidateRunConfig above: no broker is built
+                // on this path, so credentials are irrelevant to the run.
+                AppConfig cfg = AppConfig::Load(run.full_json, false);
                 
                 // get sl and tp
                 const mokuren::RiskPcts risk = mokuren::ResolveRiskPcts(run.full_json);

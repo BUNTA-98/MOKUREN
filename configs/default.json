@@ -2,21 +2,21 @@
   "api_key": "",
   "api_secret": "",
   "backtest": {
-    "config_profile": "configs/default.json",
+    "config_profile": "configs/backtest.json",
     "wfa_in_sample_days": 14,
     "wfa_mode": false,
     "wfa_out_of_sample_days": 7,
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/woche",
+    "dataset": "data/2026/2026-05",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
     "tick_size": 0.1,
     "vwap_reset_hour": 0
   },
-  "exchange": "binance",
+  "exchange": "hyperliquid",
   "execution": {
     "slippage_pct": 0.0002,
     "taker_fee_pct": 0.0004
@@ -109,7 +109,7 @@
   },
   "trade_management": {
     "break_even": {
-      "enabled": true,
+      "enabled": false,
       "target_r": 0.2,
       "trigger_r": 1.0
     },

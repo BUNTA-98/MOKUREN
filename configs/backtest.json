@@ -1,0 +1,134 @@
+{
+  "environment": {
+    "dataset": "data/2026/nightly.mkn",
+    "interval_ms": 60000,
+    "macro_interval_ms": 900000,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
+  },
+  "exchange": "bybit",
+  "execution": {
+    "slippage_pct": 0.0002,
+    "taker_fee_pct": 0.0004
+  },
+  "filters": [],
+  "initial_balance": 25000.0,
+  "prop": {
+    "daily_reset_hour_utc": 0,
+    "enabled": true,
+    "flatten_on_breach": true,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8
+  },
+  "risk": {
+    "max_daily_loss": 400.0,
+    "min_distance_dollars": 10.0,
+    "modules": [
+      {
+        "active": true,
+        "name": "SinglePositionLock"
+      }
+    ],
+    "risk_per_trade_pct": 0.02,
+    "sl_pct": {
+      "max": 0.01,
+      "min": 0.001,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.001
+    },
+    "tp_r": {
+      "max": 5.0,
+      "min": 2.0,
+      "mode": "range",
+      "step": 1.0,
+      "val": 2.0
+    }
+  },
+  "startup_probe": {
+    "min_l2_depth": 20,
+    "on_failure": "abort",
+    "preset": "production"
+  },
+  "trade_management": {
+    "break_even": {
+      "enabled": false,
+      "target_r": 0.0,
+      "trigger_r": 1.0
+    },
+    "scale_out": {
+      "enabled": false,
+      "fraction": 0.5,
+      "trigger_r": 2.0
+    },
+    "trailing": {
+      "distance_r": 0.5,
+      "enabled": false,
+      "trigger_r": 1.0
+    }
+  },
+  "triggers": [
+    {
+      "active": false,
+      "drop_threshold": {
+        "max": 1.0,
+        "min": 0.5,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.5
+      },
+      "lookback_ms": {
+        "max": 2000.0,
+        "min": 500.0,
+        "mode": "range",
+        "step": 500.0,
+        "val": 500.0
+      },
+      "min_wall_qty": {
+        "max": 1.0,
+        "min": 0.5,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.5
+      },
+      "name": "SpoofHunter"
+    },
+    {
+      "active": true,
+      "min_stacked_count": {
+        "max": 10.0,
+        "min": 1.0,
+        "mode": "range",
+        "step": 1.0,
+        "val": 3.0
+      },
+      "name": "StackedImbalance",
+      "ratio_threshold": {
+        "max": 5.0,
+        "min": 1.0,
+        "mode": "range",
+        "step": 0.1,
+        "val": 3.0
+      }
+    },
+    {
+      "active": false,
+      "min_delta_threshold": {
+        "max": 100.0,
+        "min": 0.0,
+        "mode": "range",
+        "step": 1.0,
+        "val": 10.0
+      },
+      "name": "DeltaAbsorption"
+    }
+  ],
+  "venue": {
+    "allow_mainnet": true,
+    "category": "linear",
+    "environment": "mainnet",
+    "position_mode": "one_way",
+    "symbol": "BTCUSDT"
+  }
+}

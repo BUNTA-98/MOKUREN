@@ -29,9 +29,10 @@ void ValidateTradeManagement(const nlohmann::json& cfg) {
     }
 }
 
-void ValidateRunConfig(const nlohmann::json& cfg, const char* where) {
+void ValidateRunConfig(const nlohmann::json& cfg, const char* where,
+                       bool require_venue_credentials) {
     try {
-        AppConfig::Load(cfg);
+        AppConfig::Load(cfg, require_venue_credentials);
         mokuren::ResolveRiskPcts(cfg);
         ValidateTradeManagement(cfg);
     } catch (const std::exception& e) {

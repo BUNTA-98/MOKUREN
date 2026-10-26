@@ -17,7 +17,13 @@ void ValidateTradeManagement(const nlohmann::json& cfg);
 // One pre-flight for every path: AppConfig::Load validates what it reads, then
 // the risk block and trade_management are checked, so a typo aborts before the
 // dataset is loaded instead of surfacing as an empty result set.
-void ValidateRunConfig(const nlohmann::json& cfg, const char* where);
+//
+// require_venue_credentials is false on the backtest paths: they never build a
+// venue broker (StrategyFactory::Build only constructs one when live_mode is
+// set), so a blank api_key cannot place an order and must not abort a scan.
+// every caller that can sign a request keeps the default (true).
+void ValidateRunConfig(const nlohmann::json& cfg, const char* where,
+                       bool require_venue_credentials = true);
 
 // One reader for environment.max_cores. json::value throws type_error on
 // "max_cores": "8", which used to escape on the driver thread before any

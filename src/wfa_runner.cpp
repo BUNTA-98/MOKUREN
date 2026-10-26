@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace mokuren {
@@ -39,7 +40,8 @@ void WfaRunner::RunWFA(const std::string &config_path,
     // same pre-flight as the scan: report a broken config as a config error,
     // not as an empty dataset further down.
     try {
-        ValidateRunConfig(base_json, "wfa");
+        // a backtest never signs a request, so a blank api_key is not an error
+        ValidateRunConfig(base_json, "wfa", false);
     } catch (const std::exception& e) {
         on_status(std::string("ERR: CONFIG: ") + e.what());
         return;
@@ -58,8 +60,11 @@ void WfaRunner::RunWFA(const std::string &config_path,
     std::vector<TradeEvent> all_trades;
     std::vector<L2Snapshot> all_l2;
     try {
-        all_trades = DataManager::LoadAllTrades(active_dataset);
-        all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
+        // see grid_runner: a single pass, so a .mkn is decoded once and both
+        // channels come from the same state of the file.
+        DataManager::LoadedDataset dataset = DataManager::LoadAll(active_dataset);
+        all_trades = std::move(dataset.trades);
+        all_l2 = std::move(dataset.l2);
     } catch (const std::exception& e) {
         LOG_ERROR("wfa: {}", e.what());
         on_status(std::string("ERR: DATASET: ") + e.what());
@@ -149,7 +154,10 @@ void WfaRunner::RunWFA(const std::string &config_path,
 
                     try {
                     const auto& run = runs[idx];
-                    AppConfig cfg = AppConfig::Load(run.full_json);
+                    // same reason as ValidateRunConfig above: no broker is
+                    // built on this path, so credentials are irrelevant to
+                    // the run.
+                    AppConfig cfg = AppConfig::Load(run.full_json, false);
                     
                     const mokuren::RiskPcts risk = mokuren::ResolveRiskPcts(run.full_json);
                     cfg.sl_pct = risk.sl;
@@ -269,7 +277,7 @@ void WfaRunner::RunWFA(const std::string &config_path,
         }
 
         // exec winning config in oos
-        AppConfig oos_cfg = AppConfig::Load(best_config.full_json);
+        AppConfig oos_cfg = AppConfig::Load(best_config.full_json, false);
         const mokuren::RiskPcts oos_risk = mokuren::ResolveRiskPcts(best_config.full_json);
         oos_cfg.sl_pct = oos_risk.sl;
         oos_cfg.tp_pct = oos_risk.tp;
@@ -452,8 +460,9 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
     std::vector<TradeEvent> all_trades;
     std::vector<L2Snapshot> all_l2;
     try {
-        all_trades = DataManager::LoadAllTrades(active_dataset);
-        all_l2 = DataManager::LoadAllL2Snapshots(active_dataset);
+        DataManager::LoadedDataset dataset = DataManager::LoadAll(active_dataset);
+        all_trades = std::move(dataset.trades);
+        all_l2 = std::move(dataset.l2);
     } catch (const std::exception& e) {
         LOG_ERROR("replay wfa: {}", e.what());
         return result;
@@ -465,7 +474,8 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
     }
 
     for (const auto& wfa_cfg : wfa_configs) {
-        AppConfig cfg = AppConfig::Load(wfa_cfg.config);
+        // replay is a backtest: no broker, no signed requests.
+        AppConfig cfg = AppConfig::Load(wfa_cfg.config, false);
         const mokuren::RiskPcts wfa_risk = mokuren::ResolveRiskPcts(wfa_cfg.config);
         cfg.sl_pct = wfa_risk.sl;
         cfg.tp_pct = wfa_risk.tp;
