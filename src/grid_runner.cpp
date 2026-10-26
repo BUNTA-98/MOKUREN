@@ -14,6 +14,7 @@
 #include "trade_management.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <ctime>
 #include <exception>
 #include <filesystem>
@@ -53,14 +54,63 @@ void GridRunner::Run(const std::string &config_path,
         on_status("ERR: EMPTY GRID");
         return;
     }
-    // validate once, on the driver thread. a config error inside a worker was
-    // caught by the per-run handler and reported as "no trades".
-    try {
-        // a backtest never signs a request, so a blank api_key is not an error
-        ValidateRunConfig(runs.front().full_json, "grid search", false);
-    } catch (const std::exception& e) {
-        on_status(std::string("ERR: CONFIG: ") + e.what());
-        return;
+    // Validate the whole grid on the driver thread, before a single backtest
+    // starts. Only the front permutation used to be checked, so a grid axis
+    // that steps outside what AppConfig accepts (e.g. risk.tp_pct >= 0.1)
+    // surfaced only inside a worker, where the per-run catch treated it as a
+    // dead permutation: the scan advertised 10, ran 4, and still ended with
+    // "SCAN COMPLETE". The operator saw a stalled bar and a half-empty
+    // leaderboard instead of the one config value that was wrong.
+    {
+        size_t bad = 0;
+        int first_index = -1;
+        std::string first_error;
+        std::string first_values;
+        for (size_t i = 0; i < runs.size(); ++i) {
+            try {
+                // a backtest never signs a request, so a blank api_key is not
+                // an error. Load() is what enforces the risk block's ranges.
+                const AppConfig probe = AppConfig::Load(runs[i].full_json, false);
+                (void)probe;
+            } catch (const std::exception& e) {
+                if (bad == 0) {
+                    first_index = static_cast<int>(i);
+                    first_error = e.what();
+                    // name the swept values, not only the index. "first #4"
+                    // left the operator to count steps in their head; the
+                    // axis and value that AppConfig refused is what they need
+                    // to change.
+                    std::ostringstream vals;
+                    const char* sep = "";
+                    for (const auto& [key, value] : runs[i].grid_values) {
+                        vals << sep << key << '=' << value;
+                        sep = ", ";
+                    }
+                    first_values = vals.str();
+                }
+                ++bad;
+                LOG_ERROR("grid search: permutation {} invalid: {}", i, e.what());
+            }
+        }
+        if (bad > 0) {
+            const std::string msg =
+                "ERR: CONFIG: " + std::to_string(bad) + "/" +
+                std::to_string(runs.size()) + " permutations invalid (first #" +
+                std::to_string(first_index) + " [" + first_values + "]: " +
+                first_error + ")";
+            LOG_ERROR("grid search: {}", msg);
+            on_status(msg);
+            return;
+        }
+        // ValidateRunConfig still runs: it covers the rules that are not part
+        // of AppConfig::Load, and the front permutation is the cheapest place
+        // to surface them.
+        try {
+            ValidateRunConfig(runs.front().full_json, "grid search", false);
+        } catch (const std::exception& e) {
+            on_status(std::string("ERR: CONFIG: ") + e.what());
+            return;
+        }
     }
     
     // an explicit path wins over the config: it is the one the operator
@@ -115,6 +165,7 @@ void GridRunner::Run(const std::string &config_path,
     int total_iterations = runs.size();
     std::atomic<size_t> task_index{0};
     std::atomic<int> current_iteration{0};
+    std::atomic<int> failed_iterations{0};
 
     // create out dir
     fs::create_directories("runs");
@@ -157,10 +208,13 @@ void GridRunner::Run(const std::string &config_path,
                 // on this path, so credentials are irrelevant to the run.
                 AppConfig cfg = AppConfig::Load(run.full_json, false);
                 
-                // get sl and tp
-                const mokuren::RiskPcts risk = mokuren::ResolveRiskPcts(run.full_json);
-                cfg.sl_pct = risk.sl;
-                cfg.tp_pct = risk.tp;
+                // sl/tp are the values Load just resolved and Validate
+                // approved. This used to re-derive them through
+                // ResolveRiskPcts, a second reader of the same keys: a
+                // disagreement about precedence (sl_pct vs legacy
+                // sl_price_pct, tp_r vs tp_pct) would run one risk distance
+                // while validating another, and ApplyRMultiplesManagement --
+                // already scaled by Load's sl_pct -- would keep the other.
                 
                 // init strat mods
                 EngineInstance eng = StrategyFactory::Build(cfg);
@@ -176,11 +230,13 @@ void GridRunner::Run(const std::string &config_path,
                 // one guard per permutation, seeded from the paper account's
                 // starting balance so total drawdown is measured against the
                 // same base the live path uses.
-                mokuren::PropRules prop_rules = cfg.prop;
-                if (prop_rules.initial_balance <= 0.0) {
-                    prop_rules.initial_balance = PaperTrader::kInitialBalance;
-                }
-                mokuren::PropGuard prop_guard(prop_rules);
+                // the base total drawdown is measured against is the SAME
+                // number that funds the paper account, so the two cannot
+                // disagree. it used to travel on PropRules, where a second
+                // value (or 0) could silently win and report drawdown against
+                // an account this run never funded.
+                const mokuren::PropRules& prop_rules = cfg.prop;
+                mokuren::PropGuard prop_guard(prop_rules, cfg.initial_balance);
                 // a config without a prop block keeps the old behaviour. the
                 // gates below must not depend on ObserveProp arming the guard
                 // as a side effect, or a short-circuit there would drop every
@@ -272,12 +328,20 @@ void GridRunner::Run(const std::string &config_path,
                 eng.aggregator->FlushLastCandle(live_bar);
                 eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
 
-                // compile metrics. a breach with zero trades is still a
-                // result: a prop.initial_balance that does not match the paper
-                // account halts the guard on the first observation, and
-                // filtering those permutations out by "trades > 0" would hide
-                // exactly the configs the guard exists to reject.
-                if (eng.ptrader->GetTotalTrades() > 0 || prop_breached) {
+                // compile metrics. every permutation records a row now,
+                // including the ones that never filled. The old
+                // "trades > 0 || prop_breached" gate made two very different
+                // outcomes look identical -- "the setup never fired" and "the
+                // permutation threw" both left the leaderboard empty, while
+                // the scan still counted them apart. `trades` (0) is the
+                // column that separates them. A breach is still recorded
+                // because a prop.initial_balance that does not match the paper
+                // account halts the guard on the first observation, and those
+                // are exactly the configs the guard exists to reject.
+                //
+                // the block stays scoped so `res` does not leak into the
+                // worker's next iteration.
+                {
                     TestResult res{};
                     res.parameters = run.grid_values;
                     res.full_config = run.full_json; 
@@ -303,11 +367,23 @@ void GridRunner::Run(const std::string &config_path,
                     res.be_pct = total > 0 ? (be / total) * 100.0 : 0.0;
                     res.sl_pct = total > 0 ? (losses / total) * 100.0 : 0.0;
 
-                    // calc adv metrics
-                    AdvancedMetrics am = PerformanceMetrics::CalculateAdvancedMetrics(res.trade_log);
-                    res.sharpe = am.sharpe;
-                    res.sortino = am.sortino;
-                    res.mc_drawdown = am.mc_dd;
+                    // calc adv metrics. only over an actual sample: the ratios
+                    // are undefined with zero returns, and AdvancedMetrics'
+                    // defaults (0.0) are honest where a NaN or a divide-by-zero
+                    // would poison the leaderboard's sort. a zero-trade row
+                    // therefore reports sharpe/sortino/mc_dd as 0, exactly as
+                    // it did when it was filtered out -- it just shows up now.
+                    if (!res.trade_log.empty()) {
+                        AdvancedMetrics am = PerformanceMetrics::CalculateAdvancedMetrics(res.trade_log);
+                        // a sample with no losing trade has zero downside
+                        // deviation, so sortino is +/-inf (or NaN on 0/0).
+                        // one non-finite number does not fail a sort, it
+                        // silently reorders the whole leaderboard; record 0.0
+                        // and let the trade count say why the ratio is absent.
+                        res.sharpe = std::isfinite(am.sharpe) ? am.sharpe : 0.0;
+                        res.sortino = std::isfinite(am.sortino) ? am.sortino : 0.0;
+                        res.mc_drawdown = std::isfinite(am.mc_dd) ? am.mc_dd : 0.0;
+                    }
 
                     LOG_INFO("grid result: trades={} net={} dd={} winrate={} sharpe={} prop_breached={}",
                              res.trades, res.net_profit, res.max_drawdown,
@@ -346,15 +422,23 @@ void GridRunner::Run(const std::string &config_path,
                     }
                 }
                 
+                } catch (const std::exception& e) {
+                    failed_iterations.fetch_add(1);
+                    LOG_ERROR("grid worker: run {} threw: {}", idx, e.what());
+                } catch (...) {
+                    failed_iterations.fetch_add(1);
+                    LOG_ERROR("grid worker: run {} threw an unknown exception", idx);
+                }
+
+                // The progress tick counts every permutation the queue handed
+                // out, successful or not. It used to sit inside the try block,
+                // so a throwing permutation was logged and then vanished from
+                // the bar while its index had already been consumed: the scan
+                // reported 4/10 and looked stuck while it was, in fact, done.
                 int done = ++current_iteration;
                 {
                     std::lock_guard<std::mutex> lock(ui_mutex);
                     on_progress(done, total_iterations);
-                }
-                } catch (const std::exception& e) {
-                    LOG_ERROR("grid worker: run {} threw: {}", idx, e.what());
-                } catch (...) {
-                    LOG_ERROR("grid worker: run {} threw an unknown exception", idx);
                 }
             }
         });
@@ -365,8 +449,20 @@ void GridRunner::Run(const std::string &config_path,
         if (w.joinable()) w.join();
     }
     
-    LOG_INFO("grid search complete: {} permutations evaluated", total_iterations);
-    on_status("SCAN COMPLETE");
+    const int evaluated = current_iteration.load();
+    const int failed = failed_iterations.load();
+    LOG_INFO("grid search complete: {}/{} permutations evaluated, {} failed",
+             evaluated, total_iterations, failed);
+    if (failed > 0) {
+        // "COMPLETE" alone was indistinguishable from a clean scan. A failed
+        // permutation still produced no result row, so say so where the
+        // operator is actually looking.
+        on_status("SCAN COMPLETE (" + std::to_string(evaluated) + "/" +
+                  std::to_string(total_iterations) + ", " +
+                  std::to_string(failed) + " FAILED - SEE LOG)");
+    } else {
+        on_status("SCAN COMPLETE");
+    }
 }
 
 } // namespace mokuren

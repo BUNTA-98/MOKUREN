@@ -38,6 +38,11 @@ public:
     };
   };
 
+  // prop_rules carries the account's survival POLICY only (limits, warn
+  // fraction, reset hour, flatten flag). The equity those limits are measured
+  // against is derived from the active broker at construction -- PaperTrader's
+  // seeded balance on --paper, the venue's wallet equity on --live -- so there
+  // is no second copy of it that can drift from the account.
   LiveOrchestrator(EngineInstance engine,
                    std::unique_ptr<IMarketStreamer> streamer,
                    double sl_pct, double tp_pct,

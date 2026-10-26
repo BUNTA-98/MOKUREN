@@ -4,8 +4,11 @@
 #include "bybit_streamer.hpp"
 #include "hyperliquid_broker.hpp"
 #include "hyperliquid_streamer.hpp"
+#include "position_sizer.hpp"
 #include "venue_spec.hpp"
 
+#include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -76,11 +79,59 @@ bool ParamBool(const json& params, const char* key, bool fallback) {
 // children), which evaluates to NONE for the entire run.
 std::unique_ptr<ITrigger> MakeTrigger(const std::string& name, const json& p) {
   if (name == "DeltaAbsorption") {
-    return std::make_unique<DeltaAbsorptionTrigger>(ParamNumber(p, "delta", 1.0));
+    // the configs (and their grid nodes) say min_delta_threshold; this read
+    // "delta", so a configured threshold never reached the trigger and it ran
+    // at the 1.0 fallback. same class of bug as StackedImbalance's
+    // ratio / ratio_threshold.
+    auto num_any = [&p](std::initializer_list<const char*> keys, double fb) {
+      for (const char* k : keys) {
+        if (p.contains(k)) return ParamNumber(p, k, fb);
+      }
+      return fb;
+    };
+    const double min_delta = num_any({"min_delta_threshold", "delta"}, 1.0);
+    // a threshold of 0 means "any net delta", which is every absorption
+    // candle ever printed; the grid below would then spend its budget on a
+    // trigger that fires on everything. reject it as a config error instead of
+    // silently flooring it, and let grid_runner's preflight name the
+    // permutation and the swept value.
+    if (!std::isfinite(min_delta) || min_delta <= 0.0) {
+      throw std::runtime_error(
+          "factory: DeltaAbsorption.min_delta_threshold must be a finite "
+          "number > 0 in base-asset units (got " +
+          std::to_string(min_delta) + "); a threshold of 0 fires on every "
+          "candle whose delta has the right sign");
+    }
+    return std::make_unique<DeltaAbsorptionTrigger>(min_delta);
   }
   if (name == "StackedImbalance") {
+    // Read BOTH spellings, canonical first. The configs (and every grid node in
+    // them) say ratio_threshold / min_stacked_count, while this factory used to
+    // read ratio / levels -- so a grid over ratio_threshold never reached the
+    // trigger: every permutation silently ran at the 1.5 fallback, and the swept
+    // axis could not change a single result. The second parameter is the stack
+    // LENGTH, not a book depth, so `levels` was also the wrong key: the trigger
+    // armed at 2 levels instead of the configured 3.
+    auto num_any = [&p](std::initializer_list<const char*> keys, double fb) {
+      for (const char* k : keys) {
+        if (p.contains(k)) return ParamNumber(p, k, fb);
+      }
+      return fb;
+    };
+    const double ratio = num_any({"ratio_threshold", "ratio"}, 1.5);
+    const int stacked =
+        static_cast<int>(num_any({"min_stacked_count", "levels"}, 2.0));
+    // significance floor per level, in base-asset units. defaults to the old
+    // hardcoded 0.0001 so an untouched config behaves as before apart from the
+    // one-sided short-circuit the trigger itself no longer performs.
+    const double min_qty = num_any({"min_level_qty", "min_qty"}, 0.0001);
+    // absent means "do not gate on candle direction": that decision belongs to
+    // the filter chain. a config that wants it says so explicitly.
+    const bool agree = ParamBool(p, "require_candle_agreement", false);
+    // no cooldown argument on purpose: re-entry spacing is a risk module
+    // (AntiRevengeLock), not a property of the tape.
     return std::make_unique<StackedImbalanceTrigger>(
-        ParamNumber(p, "ratio", 1.5), ParamInt(p, "levels", 2));
+        ratio, stacked, min_qty, agree);
   }
   if (name == "SpoofHunter") {
     return std::make_unique<SpoofHunterTrigger>(
@@ -111,16 +162,14 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
   inst.aggregator = std::make_unique<Aggregator>(cfg.interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
   inst.htf_aggregator = std::make_unique<Aggregator>(cfg.macro_interval_ms, cfg.tick_size, cfg.vwap_reset_hour);
   
-  // fees and slippage are strategy costs on every path. the starting balance is
-  // not: only a shadow run (--paper) actually executes against the paper
-  // account, so only it takes cfg.initial_balance. seeding every path would
-  // silently move the baseline of every backtest, WFA and replay that reads
-  // NetProfit -- and those results must stay comparable to the ones already
-  // recorded. a --live run ignores ptrader entirely (it has a venue adapter),
-  // so it keeps the default too.
-  const double seed_balance =
-      (live_mode && use_paper_broker) ? cfg.initial_balance
-                                      : PaperTrader::kInitialBalance;
+  // the starting balance is account state, not an execution-mode detail. only
+  // --paper took cfg.initial_balance; every other path kept the 10000 constant
+  // baked into the constructor, so a config that said 25000 produced a scan
+  // whose risk-per-trade, drawdown percentages and prop limits were all
+  // measured against a different account than the one it described. one seed
+  // for every path. a --live run never reads ptrader (it has a venue adapter),
+  // so this only moves the paper/scan/wfa/replay numbers -- which is the point.
+  const double seed_balance = cfg.initial_balance;
   inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss,
                                                cfg.slippage_pct,
                                                cfg.taker_fee_pct,
@@ -313,7 +362,22 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
   
   // 3. wire evaluation and risk modules
   inst.alpha = std::make_unique<AlphaEngine>(*inst.pipeline);
-  inst.sizer = std::make_unique<PositionSizer>(active_broker, cfg.risk_per_trade_pct, cfg.min_distance_dollars);
+  // leverage policy has ONE owner: MaxLeverageLock, wired in the module loop
+  // below. The sizer used to carry a second, independently configured cap,
+  // which meant a structural stop implying 40x was silently halved to 10x and
+  // then recorded as if it had risked the full risk_per_trade_pct -- making
+  // rows with different stop widths incomparable. leverage == risk_pct /
+  // stop_pct, so a size cap and a leverage veto are the same decision; keeping
+  // both, at different numbers, was the duplication. The sizer now holds only
+  // the physical ceiling, which the factory guarantees the policy never
+  // exceeds, so the lock always decides first.
+  //
+  // lot_step is the venue's minimum quantity increment (BTCUSDT linear: 0.001
+  // BTC, ETH: 0.01, and so on). a hardcoded 0.001 is right for BTC and wrong
+  // everywhere else, so it travels with venue.symbol.
+  inst.sizer = std::make_unique<PositionSizer>(active_broker, cfg.risk_per_trade_pct,
+                                               cfg.min_distance_dollars, cfg.lot_step,
+                                               kVenueMaxLeverage);
   inst.risk_manager = std::make_unique<RiskManager>();
 
   for (const auto &r : cfg.risk_modules) {
@@ -325,7 +389,18 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
       double max_pct = ParamNumber(r.params, "max_stop_pct", 0.015);
       inst.risk_modules.push_back(std::make_unique<MaxStopDistanceLock>(max_pct));
     } else if (r.name == "MaxLeverageLock") {
-      double max_lev = ParamNumber(r.params, "max_leverage", 10.0);
+      // the only leverage policy in the engine. validate the number instead of
+      // trusting it: <= 0 rejects every signal (leverage is always > 0), and
+      // above the physical ceiling the sizer would clamp first and this lock
+      // could never fire -- the silent-resize bug this replaced.
+      const double max_lev = ParamNumber(r.params, "max_leverage", 10.0);
+      if (!std::isfinite(max_lev) || max_lev <= 0.0 ||
+          max_lev > kVenueMaxLeverage) {
+        throw std::runtime_error(
+            "factory: MaxLeverageLock.max_leverage must be in (0.0, " +
+            std::to_string(kVenueMaxLeverage) + "] (got " +
+            std::to_string(max_lev) + ")");
+      }
       inst.risk_modules.push_back(std::make_unique<MaxLeverageLock>(active_broker, max_lev));
     } else if (r.name == "AntiRevengeLock") {
       int64_t cooldown =

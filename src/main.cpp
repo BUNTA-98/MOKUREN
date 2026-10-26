@@ -184,13 +184,10 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
   AppConfig cfg = AppConfig::Load(cfg_json,
                                   /*require_venue_credentials=*/!use_paper_broker);
 
-  // shadow mode: the paper account is the account, so a prop run that does not
-  // name its own starting equity measures drawdown against the paper seed
-  // instead of deriving it from the first observation (which arrives after the
-  // first fill and therefore understates the day's start).
-  if (use_paper_broker && cfg.prop.initial_balance <= 0.0) {
-    cfg.prop.initial_balance = cfg.initial_balance;
-  }
+  // Nothing to seed here any more: the orchestrator derives the prop guard's
+  // base from the active broker at construction -- the seeded PaperTrader on
+  // --paper, the venue's wallet equity on --live. A second copy on PropRules is
+  // what let that base disagree with the account in the first place.
 
   // live_mode=true is what lets the factory construct a venue adapter. the
   // backtest/WFA/replay paths keep the default (false) and can never dial out.

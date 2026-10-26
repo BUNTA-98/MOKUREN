@@ -26,13 +26,12 @@ struct PropRules {
   // most firms, so this is a policy choice rather than a safety improvement.
   bool flatten_on_breach = true;
 
-  // the starting balance the firm measures total loss against. 0 = derive it
-  // from the first positive equity reading.
-  //
-  // set this explicitly on a live account. a restart otherwise forgets losses
-  // already taken and the guard understates total drawdown for the rest of
-  // the run, which is the one calculation that must not drift.
-  double initial_balance = 0.0;
+  // NOTE: no starting balance here. the base total drawdown is measured
+  // against is ACCOUNT STATE, not policy, so it is passed to PropGuard
+  // explicitly and never stored in the rules. keeping it in both places is how
+  // the guard ended up measuring against a number the account never had: the
+  // paper account was seeded from initial_balance while the guard kept its own
+  // value (or 0), so total_drawdown() divided by a different base.
 };
 
 enum class PropState {
@@ -55,7 +54,19 @@ struct PropDecision {
 // the orchestrator the only owner of "what to do about it".
 class PropGuard {
 public:
-  explicit PropGuard(PropRules rules = PropRules{});
+  // starting_equity is the base total drawdown is measured against -- the same
+  // number that funds the account:
+  //   backtest / scan / wfa / replay -> cfg.initial_balance, which also seeds
+  //     PaperTrader, so the two cannot disagree
+  //   live -> the firm's evaluation baseline, NOT the current venue balance,
+  //     which already reflects losses taken before this process started
+  //
+  // > 0 arms the guard immediately: drawdown is measurable from tick 0, so the
+  // "a fresh guard starts Unarmed and refuses entries until the first
+  // Observe()" ordering trap disappears. 0 keeps the legacy behaviour and
+  // derives the base from the first positive equity reading, which is only
+  // right when a venue has not delivered a balance yet.
+  explicit PropGuard(PropRules rules = PropRules{}, double starting_equity = 0.0);
 
   // equity is mark-to-market account equity, including open pnl -- that is
   // what the firm measures. safe for the hot path: a few comparisons.
@@ -78,6 +89,9 @@ private:
   void RollDay(int64_t now_ms, double equity);
 
   PropRules rules_;
+  // remembered so Reset() can restore the armed state without the caller having
+  // to re-supply a base it already gave the constructor.
+  double starting_equity_ = 0.0;
   PropState state_ = PropState::Unarmed;
   bool allow_new_entry_ = false;
   bool total_breached_ = false; // latched: never clears within the process

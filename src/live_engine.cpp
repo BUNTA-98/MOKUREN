@@ -60,6 +60,23 @@ void PublishJson(RedisPublisher* publisher, nlohmann::json& ev) {
   publisher->PublishTradeEvent(ev.dump());
 }
 
+// The equity the prop guard measures total drawdown against is ACCOUNT STATE,
+// so it is taken from the broker this run actually executes against instead of
+// from a config field that could hold a second, silently different number.
+//
+//   --paper         PaperTrader, seeded from cfg.initial_balance by the factory
+//                   on every path, so the base IS the funded account.
+//   --live (venue)  the adapter's mark-to-market wallet equity. GetBalance() is
+//                   0.0 until the private wallet stream delivers its first
+//                   frame, so the guard starts Unarmed -- refusing entries
+//                   rather than trading against a limit it cannot measure --
+//                   and adopts the first positive reading as its base.
+double AccountStartingEquity(const EngineInstance& engine) {
+  if (engine.broker) return engine.broker->GetBalance();
+  if (engine.ptrader) return engine.ptrader->GetBalance();
+  return 0.0;
+}
+
 } // namespace
 
 LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
@@ -75,7 +92,10 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
       tp_pct_(tp_pct),
       symbol_(std::move(symbol)),
       venue_(std::move(venue)),
-      prop_guard_(prop_rules) {
+      // the drawdown base comes from the broker, not from a PropRules field:
+      // one number, and it is the account's. engine_ is declared above
+      // prop_guard_, so it is already moved into place here.
+      prop_guard_(prop_rules, AccountStartingEquity(engine_)) {
   LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={} "
            "symbol={} venue={})",
            kMaxQueueDepth, sl_pct_, tp_pct_, symbol_,
@@ -85,33 +105,37 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
   // with the guard off is the one configuration where a single bad day ends
   // the account, so it must never be silent.
   if (prop_rules.enabled) {
+    // report the base actually in use. after seeding from the broker there is
+    // no "initial_balance" anywhere in this process to print instead.
     LOG_INFO("LiveOrchestrator: prop guard armed (daily={}% total={}% "
-             "warn_at={} of limit reset_hour={}z flatten={} initial_balance={})",
+             "warn_at={} of limit reset_hour={}z flatten={} base_equity={})",
              prop_rules.max_daily_drawdown_pct * 100.0,
              prop_rules.max_total_drawdown_pct * 100.0,
              prop_rules.warn_fraction, prop_rules.daily_reset_hour_utc,
              prop_rules.flatten_on_breach ? "on" : "off",
-             prop_rules.initial_balance > 0.0
-                 ? std::to_string(prop_rules.initial_balance)
+             prop_guard_.initial_equity() > 0.0
+                 ? std::to_string(prop_guard_.initial_equity())
                  : std::string("derived from first equity reading"));
   } else {
     LOG_WARN("LiveOrchestrator: prop guard DISABLED -- no account-level "
              "drawdown limit is enforced on this run");
   }
 
-  // a funded balance next to a paper account halts instantly: 100k of starting
-  // equity measured against a 10k paper balance is a 90% drawdown before the
-  // first trade, and the guard would then refuse every entry in silence.
-  // compare against the balance actually seeded into the paper account, not the
-  // compile-time constant: --paper seeds it from cfg.initial_balance.
-  if (prop_rules.enabled && !engine_.broker && engine_.ptrader &&
-      prop_rules.initial_balance > 0.0) {
-    const double paper_balance = engine_.ptrader->GetBalance();
-    if (std::abs(prop_rules.initial_balance - paper_balance) > 1.0) {
-      LOG_WARN("LiveOrchestrator: prop.initial_balance={} does not match the "
-               "paper account's {} -- this run starts past the total drawdown "
-               "limit and will refuse every entry",
-               prop_rules.initial_balance, paper_balance);
+  // The base is derived from the active broker now, so the old "funded balance
+  // next to a paper account" mismatch is structurally impossible: --paper reads
+  // back the same cfg.initial_balance the factory seeded PaperTrader with.
+  // The one case still worth saying out loud is a venue whose wallet frame has
+  // not landed yet.
+  if (prop_rules.enabled && engine_.broker) {
+    const double venue_equity = engine_.broker->GetBalance();
+    if (!(venue_equity > 0.0)) {
+      LOG_WARN("LiveOrchestrator: prop guard has no equity base yet (venue "
+               "balance is {}) -- entries are refused until the wallet stream "
+               "reports a balance, and the total-drawdown base will then be "
+               "the FIRST reading it sees. On a restart mid-evaluation that "
+               "base is already drawn down, so losses taken before this "
+               "process started are not counted.",
+               venue_equity);
     }
   }
 

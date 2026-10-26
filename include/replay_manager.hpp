@@ -104,11 +104,10 @@ public:
 
         // replay parity: the same guard the scan/wfa paths use, so a replay
         // reproduces the run that produced the config.
-        mokuren::PropRules prop_rules = cfg.prop;
-        if (prop_rules.initial_balance <= 0.0) {
-            prop_rules.initial_balance = PaperTrader::kInitialBalance;
-        }
-        mokuren::PropGuard prop_guard(prop_rules);
+        // the same base the scan/wfa paths use, so a replay reproduces the run
+        // that produced the config instead of measuring against 10000.
+        const mokuren::PropRules& prop_rules = cfg.prop;
+        mokuren::PropGuard prop_guard(prop_rules, cfg.initial_balance);
         // a missing prop block must not make the gate depend on ObserveProp
         // having armed the guard before the first signal.
         const bool prop_on = prop_rules.enabled;

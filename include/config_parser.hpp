@@ -125,6 +125,10 @@ struct AppConfig {
   int macro_interval_ms = 900000;
   int vwap_reset_hour = 0;
   double tick_size = 1.0;
+  // minimum quantity increment the venue accepts, per symbol. 0.001 is
+  // BTCUSDT linear; a different instrument needs its own value, because the
+  // venue rejects (or truncates) an order that is not a multiple of it.
+  double lot_step = 0.001;
   unsigned int max_cores = 0;
   
   // execution and fee settings (new)
@@ -153,15 +157,29 @@ struct AppConfig {
   // AppConfig::Load runs it through mokuren::ResolveTpPct, so a config's tp_r
   // (a multiple of sl_pct, i.e. of 1R) wins over this default. a config that
   // names neither tp_r nor tp_pct fails to load instead of inheriting 1%.
+  //
+  // tp_pct is DERIVED when the config uses tp_r: tp_pct == tp_r * sl_pct. a
+  // grid over risk.sl_pct therefore moves it without naming it. tp_r keeps the
+  // multiple the config actually wrote, so Validate and the log can talk about
+  // the unit the config was written in instead of a fraction nobody typed.
   double tp_pct = 0.01;
+  // the R multiple tp_pct was resolved from, or 0.0 when the config named an
+  // absolute tp_pct, or named neither (Load throws in that case).
+  double tp_r = 0.0;
   double risk_per_trade_pct = 0.01;
   double min_distance_dollars = 0.0;
+  // NOTE: there is no max_leverage here on purpose. leverage is fully
+  // determined by risk_per_trade_pct / stop_pct, so a sizer-side cap and a
+  // MaxLeverageLock veto are the same decision -- and only the veto is visible.
+  // one number, one owner: risk.modules[MaxLeverageLock].max_leverage.
   double max_daily_loss = 400.0;
 
-  // starting capital for the paper account. only consumed in --paper (shadow)
-  // mode, where the factory hands this to PaperTrader instead of the
-  // compile-time default. defaults to PaperTrader::kInitialBalance so a config
-  // that omits the key behaves exactly like today's paper runs.
+  // starting capital of the paper account, on every path. the factory hands
+  // this to PaperTrader for --paper, scan, wfa and replay alike, so risk per
+  // trade, drawdown percentages and the prop limits are all measured against
+  // the account the config actually describes. defaults to the old
+  // PaperTrader::kInitialBalance (10000) so a config that omits the key
+  // reproduces the numbers it produced before.
   double initial_balance = 10000.0;
 
   // strict validation of all critical bounds.

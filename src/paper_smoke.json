@@ -24,7 +24,7 @@
   },
 
   "triggers": [
-    { "name": "StackedImbalance", "ratio": 1.5, "min_stacked": 2 }
+    { "name": "StackedImbalance", "ratio_threshold": 1.5, "min_stacked_count": 2 }
   ],
   "filters": [],
 
@@ -48,7 +48,6 @@
 
   "prop": {
     "enabled": true,
-    "initial_balance": 10000.0,
     "max_daily_drawdown_pct": 0.04,
     "max_total_drawdown_pct": 0.06,
     "warn_fraction": 0.8,

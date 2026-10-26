@@ -172,13 +172,12 @@ void WfaRunner::RunWFA(const std::string &config_path,
                         eng.risk_manager.get(), cfg.sl_pct, cfg.tp_pct,
                         "wfa_in_sample");
 
-                    // one guard per permutation, seeded from the paper
-                    // account's starting balance.
-                    mokuren::PropRules prop_rules = cfg.prop;
-                    if (prop_rules.initial_balance <= 0.0) {
-                        prop_rules.initial_balance = PaperTrader::kInitialBalance;
-                    }
-                    mokuren::PropGuard prop_guard(prop_rules);
+                    // one guard per permutation, seeded from the SAME balance
+                    // that funds the paper account. the base used to travel on
+                    // PropRules, so a second value (or 0) could win and report
+                    // drawdown against an account this run never funded.
+                    const mokuren::PropRules& prop_rules = cfg.prop;
+                    mokuren::PropGuard prop_guard(prop_rules, cfg.initial_balance);
                     // see grid_runner: the gate must not rely on ObserveProp
                     // having armed a disabled guard before the first signal.
                     const bool prop_on = prop_rules.enabled;
@@ -292,11 +291,10 @@ void WfaRunner::RunWFA(const std::string &config_path,
 
         // the OOS run gets its own guard: the winner's in-sample breach flag
         // is a property of the IS run, not of the OOS slice.
-        mokuren::PropRules oos_prop_rules = oos_cfg.prop;
-        if (oos_prop_rules.initial_balance <= 0.0) {
-            oos_prop_rules.initial_balance = PaperTrader::kInitialBalance;
-        }
-        mokuren::PropGuard oos_prop_guard(oos_prop_rules);
+        // same base as the in-sample runs: the account the config funds, not
+        // the compile-time 10000.
+        const mokuren::PropRules& oos_prop_rules = oos_cfg.prop;
+        mokuren::PropGuard oos_prop_guard(oos_prop_rules, oos_cfg.initial_balance);
         const bool oos_prop_on = oos_prop_rules.enabled;
         bool oos_prop_breached = false;
 
@@ -403,8 +401,17 @@ void WfaRunner::RunWFA(const std::string &config_path,
         // aggregate result is what the UI/CSV surface.
         res.prop_breached = oos_any_breached;
         
-        double current_balance = PaperTrader::kInitialBalance;
-        double peak_balance = PaperTrader::kInitialBalance;
+        // measure the aggregate drawdown against the account this config
+        // actually funds. this used the compile-time 10000, so a 25000 config
+        // reported a percentage of the wrong base -- the same divergence the
+        // per-path seed fix removed.
+        double base_balance = PaperTrader::kInitialBalance;
+        if (final_cfg.contains("initial_balance") &&
+            final_cfg["initial_balance"].is_number()) {
+            base_balance = final_cfg["initial_balance"].get<double>();
+        }
+        double current_balance = base_balance;
+        double peak_balance = base_balance;
         double max_dd = 0.0, net_profit = 0.0;
         int wins = 0, be = 0, losses = 0;
 
@@ -489,11 +496,9 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
 
         // replay parity: the same guard the WFA-OOS run used, so a replay
         // reproduces the run that produced the config.
-        mokuren::PropRules replay_prop_rules = cfg.prop;
-        if (replay_prop_rules.initial_balance <= 0.0) {
-            replay_prop_rules.initial_balance = PaperTrader::kInitialBalance;
-        }
-        mokuren::PropGuard replay_prop_guard(replay_prop_rules);
+        const mokuren::PropRules& replay_prop_rules = cfg.prop;
+        mokuren::PropGuard replay_prop_guard(replay_prop_rules,
+                                             cfg.initial_balance);
         const bool replay_prop_on = replay_prop_rules.enabled;
         // the replay flattens on a breach inside ObserveProp; latch the state
         // so the caller can see it instead of the flag being discarded.

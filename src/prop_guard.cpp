@@ -14,21 +14,35 @@ int64_t FloorDiv(int64_t a, int64_t b) {
 
 } // namespace
 
-PropGuard::PropGuard(PropRules rules) : rules_(rules) {
-  if (rules_.initial_balance > 0.0) initial_equity_ = rules_.initial_balance;
+PropGuard::PropGuard(PropRules rules, double starting_equity)
+    : rules_(rules), starting_equity_(starting_equity) {
+  if (std::isfinite(starting_equity) && starting_equity > 0.0) {
+    // Seed every anchor, not just initial_equity_. daily_drawdown() divides by
+    // day_start_equity_ and subtracts last_equity_, so leaving those at 0 would
+    // report a 100% drawdown on a freshly funded account.
+    initial_equity_ = starting_equity;
+    day_start_equity_ = starting_equity;
+    peak_equity_ = starting_equity;
+    last_equity_ = starting_equity;
+    state_ = PropState::Normal;
+    allow_new_entry_ = true;
+  }
 }
 
 void PropGuard::Reset() {
-  state_ = PropState::Unarmed;
-  allow_new_entry_ = false;
   total_breached_ = false;
   daily_breached_ = false;
   have_day_ = false;
   day_index_ = 0;
-  initial_equity_ = rules_.initial_balance > 0.0 ? rules_.initial_balance : 0.0;
-  day_start_equity_ = 0.0;
-  peak_equity_ = 0.0;
-  last_equity_ = 0.0;
+  // restore the base the caller supplied, not zero: a restarted orchestrator
+  // that reset to 0 would derive its baseline from the first frame it sees,
+  // which on a live restart is already drawn down.
+  initial_equity_ = starting_equity_;
+  day_start_equity_ = starting_equity_;
+  peak_equity_ = starting_equity_;
+  last_equity_ = starting_equity_;
+  state_ = starting_equity_ > 0.0 ? PropState::Normal : PropState::Unarmed;
+  allow_new_entry_ = starting_equity_ > 0.0;
 }
 
 double PropGuard::daily_drawdown() const {

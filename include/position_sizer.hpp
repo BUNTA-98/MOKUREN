@@ -6,13 +6,25 @@
 #include <cmath>
 #include <algorithm>
 
+// Physical sanity ceiling on notional / balance, in multiples of equity. This
+// is deliberately NOT the policy number: policy lives in MaxLeverageLock, where
+// a breach vetoes the signal instead of silently shrinking it. The factory
+// rejects any policy above this, so the ceiling can never fire before the lock.
+//
+// One owner matters because leverage == risk_per_trade_pct / stop_pct: a size
+// cap and a leverage veto are the SAME decision. Keeping both, at different
+// numbers, let a tight structural stop be truncated to the cap and then
+// recorded as if it had risked the configured fraction -- so rows with
+// different stop widths were compared as if their risk were equal.
+inline constexpr double kVenueMaxLeverage = 125.0;
+
 class PositionSizer {
 private:
   IBroker* broker_;
   double risk_per_trade_pct_;
   double min_sl_distance_;
-  double lot_step_;     // NEU: Exchange Lot-Größen-Raster (z.B. 0.001 für BTC)
-  double max_leverage_; // NEU: Maximaler Hebel als Margin-Schutz
+  double lot_step_;        // NEU: Exchange Lot-Größen-Raster (z.B. 0.001 für BTC)
+  double margin_ceiling_;  // physical only: see kVenueMaxLeverage
 
 public:
   // min_sl_dist is an absolute quote-currency floor, in the same units as
@@ -20,10 +32,16 @@ public:
   // for BTC and a 6%+ stop for SOL: a caller that did not pass one silently
   // widened every stop. 0 -- the AppConfig default -- means "never widen the
   // trigger's own stop", so this must not drift from that struct again.
+  // the last argument is a margin SANITY ceiling, not a strategy limit: callers
+  // pass kVenueMaxLeverage. the policy number is MaxLeverageLock's, and the
+  // factory refuses any policy above this ceiling, so the two can never
+  // disagree about which one decided.
   PositionSizer(IBroker* b, double risk_pct, double min_sl_dist = 0.0,
-                double lot_step = 0.001, double max_leverage = 20.0)
+                double lot_step = 0.001,
+                double margin_ceiling = kVenueMaxLeverage)
       : broker_(b), risk_per_trade_pct_(risk_pct),
-        min_sl_distance_(min_sl_dist), lot_step_(lot_step), max_leverage_(max_leverage) {}
+        min_sl_distance_(min_sl_dist), lot_step_(lot_step),
+        margin_ceiling_(margin_ceiling) {}
 
   TradeSignal CalculateSize(TradeSignal signal) {
     if (signal.direction == SignalDirection::NONE || signal.stop_loss == 0.0 || signal.entry_price == 0.0) {
@@ -56,15 +74,18 @@ public:
     // --- PRO-UPGRADE 1: LEVERAGE LIMIT (Margin Schutz) ---
     // Wenn der SL extrem eng ist, könnte die Lot-Größe so riesig werden, 
     // dass sie unser Margin-Limit (Balance * Max Hebel) sprengt.
-    // a zero/negative cap means "no cap", not "block every order".
-    if (max_leverage_ > 0.0) {
-      double max_allowed_volume = (balance * max_leverage_) / signal.entry_price;
+    // a zero/negative ceiling means "no ceiling", not "block every order".
+    if (margin_ceiling_ > 0.0) {
+      double max_allowed_volume = (balance * margin_ceiling_) / signal.entry_price;
       if (raw_volume > max_allowed_volume) {
-          // full risk sizing would exceed the margin limit, so the trade risks
-          // less than risk_per_trade_pct -- and, with a tight structural stop,
-          // pays fees on a far larger notional than the risk implies.
-          LOG_TRACE("position_sizer: capping volume {} -> {} at max_leverage={}x",
-                    raw_volume, max_allowed_volume, max_leverage_);
+          // Unreachable while MaxLeverageLock is configured: the factory
+          // rejects any policy above kVenueMaxLeverage, so the veto fires
+          // first. If this ever logs, a guardrail is missing -- that is a
+          // degraded run, not a normal resize, which is why it is a WARN.
+          LOG_WARN("position_sizer: volume {} exceeds the physical margin "
+                   "ceiling {}x ({}); MaxLeverageLock should have rejected "
+                   "this signal first -- check that the module is configured",
+                   raw_volume, margin_ceiling_, max_allowed_volume);
           raw_volume = max_allowed_volume;
       }
     }

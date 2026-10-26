@@ -265,6 +265,12 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   if (tick_size <= 0.0) {
     fail("environment.tick_size must be > 0 (got " + std::to_string(tick_size) + ")");
   }
+  // a zero step divides the size to infinity; a negative one rounds it to a
+  // negative quantity. both are orders no venue should ever see.
+  if (!std::isfinite(lot_step) || lot_step <= 0.0) {
+    fail("venue.lot_step must be a finite number > 0 (got " +
+         std::to_string(lot_step) + ")");
+  }
   if (vwap_reset_hour < 0 || vwap_reset_hour > 23) {
     fail("environment.vwap_reset_hour must be in [0, 23] (got " + std::to_string(vwap_reset_hour) + ")");
   }
@@ -281,8 +287,36 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   if (sl_pct <= 0.0 || sl_pct >= 0.1) {
     fail("risk.sl_pct must be in (0.0, 0.1) (got " + std::to_string(sl_pct) + ")");
   }
-  if (tp_pct <= 0.0 || tp_pct >= 0.1) {
-    fail("risk.tp_pct must be in (0.0, 0.1) (got " + std::to_string(tp_pct) + ")");
+  // tp_pct is derived when the config uses tp_r (tp_pct == tp_r * sl_pct), so
+  // the old absolute cap of 0.1 rejected valid R multiples the moment a grid
+  // swept sl_pct upward -- and the failure named a key the operator never
+  // wrote. a 10R target at 1R = 0.02 is 20% by definition, not an error.
+  //
+  // bound the R multiple where one exists; keep only a generous absolute
+  // ceiling on the fraction, and only to catch unit mistakes (4.0 written for
+  // 0.04). the ceiling is deliberately wide enough that no sane R sits under
+  // it, because the R is the real limit.
+  if (tp_r > 0.0 && (!std::isfinite(tp_r) || tp_r > 100.0)) {
+    fail("risk.tp_r must be a finite multiple of 1R in (0.0, 100.0] (got " +
+         std::to_string(tp_r) + ")");
+  }
+  // widen only where the value is DERIVED. when the config wrote an absolute
+  // tp_pct nothing scales it, and the old 0.1 cap was right: 0.3 means 30% of
+  // price, which is a unit mistake, not a target. when tp_pct == tp_r *
+  // sl_pct, growth is legitimate by definition and only a wide ceiling
+  // applies.
+  const double tp_ceiling = tp_r > 0.0 ? 0.5 : 0.1;
+  if (!std::isfinite(tp_pct) || tp_pct <= 0.0 || tp_pct >= tp_ceiling) {
+    std::string msg = "risk.tp_pct must be in (0.0, " +
+                      std::to_string(tp_ceiling) + ") (got " +
+                      std::to_string(tp_pct);
+    if (tp_r > 0.0) {
+      // name the derivation: "tp_pct" is the wrong thing to go edit here.
+      msg += ", derived from risk.tp_r " + std::to_string(tp_r) +
+             " x risk.sl_pct " + std::to_string(sl_pct) +
+             " -- lower tp_r or narrow the sl_pct sweep";
+    }
+    fail(msg + ")");
   }
   if (risk_per_trade_pct <= 0.0 || risk_per_trade_pct >= 0.1) {
     fail("risk.risk_per_trade_pct must be in (0.0, 0.1) (got " + std::to_string(risk_per_trade_pct) + ")");
@@ -303,21 +337,31 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   }
 
   // --- trade management ---
-  if (tm_config.be_trigger_pct <= 0.0 || tm_config.be_trigger_pct >= 0.1) {
-    fail("trade_management.break_even.trigger_pct must be in (0.0, 0.1) (got " +
-         std::to_string(tm_config.be_trigger_pct) + ")");
+  // every level here is derived too: ResolveLevelPct multiplies the canonical
+  // *_r key by sl_pct (1R). the old absolute cap of 0.1 therefore rejected
+  // configurations whose R multiples are perfectly ordinary as soon as sl_pct
+  // itself was swept -- a 2R break-even at 1R = 0.06 is 12%. Same fix as
+  // risk.tp_pct: a wide absolute ceiling that only catches unit errors, with
+  // the relative relationships (distance < trigger) still enforced below.
+  if (tm_config.be_trigger_pct <= 0.0 || tm_config.be_trigger_pct >= 0.5) {
+    fail("trade_management.break_even.trigger_pct must be in (0.0, 0.5) (got " +
+         std::to_string(tm_config.be_trigger_pct) +
+         " = trigger_r x risk.sl_pct)");
   }
-  if (tm_config.be_target_pct < 0.0 || tm_config.be_target_pct >= 0.1) {
-    fail("trade_management.break_even.target_pct must be in [0.0, 0.1) (got " +
-         std::to_string(tm_config.be_target_pct) + ")");
+  if (tm_config.be_target_pct < 0.0 || tm_config.be_target_pct >= 0.5) {
+    fail("trade_management.break_even.target_pct must be in [0.0, 0.5) (got " +
+         std::to_string(tm_config.be_target_pct) +
+         " = target_r x risk.sl_pct)");
   }
-  if (tm_config.trailing_trigger_pct <= 0.0 || tm_config.trailing_trigger_pct >= 0.1) {
-    fail("trade_management.trailing.trigger_pct must be in (0.0, 0.1) (got " +
-         std::to_string(tm_config.trailing_trigger_pct) + ")");
+  if (tm_config.trailing_trigger_pct <= 0.0 || tm_config.trailing_trigger_pct >= 0.5) {
+    fail("trade_management.trailing.trigger_pct must be in (0.0, 0.5) (got " +
+         std::to_string(tm_config.trailing_trigger_pct) +
+         " = trigger_r x risk.sl_pct)");
   }
-  if (tm_config.trailing_dist_pct <= 0.0 || tm_config.trailing_dist_pct >= 0.1) {
-    fail("trade_management.trailing.distance_pct must be in (0.0, 0.1) (got " +
-         std::to_string(tm_config.trailing_dist_pct) + ")");
+  if (tm_config.trailing_dist_pct <= 0.0 || tm_config.trailing_dist_pct >= 0.5) {
+    fail("trade_management.trailing.distance_pct must be in (0.0, 0.5) (got " +
+         std::to_string(tm_config.trailing_dist_pct) +
+         " = distance_r x risk.sl_pct)");
   }
   // only meaningful when trailing is on: a disabled block with stale values
   // aborted the whole config for a feature that will never run.
@@ -327,9 +371,10 @@ void AppConfig::Validate(bool require_venue_credentials) const {
          ") must be < trade_management.trailing.trigger_pct (" +
          std::to_string(tm_config.trailing_trigger_pct) + ")");
   }
-  if (tm_config.scale_out_trigger_pct <= 0.0 || tm_config.scale_out_trigger_pct >= 0.1) {
-    fail("trade_management.scale_out.trigger_pct must be in (0.0, 0.1) (got " +
-         std::to_string(tm_config.scale_out_trigger_pct) + ")");
+  if (tm_config.scale_out_trigger_pct <= 0.0 || tm_config.scale_out_trigger_pct >= 0.5) {
+    fail("trade_management.scale_out.trigger_pct must be in (0.0, 0.5) (got " +
+         std::to_string(tm_config.scale_out_trigger_pct) +
+         " = trigger_r x risk.sl_pct)");
   }
   if (tm_config.scale_out_fraction < 0.1 || tm_config.scale_out_fraction > 0.9) {
     fail("trade_management.scale_out.fraction must be in [0.1, 0.9] (got " +
@@ -658,6 +703,9 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       cfg.category = SafeString(v, "category", cfg.category);
       cfg.symbol = SafeString(v, "symbol", cfg.symbol);
       cfg.position_mode = SafeString(v, "position_mode", cfg.position_mode);
+      // order quantity grid. optional, but when present it must be a real
+      // increment: it is a per-symbol venue constraint, not a tuning knob.
+      cfg.lot_step = SafeNumber(v, "lot_step", cfg.lot_step);
       cfg.allow_mainnet = SafeBool(v, "allow_mainnet", cfg.allow_mainnet);
     } else if (j.contains("is_testnet")) {
       // legacy spelling. demo cannot be selected this way, on purpose.
@@ -700,8 +748,16 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     cfg.prop.max_total_drawdown_pct =
         read_num("max_total_drawdown_pct", cfg.prop.max_total_drawdown_pct);
     cfg.prop.warn_fraction = read_num("warn_fraction", cfg.prop.warn_fraction);
-    cfg.prop.initial_balance =
-        read_num("initial_balance", cfg.prop.initial_balance);
+    // a starting balance is account state and is passed to PropGuard by the
+    // caller (cfg.initial_balance on the backtest paths, the firm's baseline
+    // live). accepting it here would reintroduce a second, silently different
+    // base -- the bug that made total drawdown report against an account the
+    // run never funded -- so name it instead of quietly ignoring it.
+    if (p.contains("initial_balance")) {
+      throw std::runtime_error(
+          "config error: prop.initial_balance is no longer read; total "
+          "drawdown is measured against initial_balance (the account seed)");
+    }
     cfg.prop.flatten_on_breach =
         SafeBool(p, "flatten_on_breach", cfg.prop.flatten_on_breach);
     if (p.contains("daily_reset_hour_utc") &&
@@ -731,10 +787,6 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
           cfg.prop.daily_reset_hour_utc > 23) {
         throw std::runtime_error(
             "config error: prop.daily_reset_hour_utc must be 0..23");
-      }
-      if (cfg.prop.initial_balance < 0.0) {
-        throw std::runtime_error(
-            "config error: prop.initial_balance must be >= 0");
       }
     }
   }
@@ -872,6 +924,13 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       // tp_pct. a config that names neither fails to load instead of keeping
       // a 1% guess.
       cfg.tp_pct = mokuren::ResolveTpPct(j, cfg.sl_pct);
+      // remember the multiple the config wrote. ResolveTpPct honours tp_r only
+      // when it is a json number, so mirror that exact rule here -- reading a
+      // numeric string it ignored would let Validate report an R that never
+      // produced the value under test.
+      if (risk.contains("tp_r") && risk["tp_r"].is_number()) {
+        cfg.tp_r = risk["tp_r"].get<double>();
+      }
       cfg.risk_per_trade_pct = RequireNumber(risk, "risk_per_trade_pct", "risk");
       // optional by design: 0 (the default here) means "never widen the
       // strategy's own stop", so absence has a defined, non-arbitrary meaning.

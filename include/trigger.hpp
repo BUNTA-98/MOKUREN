@@ -123,10 +123,43 @@ class StackedImbalanceTrigger : public ITrigger {
 private:
   double ratio_threshold;
   int min_stacked_count;
+  // significance floor per footprint level, in base-asset units. 0.0001 was
+  // hardcoded, i.e. "not exactly zero", so a single contract against an empty
+  // opposite side counted as an infinite imbalance. set this per instrument:
+  // ~800 usd of BTC at 80k, a rounding error of SOL.
+  double min_level_qty_;
+  // the stack has to agree with the candle it closed in. a buy stack on a red
+  // candle is buyers being absorbed, i.e. the far side of the move this
+  // trigger exists to ride. body direction only: this says nothing about where
+  // inside the bar the imbalance sat, and it is deliberately a trigger field
+  // rather than a filter -- "the bar agrees with the side that stacked" is a
+  // statement about THIS pattern's hypothesis, while a filter states market
+  // context that every trigger shares.
+  bool require_candle_agreement_;
 
 public:
-  StackedImbalanceTrigger(double ratio, int min_stacked)
-      : ratio_threshold(ratio), min_stacked_count(min_stacked) {}
+  // the trailing parameters keep this constructor source-compatible with older
+  // call sites while making the noise filters tunable. the defaults are the
+  // conservative ones: count only levels that traded on both sides, and do not
+  // accept a stack the candle contradicts.
+  // require_candle_agreement defaults OFF: whether the candle agrees with the
+  // stack is CONTEXT, which is what the filter chain is for (POCTrend,
+  // VwapTrend and CVDDivergence already read the same bar). the trigger's job
+  // is to report the imbalance and its invalidation, not to decide which
+  // market conditions are worth trading. opt in per config when you want it.
+  // no cooldown parameter: spacing re-entries is portfolio policy and already
+  // lives in the risk modules (AntiRevengeLock). a second copy here made
+  // EvaluateCandle stateful, so the same candle could evaluate differently
+  // depending on what had fired before it.
+  StackedImbalanceTrigger(double ratio, int min_stacked,
+                          double min_level_qty = 0.0001,
+                          bool require_candle_agreement = false)
+      : ratio_threshold(ratio),
+        min_stacked_count(min_stacked),
+        // a floor of 0 would make every level "significant" and divide by a
+        // zero denominator on the next ratio, so clamp instead of trusting it.
+        min_level_qty_(min_level_qty > 0.0 ? min_level_qty : 1e-9),
+        require_candle_agreement_(require_candle_agreement) {}
 
   TradeSignal EvaluateCandle(const MarketContext &context) override {
     if (context.history.empty()) return TradeSignal{};
@@ -151,43 +184,84 @@ public:
         if (real_tick == 999999.0) real_tick = 1.0; // fallback
     }
 
-    int current_buy_stacked = 0, max_buy_stacked = 0;
-    int current_sell_stacked = 0, max_sell_stacked = 0;
+    // a stack is tracked as a run, not just a count: the price band it spans
+    // is what anchors the stop, and a bare count cannot produce that.
+    struct StackRun {
+      int count = 0;
+      double lo = 0.0;
+      double hi = 0.0;
+      double worst_ratio = 0.0;  // weakest imbalance inside this run
+      void Reset() { *this = StackRun{}; }
+    };
+    StackRun buy_run, sell_run, best_buy, best_sell;
+
+    auto commit = [](StackRun& run, StackRun& best) {
+      // keep the longest run per side. ties go to the earlier (lower) band,
+      // i.e. where the move started rather than where it ended.
+      if (run.count > best.count) best = run;
+      run.Reset();
+    };
 
     for (size_t i = 1; i < bar.footprint.size(); i++) {
       const auto &upper = bar.footprint[i];
       const auto &lower = bar.footprint[i - 1];
 
-      // dynamischer gap-check (reset wenn der preis springt)
-      if (upper.price == 0.0 || lower.price == 0.0 || 
-          (upper.price - lower.price) > (real_tick * 1.5)) {
-        current_buy_stacked = 0;
-        current_sell_stacked = 0;
+      // a gap or a duplicated level ends the ladder: the diagonal comparison
+      // only holds between ADJACENT prices, and PackFootprint drops untraded
+      // slots, so a stack must not span one.
+      const double diff = upper.price - lower.price;
+      if (upper.price == 0.0 || lower.price == 0.0 || diff <= 0.0 ||
+          diff > (real_tick * 1.5)) {
+        commit(buy_run, best_buy);
+        commit(sell_run, best_sell);
         continue;
       }
 
-      // buy imbalance
-      bool is_buy_imb = (upper.ask_volume > 0.0001) && 
-                        (lower.bid_volume <= 0.0001 || upper.ask_volume >= lower.bid_volume * ratio_threshold);
-      
-      if (is_buy_imb) {
-        current_buy_stacked++;
-        max_buy_stacked = std::max(max_buy_stacked, current_buy_stacked);
+      // One-sided levels are NOT imbalances. This used to short-circuit
+      // ("lower.bid_volume <= 0.0001 || ..."), so a level whose opposite side
+      // never traded passed whatever ratio_threshold was: a 3x sweep and a
+      // 15x sweep accepted the same ladders, and the parameter could not move
+      // the result. A comparison needs two significant volumes.
+      const bool upper_bought = upper.ask_volume >= min_level_qty_;
+      const bool lower_sold = lower.bid_volume >= min_level_qty_;
+      if (upper_bought && lower_sold &&
+          upper.ask_volume >= lower.bid_volume * ratio_threshold) {
+        const double ratio = upper.ask_volume / lower.bid_volume;
+        if (buy_run.count == 0) {
+          buy_run.lo = lower.price;
+          buy_run.worst_ratio = ratio;
+        } else {
+          buy_run.worst_ratio = std::min(buy_run.worst_ratio, ratio);
+        }
+        buy_run.hi = upper.price;
+        buy_run.count++;
       } else {
-        current_buy_stacked = 0;
+        commit(buy_run, best_buy);
       }
 
-      // sell imbalance
-      bool is_sell_imb = (upper.bid_volume > 0.0001) && 
-                         (lower.ask_volume <= 0.0001 || upper.bid_volume >= lower.ask_volume * ratio_threshold);
-
-      if (is_sell_imb) {
-        current_sell_stacked++;
-        max_sell_stacked = std::max(max_sell_stacked, current_sell_stacked);
+      const bool upper_sold = upper.bid_volume >= min_level_qty_;
+      const bool lower_bought = lower.ask_volume >= min_level_qty_;
+      if (upper_sold && lower_bought &&
+          upper.bid_volume >= lower.ask_volume * ratio_threshold) {
+        const double ratio = upper.bid_volume / lower.ask_volume;
+        if (sell_run.count == 0) {
+          sell_run.lo = lower.price;
+          sell_run.worst_ratio = ratio;
+        } else {
+          sell_run.worst_ratio = std::min(sell_run.worst_ratio, ratio);
+        }
+        sell_run.hi = upper.price;
+        sell_run.count++;
       } else {
-        current_sell_stacked = 0;
+        commit(sell_run, best_sell);
       }
     }
+    // a stack that runs to the last packed level has not been committed yet.
+    commit(buy_run, best_buy);
+    commit(sell_run, best_sell);
+
+    const int max_buy_stacked = best_buy.count;
+    const int max_sell_stacked = best_sell.count;
 
     // the packed levels themselves, not just the stacks they produced. lo/hi
     // separate "one side only" from "levels were merged or split by the tick
@@ -207,19 +281,91 @@ public:
     // from outside. footprint==0 means this candle had no packed levels at
     // all; max_buy/max_sell are the longest unbroken stacks found.
     LOG_TRACE("stacked_imbalance: footprint={} max_buy={} max_sell={} "
-              "min_stacked={} ratio={} tick={} lo={} hi={} bid={} ask={}",
+              "min_stacked={} ratio={} tick={} lo={} hi={} bid={} ask={} "
+              "buy_band=[{},{}] buy_wr={} sell_band=[{},{}] sell_wr={}",
               bar.footprint.size(), max_buy_stacked, max_sell_stacked,
               min_stacked_count, ratio_threshold, real_tick, lo, hi, bid_sum,
-              ask_sum);
+              ask_sum, best_buy.lo, best_buy.hi, best_buy.worst_ratio,
+              best_sell.lo, best_sell.hi, best_sell.worst_ratio);
 
-    // direction only. the funnel derives the stop from risk.sl_pct and the
-    // target from risk.tp_r, so this trigger states what it sees and nothing
-    // about the risk the account is willing to take.
-    if (max_buy_stacked >= min_stacked_count && max_buy_stacked > max_sell_stacked)
-      return TradeSignal{SignalDirection::BUY};
+    // both sides stacked means the tape diced back and forth: neither side is
+    // the path of least resistance. the old strict ">" tiebreak let this
+    // through as silence-by-equality, which is the same outcome for a reason
+    // nobody could reconstruct afterwards.
+    const bool buy_ok = max_buy_stacked >= min_stacked_count;
+    const bool sell_ok = max_sell_stacked >= min_stacked_count;
+    if (buy_ok && sell_ok) {
+      LOG_TRACE("stacked_imbalance: rejected, both sides stacked (buy={} "
+                "sell={})", max_buy_stacked, max_sell_stacked);
+      return TradeSignal{};
+    }
 
-    if (max_sell_stacked >= min_stacked_count && max_sell_stacked > max_buy_stacked)
-      return TradeSignal{SignalDirection::SELL};
+    const bool want_buy = buy_ok && max_buy_stacked > max_sell_stacked;
+    const bool want_sell = sell_ok && max_sell_stacked > max_buy_stacked;
+
+    if (require_candle_agreement_) {
+      if (want_buy && !(bar.close > bar.open)) {
+        LOG_TRACE("stacked_imbalance: rejected buy stack, candle not up "
+                  "(open={} close={})", bar.open, bar.close);
+        return TradeSignal{};
+      }
+      if (want_sell && !(bar.close < bar.open)) {
+        LOG_TRACE("stacked_imbalance: rejected sell stack, candle not down "
+                  "(open={} close={})", bar.open, bar.close);
+        return TradeSignal{};
+      }
+    }
+
+    const double buffer = real_tick > 0.0 ? real_tick : 0.0;
+    const double entry = bar.close;
+
+    // THE structural stop. The trigger already knows where the imbalance
+    // began, which is the only invalidation it has evidence for; discarding
+    // that and letting risk.sl_pct stand in is what put a 1% stop and a 2%
+    // target on a trade whose entire favorable excursion was 0.12%. The
+    // target is left at 0 on purpose: SignalExecutor::FinalizeTakeProfit
+    // derives it as tp_r x the risk actually placed, so the configured 2R
+    // applies to THIS stop instead of to a global guess.
+    auto make_signal = [&](SignalDirection dir, double stop, const StackRun& run) {
+      const double risk = dir == SignalDirection::BUY ? entry - stop : stop - entry;
+      if (!(risk > buffer)) {
+        // a stop within one tick of the close is not a stop. the funnel would
+        // drop it, and dropping it here says why instead of reporting "no
+        // setups" for a signal that did fire.
+        LOG_TRACE("stacked_imbalance: rejected {} band [{},{}]: stop={} gives "
+                  "risk={} <= tick={}",
+                  dir == SignalDirection::BUY ? "buy" : "sell", run.lo, run.hi,
+                  stop, risk, buffer);
+        return TradeSignal{};
+      }
+      TradeSignal signal;
+      signal.direction = dir;
+      signal.entry_price = entry;
+      signal.stop_loss = stop;
+      signal.take_profit = 0.0;  // 0 => funnel derives tp_r x placed risk
+      LOG_TRACE("stacked_imbalance: {} levels={} band=[{},{}] wr={} entry={} "
+                "stop={} risk={} ({:.3f}%)",
+                dir == SignalDirection::BUY ? "buy" : "sell", run.count, run.lo,
+                run.hi, run.worst_ratio, entry, stop, risk,
+                100.0 * risk / entry);
+      return signal;
+    };
+
+    if (want_buy) {
+      // below the base of the imbalance. when the band sits above the close
+      // (buyers stepped up into the candle's top) that level is not a valid
+      // long stop, so fall back to the candle low, the invalidation for the
+      // whole bar.
+      const double band_stop = best_buy.lo - buffer;
+      const double stop = band_stop < entry ? band_stop : (bar.low - buffer);
+      return make_signal(SignalDirection::BUY, stop, best_buy);
+    }
+
+    if (want_sell) {
+      const double band_stop = best_sell.hi + buffer;
+      const double stop = band_stop > entry ? band_stop : (bar.high + buffer);
+      return make_signal(SignalDirection::SELL, stop, best_sell);
+    }
 
     return TradeSignal{};
   }
@@ -231,7 +377,14 @@ private:
   double min_delta_threshold_;
 
 public:
-  DeltaAbsorptionTrigger(double min_delta) : min_delta_threshold_(min_delta) {}
+  // a threshold of 0 (or below) reads as "fire on any net delta", which is
+  // every candle whose close agrees with the delta sign. the configs carried
+  // a min_delta_threshold grid whose first step was 0, and a zero there is
+  // indistinguishable from "no filter at all" in the trade count. the factory
+  // validates config values and rejects <= 0; the floor here only protects a
+  // direct caller (tests, tooling) that skips the factory.
+  DeltaAbsorptionTrigger(double min_delta)
+      : min_delta_threshold_(min_delta > 0.0 ? min_delta : 1e-9) {}
 
   TradeSignal EvaluateCandle(const MarketContext &context) override {
     if (context.history.empty()) return TradeSignal{};
@@ -260,9 +413,14 @@ public:
       ticket.entry_price = bar.close; 
       ticket.stop_loss = bar.low - (bar.tick_size * 2);
 
-      // simples 2:1 risk reward
-      double risk = ticket.entry_price - ticket.stop_loss;
-      ticket.take_profit = ticket.entry_price + (risk * 2);
+      // the target is deliberately left at 0: SignalExecutor::FinalizeTakeProfit
+      // derives it as risk.tp_r x the placed risk, so tp_r is actually
+      // configurable. the old hardcoded 2R was preserved by the funnel's
+      // rescale, so a config that said tp_r: 3 still traded 2R on this trigger
+      // -- and nothing in the log said so. the stop stays structural
+      // (bar.low - 2 ticks): that is the invalidation this setup has evidence
+      // for.
+      ticket.take_profit = 0.0;  // 0 => funnel derives tp_r x placed risk
 
       return ticket;
     }
@@ -276,8 +434,9 @@ public:
       ticket.entry_price = bar.close;
       ticket.stop_loss = bar.high + (bar.tick_size * 2);
 
-      double risk = ticket.stop_loss - ticket.entry_price;
-      ticket.take_profit = ticket.entry_price - (risk * 2);
+      // see the long branch: tp_r comes from config via the funnel, not from a
+      // hardcoded multiple here.
+      ticket.take_profit = 0.0;  // 0 => funnel derives tp_r x placed risk
 
       return ticket;
     }
