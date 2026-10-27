@@ -181,18 +181,39 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
   // streamer default -- was a real-money/real-data mismatch waiting for its
   // first config.
   if (cfg.exchange == "bybit") {
-    const mokuren::venue::Spec spec =
-        mokuren::venue::Resolve(cfg.env, cfg.category, cfg.symbol);
+    // TWO identities from ONE config. the instrument (category + symbol) is
+    // shared, because the engine prices exactly one market; the environment is
+    // not, because an api key is bound to one bybit world while the public
+    // feed is free to read. mainnet data into a demo account is the
+    // prop-trading shape, expressed here rather than in a second config file
+    // and a second process.
+    const mokuren::venue::Spec exec_spec = cfg.ExecSpec();
+    const mokuren::venue::Spec data_spec = cfg.DataSpec();
 
     // explicit arguments: the streamer must never fall back to its own
-    // compiled-in (mainnet) default host.
-    inst.streamer =
-        std::make_unique<BybitDataStreamer>(spec.symbol, spec.public_ws);
+    // compiled-in (mainnet) default host. it follows the DATA world.
+    inst.streamer = std::make_unique<BybitDataStreamer>(data_spec.symbol,
+                                                        data_spec.public_ws);
+    LOG_INFO("factory: bybit data {}", mokuren::venue::Manifest(data_spec));
 
     if (live_mode && !use_paper_broker) {
+      // the broker follows the EXEC world: its hosts, its symbol, its keys.
       inst.broker =
-          std::make_unique<BybitBroker>(cfg.api_key, cfg.api_secret, spec);
-      LOG_INFO("factory: bybit live {}", mokuren::venue::Manifest(spec));
+          std::make_unique<BybitBroker>(cfg.api_key, cfg.api_secret, exec_spec);
+      LOG_INFO("factory: bybit live exec {}",
+               mokuren::venue::Manifest(exec_spec));
+      if (data_spec.env != exec_spec.env) {
+        // not an error, and not silent either: this is the one caveat that
+        // changes what the numbers mean. stops, targets and pnl are measured
+        // against the execution venue's book, which on testnet/demo is
+        // simulated and does not carry mainnet's depth, so a fill can land at
+        // a price the data feed never printed and the slippage measured here
+        // is the venue's, not the market's.
+        LOG_WARN("factory: market data is {} but orders and fills are priced "
+                 "on {}; the strategy sees one book and fills on another",
+                 mokuren::venue::EnvName(data_spec.env),
+                 mokuren::venue::EnvName(exec_spec.env));
+      }
       if (cfg.position_mode != "one_way") {
         LOG_WARN("factory: venue.position_mode='{}' is not implemented; the "
                  "adapter sends positionIdx=0 (one-way) orders",
@@ -201,13 +222,14 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
     } else if (live_mode) {
       // shadow mode: the public streamer above is real, but no execution
       // adapter is built. engine.broker stays null, so ActiveBroker() and every
-      // IBroker consumer below bind to the PaperTrader.
+      // IBroker consumer below bind to the PaperTrader. the exec environment is
+      // unused here on purpose -- local fills are priced off the data feed.
       LOG_INFO("factory: bybit shadow (paper execution) {}; no orders will be "
                "sent",
-               mokuren::venue::Manifest(spec));
+               mokuren::venue::Manifest(data_spec));
     } else {
       LOG_INFO("factory: bybit data-only {}; using the PaperTrader",
-               mokuren::venue::Manifest(spec));
+               mokuren::venue::Manifest(data_spec));
     }
   } else if (cfg.exchange == "hyperliquid") {
     if (live_mode && !use_paper_broker) {
@@ -238,11 +260,16 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
       // said "testnet" used to stream mainnet data with nothing to show for it
       // -- the same broker/streamer disagreement the shared venue spec was
       // introduced to remove.
-      if (cfg.env == mokuren::venue::Env::Demo) {
+      // hyperliquid has no execution adapter here, so there is no exec world
+      // to disagree with: the feed's environment is the only one that picks an
+      // endpoint. read it through DataEnv() so a "mainnet data" override means
+      // the same thing on this venue instead of silently streaming testnet.
+      const mokuren::venue::Env hl_data_env = cfg.DataEnv();
+      if (hl_data_env == mokuren::venue::Env::Demo) {
         LOG_WARN("factory: hyperliquid has no demo environment; using its "
                  "testnet endpoint");
       }
-      const char* hl_ws = cfg.env == mokuren::venue::Env::Mainnet
+      const char* hl_ws = hl_data_env == mokuren::venue::Env::Mainnet
                               ? "wss://api.hyperliquid.xyz/ws"
                               : "wss://api.hyperliquid-testnet.xyz/ws";
       inst.streamer =

@@ -246,9 +246,14 @@ void AppConfig::Validate(bool require_venue_credentials) const {
     fail("venue.position_mode must be 'one_way' or 'hedge' (got '" +
          position_mode + "')");
   }
+  // gates the EXECUTION world only: a mainnet feed signs nothing and places
+  // nothing, so mainnet data into a demo account is not a funded run.
   if (exchange == "bybit" && env == mokuren::venue::Env::Mainnet &&
       !allow_mainnet) {
-    fail("venue environment 'mainnet' requires allow_mainnet: true");
+    fail("venue environment 'mainnet' requires allow_mainnet: true (this is "
+         "the EXECUTION world; to read mainnet data into a demo/testnet "
+         "account, point venue.environment at the account and set "
+         "venue.data_environment to 'mainnet')");
   }
 
   // --- environment ---
@@ -422,6 +427,20 @@ void AppConfig::Validate(bool require_venue_credentials) const {
       fail("risk.modules contains an entry with an empty name");
     }
   }
+}
+
+// ============================================================================
+// AppConfig::DataSpec / ExecSpec
+// ============================================================================
+
+mokuren::venue::Spec AppConfig::DataSpec() const {
+  // the instrument is shared; only the world differs. DataEnv() falls back to
+  // env, so a config that names one environment resolves both specs to it.
+  return mokuren::venue::Resolve(DataEnv(), category, symbol);
+}
+
+mokuren::venue::Spec AppConfig::ExecSpec() const {
+  return mokuren::venue::Resolve(env, category, symbol);
 }
 
 // ============================================================================
@@ -712,6 +731,45 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       cfg.is_testnet = SafeBool(j, "is_testnet", true);
       cfg.env = cfg.is_testnet ? mokuren::venue::Env::Testnet
                                : mokuren::venue::Env::Mainnet;
+    }
+
+    // --- market-data world ------------------------------------------------
+    // optional, and the only part of the venue identity that may differ from
+    // the account: a key is bound to one world, the public book is free. the
+    // instrument stays shared -- a feed for a different symbol would size a
+    // contract the engine never priced.
+    //
+    // accepted spellings, most specific first:
+    //   "venue":      {"data_environment": "mainnet"}
+    //   "venue":      {"data_venue": {"environment": "mainnet"}}
+    //   "data_venue": {"environment": "mainnet"}                 (root)
+    //
+    // absent is the default and means "the feed and the account are the same
+    // world", so a config written before the split keeps its exact meaning.
+    {
+      std::string data_env_name;
+      auto read_block = [](const json& block) -> std::string {
+        if (!block.is_object()) return std::string();
+        return SafeString(block, "environment", SafeString(block, "env", ""));
+      };
+      if (j.contains("venue") && j["venue"].is_object()) {
+        const auto& v = j["venue"];
+        data_env_name = SafeString(v, "data_environment", "");
+        if (data_env_name.empty() && v.contains("data_venue")) {
+          data_env_name = read_block(v["data_venue"]);
+        }
+      }
+      if (data_env_name.empty() && j.contains("data_venue")) {
+        data_env_name = read_block(j["data_venue"]);
+      }
+      if (!data_env_name.empty()) {
+        try {
+          cfg.data_env = mokuren::venue::ParseEnv(data_env_name);
+        } catch (const std::exception& e) {
+          throw std::runtime_error(
+              std::string("config error: venue.data_environment: ") + e.what());
+        }
+      }
     }
 
     // root-level overrides for the instrument identity.

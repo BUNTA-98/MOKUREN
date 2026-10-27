@@ -47,6 +47,14 @@ struct EngineInstance {
 
 // parses json config and wires all components together.
 //
+// the venue identity splits in two, and Build resolves both halves: the data
+// streamer comes from cfg.DataSpec() (the feed's environment, defaulting to
+// cfg.env) and the execution adapter from cfg.ExecSpec() (cfg.env). the
+// instrument -- category and symbol -- is shared, because the engine prices
+// exactly one market; only the bybit world may differ, which is what lets a
+// mainnet feed drive orders on a demo account. a split is logged at WARN, not
+// rejected: it is deliberate, but it changes what a fill price means.
+//
 // live_mode gates the execution venue: a venue adapter is only constructed
 // for a live run. a backtest or WFA must never dial out to an exchange, even
 // when its config names one -- the adapter trades nothing until its state
@@ -77,8 +85,11 @@ struct EngineInstance {
 // strict. If a param must be guaranteed, add it to AppConfig, not here.
 //
 // triggers (name: params):
-//   DeltaAbsorption:    delta=1.0
-//   StackedImbalance:   ratio=1.5, levels=2
+//   DeltaAbsorption:    min_delta_threshold=1.0      (alias: delta)
+//   StackedImbalance:   ratio_threshold=1.5          (alias: ratio)
+//                       min_stacked_count=2          (alias: levels)
+//                       min_level_qty=0.0001         (alias: min_qty)
+//                       require_candle_agreement=false
 //   SpoofHunter:        lookback_ms=500, min_wall_qty=30.0, drop_threshold=0.9
 // filters:
 //   MinVolume:          min_volume=1.0

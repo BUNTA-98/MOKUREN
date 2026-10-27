@@ -3,6 +3,7 @@
 #include <iostream>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -90,15 +91,36 @@ struct AppConfig {
   // configs keep working and so nothing reads two different truths.
   bool is_testnet = true;
 
-  // venue identity. one object the broker and the market-data streamer both
-  // take, so they cannot disagree about host, category or symbol.
+  // venue identity, in two parts that may point at different bybit worlds.
+  //
+  // THE INSTRUMENT (category + symbol) IS SHARED. the engine prices one
+  // market, so a feed for a different symbol than the account trades would
+  // size a contract it never saw; there is no second symbol anywhere below.
+  //
+  // THE ENVIRONMENT IS NOT. an api key is valid in exactly one world
+  // (mainnet/testnet/demo) while the public feed is free to read, so a prop
+  // run reads mainnet data and fills on a demo account. `env` is the
+  // EXECUTION world -- where credentials and orders live -- and `data_env`
+  // overrides the world the feed is read from. unset data_env means "same as
+  // env", which is exactly what every config written before the split means.
   mokuren::venue::Env env = mokuren::venue::Env::Testnet;
+  // has_value() == the config asked for a separate data world. optional rather
+  // than a sentinel Env so a directly-constructed AppConfig (tests, tooling)
+  // cannot disagree with a loaded one: no override means one world, both sides.
+  std::optional<mokuren::venue::Env> data_env;
   std::string category = "linear";
   std::string symbol = "BTCUSDT";
   std::string position_mode = "one_way"; // "one_way" | "hedge"
   // mainnet spends real money. requiring an explicit opt-in turns a config
-  // typo into a startup abort instead of a funded order.
+  // typo into a startup abort instead of a funded order. it gates the
+  // EXECUTION world only: reading mainnet's public book costs nothing and
+  // places nothing, and demanding the flag for it would force every
+  // mainnet-data/demo-exec config to carry a live-money opt-in it never uses.
   bool allow_mainnet = false;
+
+  // the world the public market-data feed is read from. equal to env unless
+  // the config set venue.data_environment (or a data_venue block).
+  mokuren::venue::Env DataEnv() const { return data_env.value_or(env); }
 
   // funded-account survival limits (hyrotrader: 4% daily, 6% total). enforced
   // by one guard on every path, independent of sl_pct/tp_r -- a strategy's
@@ -181,6 +203,15 @@ struct AppConfig {
   // PaperTrader::kInitialBalance (10000) so a config that omits the key
   // reproduces the numbers it produced before.
   double initial_balance = 10000.0;
+
+  // the venue spec of the market-data feed: DataEnv() plus the shared
+  // instrument. resolved in the config layer, not in the factory, so an
+  // unreadable environment aborts at load instead of at the first tick.
+  // throws std::invalid_argument (via venue::Resolve) on an unknown category
+  // or an empty symbol.
+  mokuren::venue::Spec DataSpec() const;
+  // the venue spec of the execution world: where orders and credentials go.
+  mokuren::venue::Spec ExecSpec() const;
 
   // strict validation of all critical bounds.
   // throws std::invalid_argument with a precise message on the first violation.
