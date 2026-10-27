@@ -14,3 +14,4 @@ notes.txt
 *.sec.txt
 configs/dev/
 *.sec.*
+recordings/
