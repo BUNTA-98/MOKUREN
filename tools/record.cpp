@@ -13,6 +13,9 @@
 //   mokuren_record --help
 
 #include "bybit_streamer.hpp"
+#include "hyperliquid_streamer.hpp"
+#include "live_debug.hpp"
+#include "logger.hpp"
 #include "recorder.hpp"
 
 #include <atomic>
@@ -22,6 +25,7 @@
 #include <ctime>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -35,29 +39,41 @@ static_assert(std::atomic<bool>::is_always_lock_free,
               "take a lock can deadlock the process it was meant to stop");
 
 struct Args {
-  std::string symbol = "BTCUSDT";
+  // Empty means "use the venue's default", resolved by main() once --venue is
+  // known. Seeding these with bybit's values here would make "--venue
+  // hyperliquid" subscribe to BTCUSDT, which hyperliquid does not list: the
+  // socket stays open, nothing ever arrives, and an empty recording is
+  // indistinguishable from a quiet market.
+  std::string symbol;
   std::string out;              // empty -> generated under recordings/
   std::string venue = "bybit";
   std::string env = "mainnet";
-  std::string category = "linear";
+  std::string category;
   int64_t duration_s = 0;       // 0 = until interrupted
   int64_t l2_min_interval_ms = 0;
   bool validate = true;
+  bool debug = false;
 };
 
 void PrintUsage() {
   std::cout <<
       "usage: mokuren_record [options]\n"
       "\n"
-      "  --symbol NAME        venue symbol (default BTCUSDT)\n"
+      "  --symbol NAME        venue symbol\n"
+      "                       (default: BTCUSDT on bybit, BTC on hyperliquid)\n"
       "  --out PATH           output .mkn file\n"
       "                       (default recordings/<venue>_<symbol>_<utc>.mkn)\n"
-      "  --venue NAME         session metadata only (default bybit)\n"
+      "  --venue NAME         which streamer to record (default bybit)\n"
+      "                       supported: bybit, hyperliquid\n"
       "  --env NAME           session metadata only (default mainnet)\n"
       "  --category NAME      session metadata only (default linear)\n"
+      "                       one of: linear, spot, inverse\n"
       "  --duration SECONDS   stop after N seconds (0 = until ctrl-c)\n"
       "  --l2-interval MS     at most one book frame per MS (0 = every frame)\n"
       "  --no-validate        write frames the live gate would reject\n"
+      "  --debug              log every frame the parser sees, and why it was\n"
+      "                       dropped; the only way to tell a slow venue from a\n"
+      "                       frame that never reached the recorder\n"
       "  -h, --help           this text\n"
       "\n"
       "Trades are never downsampled: a missing print changes the footprint,\n"
@@ -126,6 +142,8 @@ bool ParseArgs(int argc, char** argv, Args& a, bool& wants_help,
         err = "--l2-interval must not be negative";
         return false;
       }
+    } else if (arg == "--debug") {
+      a.debug = true;
     } else if (arg == "--no-validate") {
       a.validate = false;
     } else {
@@ -134,6 +152,23 @@ bool ParseArgs(int argc, char** argv, Args& a, bool& wants_help,
     }
   }
   return true;
+}
+
+// Builds the streamer for the requested venue.
+//
+// Returning nullptr rather than falling back to bybit is deliberate: a bybit
+// feed written into a file labelled "hyperliquid" is read back with the wrong
+// profile and rebuilds the wrong book, and nothing in the file says so.
+std::unique_ptr<IMarketStreamer> MakeStreamer(const Args& a, std::string& err) {
+  if (a.venue == "bybit") {
+    return std::make_unique<BybitDataStreamer>(a.symbol);
+  }
+  if (a.venue == "hyperliquid") {
+    return std::make_unique<HyperliquidDataStreamer>(a.symbol);
+  }
+  err = "no streamer for venue '" + a.venue +
+        "' (supported: bybit, hyperliquid)";
+  return nullptr;
 }
 
 std::string DefaultPath(const Args& a) {
@@ -152,11 +187,12 @@ std::string DefaultPath(const Args& a) {
   return "recordings/" + a.venue + "_" + a.symbol + "_" + stamp + ".mkn";
 }
 
-void PrintStats(const mokuren::MarketDataRecorder& rec,
-                const std::string& path) {
+void PrintStats(const mokuren::MarketDataRecorder& rec, const std::string& path,
+                int64_t elapsed_s) {
   const auto& s = rec.stats();
   std::cout << "\n--- recording summary ---\n"
             << "file:              " << path << "\n"
+            << "elapsed:           " << elapsed_s << "s\n"
             << "trades  seen:      " << s.trades_seen << "\n"
             << "trades  written:   " << s.trades_written << "\n"
             << "trades  rejected:  " << s.trades_rejected << "\n"
@@ -165,6 +201,16 @@ void PrintStats(const mokuren::MarketDataRecorder& rec,
             << "l2      rejected:  " << s.l2_rejected << "\n"
             << "l2      throttled: " << s.l2_throttled << "\n"
             << "l2      gaps:      " << s.l2_gaps << "\n";
+
+  // Per minute, because that is the unit StartupGate states its criteria in: a
+  // session and a probe then compare without conversion. Without this line a
+  // count is unreadable -- 248 trades is a healthy session at 30s and a starved
+  // one at 30min, and nothing above says which.
+  if (elapsed_s > 0) {
+    std::cout << "trades  /min:      " << s.trades_written * 60 / elapsed_s
+              << "\n"
+              << "l2      /min:      " << s.l2_written * 60 / elapsed_s << "\n";
+  }
 
   if (!rec.last_error().empty()) {
     std::cerr << "writer error: " << rec.last_error() << "\n";
@@ -197,16 +243,71 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
 
-  // Only bybit has a streamer today. Refusing an unknown venue is better than
-  // recording a bybit feed into a file labelled "binance": the metadata is what
-  // the reader uses to pick a profile, so a wrong label is a wrong book later.
-  if (args.venue != "bybit") {
-    std::cerr << "error: no streamer for venue '" << args.venue
-              << "' (only bybit is wired)\n";
+  // The streamers log through the global logger, which is a null sink until it
+  // is initialised: without this call every LOG_* and LIVE_DBG in the parser is
+  // silently discarded, including the ones --debug exists to enable. A separate
+  // file from logs/engine.log on purpose -- two processes rotating one file
+  // interleave each other's lines.
+  const auto log_level =
+      args.debug ? spdlog::level::trace : spdlog::level::warn;
+  mokuren::InitLogger("logs/record.log", log_level,
+                      /*enable_console=*/args.debug);
+  spdlog::set_level(log_level);
+
+  if (args.debug) {
+    // Set before the streamer is built, so the constructor's own tracing is
+    // included. The parser already logs one line per raw frame and one per
+    // parsed event; without this flag those lines are unreachable from the
+    // binary that produces the recording, and a frame that arrived and yielded
+    // nothing is indistinguishable from a venue that never sent it.
+    mokuren::debug::g_live_debug_enabled.store(true, std::memory_order_relaxed);
+  }
+
+  // The symbol is genuinely per-venue ("BTC" vs "BTCUSDT") and only resolvable
+  // now: subscribing to the wrong coin leaves the socket open and silent, which
+  // is indistinguishable from a quiet market.
+  if (args.symbol.empty()) {
+    args.symbol = (args.venue == "hyperliquid") ? "BTC" : "BTCUSDT";
+  }
+  // The category is NOT per-venue, despite looking like it should be. It is a
+  // closed set of contract kinds -- linear, spot, inverse -- written into the
+  // session metadata and consumed by venue::Resolve. "perp" is not in that set:
+  // defaulting to it for hyperliquid produced a file whose metadata named a
+  // category no reader accepts, and made every config that copied the value
+  // fail AppConfig validation. Hyperliquid perps are USDC-margined linear
+  // contracts, which is the closest truthful mapping and what every reader
+  // already understands.
+  if (args.category.empty()) {
+    args.category = "linear";
+  }
+
+  // Built before the file is touched: an unknown venue should fail before this
+  // process creates a directory and an empty .mkn behind it.
+  std::string streamer_err;
+  std::unique_ptr<IMarketStreamer> streamer = MakeStreamer(args, streamer_err);
+  if (!streamer) {
+    std::cerr << "error: " << streamer_err << "\n";
+    mokuren::ShutdownLogger();
     return EXIT_FAILURE;
   }
 
   const std::string path = args.out.empty() ? DefaultPath(args) : args.out;
+
+  if (args.debug) {
+    // The frame trace is its own logger with its own sink, not the async audit
+    // logger: it is written per frame and would drown the events that matter.
+    // Putting it under the recording's stem is what makes the two files a pair
+    // -- the default is a fixed name in the working directory, truncated on
+    // first use, so a second run would destroy the first run's trace.
+    std::string trace = path;
+    constexpr const char* kExt = ".mkn";
+    const std::string ext(kExt);
+    if (trace.size() >= ext.size() &&
+        trace.compare(trace.size() - ext.size(), ext.size(), ext) == 0) {
+      trace.resize(trace.size() - ext.size());
+    }
+    mokuren::debug::LiveDebugLogPath() = trace + ".debug.log";
+  }
 
   // fopen() does not create the directory, and "cannot open recordings/x.mkn"
   // is a worse error than the one that actually happened.
@@ -217,6 +318,7 @@ int main(int argc, char** argv) {
     if (ec) {
       std::cerr << "error: cannot create '" << parent.string()
                 << "': " << ec.message() << "\n";
+      mokuren::ShutdownLogger();
       return EXIT_FAILURE;
     }
   }
@@ -236,26 +338,26 @@ int main(int argc, char** argv) {
   cfg.min_book_depth = 1;
 
   mokuren::MarketDataRecorder recorder(cfg);
-  BybitDataStreamer streamer(args.symbol);
 
   // The recorder takes the data callbacks; the lifecycle callbacks stay here,
   // because this process owns the stream. A recorder that decided when a
   // session ends would produce a recording with a hole in it that nobody was
   // told about.
-  streamer.SetFinishedCallback([&] {
+  streamer->SetFinishedCallback([&] {
     std::cout << "\nfeed reported natural end of input\n";
     g_stop.store(true, std::memory_order_relaxed);
   });
-  streamer.SetErrorCallback([&](const std::string& message) {
+  streamer->SetErrorCallback([&](const std::string& message) {
     std::cerr << "\nfeed error: " << message << "\n";
     g_stop.store(true, std::memory_order_relaxed);
   });
 
-  recorder.Attach(streamer);
+  recorder.Attach(*streamer);
 
   if (!recorder.Open()) {
     std::cerr << "error: cannot open '" << path
               << "': " << recorder.last_error() << "\n";
+    mokuren::ShutdownLogger();
     return EXIT_FAILURE;
   }
 
@@ -268,7 +370,7 @@ int main(int argc, char** argv) {
             << " validate=" << (args.validate ? "on" : "off")
             << "\npress ctrl-c to stop\n";
 
-  streamer.Start();
+  streamer->Start();
 
   // Poll rather than block on a condition variable: the stop flag is set from a
   // signal handler, which cannot notify one. 100 ms is short enough that ctrl-c
@@ -297,10 +399,17 @@ int main(int argc, char** argv) {
   // Order matters and is the writer's whole threading contract: Stop() joins
   // the streamer thread, so no callback is in flight when Close() finalises the
   // file. Closing first would race the producer against the header patch.
-  streamer.Stop();
+  streamer->Stop();
   const bool closed_ok = recorder.Close();
 
-  PrintStats(recorder, path);
+  const int64_t elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+  PrintStats(recorder, path, elapsed_s);
+
+  // flush the async pool before the process exits, or the last lines -- which
+  // are exactly the ones describing why a run was short -- are lost.
+  mokuren::ShutdownLogger();
 
   if (!closed_ok) {
     std::cerr << "error: the file could not be finalised and is truncated\n";

@@ -3,6 +3,7 @@
 #include "probe_report.hpp"
 #include "venue_profile.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -65,6 +66,26 @@ struct ProbeCriteria {
     c.max_reconnects = 1;
     return c;
   }
+
+  // The l2 rate requirement as it will actually be judged, i.e. capped by what
+  // the venue physically delivers.
+  //
+  // A pure function of the two declarations, so the gate, the report and the
+  // tests all read the same number instead of the ctor recomputing it: an
+  // operator who reads "min_l2_frames_per_min = 300" in the config and then
+  // sees a passed run needs to be able to find the venue's cadence in the same
+  // place that explains the verdict.
+  //
+  // 0 on either side means "no cap": a disabled check stays disabled, and a
+  // venue that declares no cadence is measured against the operator's number
+  // exactly as before. The cap only ever LOWERS the requirement, never raises
+  // it, and a positive requirement still demands at least one frame -- so this
+  // cannot turn a silent channel into a pass.
+  uint64_t EffectiveMinL2PerMin(const VenueProfile& profile) const {
+    if (min_l2_frames_per_min == 0) return 0;
+    if (profile.l2_frames_per_min == 0) return min_l2_frames_per_min;
+    return std::min(min_l2_frames_per_min, profile.l2_frames_per_min);
+  }
 };
 
 // Decides whether a venue feed is fit to run on. Fed by the FeedRouter, polled
@@ -101,6 +122,10 @@ class StartupGate {
   mutable std::mutex mutex_;
   VenueProfile profile_;
   ProbeCriteria criteria_;
+  // what the config asked for, before the venue ceiling was applied. kept only
+  // so a shortfall can say "need 10/min (venue ceiling, config asked 300)"
+  // instead of quietly quoting a number the operator never wrote.
+  uint64_t configured_min_l2_per_min_ = 0;
   int64_t start_ms_;
   ProbeState state_ = ProbeState::Probing;
   ProbeReport report_;

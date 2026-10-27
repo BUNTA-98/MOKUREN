@@ -1,0 +1,1071 @@
+[2026-10-27 14:32:18.928] [trace] hyperliquid: subscribing with {"method":"subscribe","subscription":{"coin":"BTC","type":"l2Book"}}
+[2026-10-27 14:32:18.928] [trace] hyperliquid: subscribing with {"method":"subscribe","subscription":{"coin":"BTC","type":"trades"}}
+[2026-10-27 14:32:19.362] [trace] hyperliquid: RAW FRAME RECEIVED len=155
+[2026-10-27 14:32:19.362] [trace] hyperliquid: frame channel='subscriptionResponse' len=155
+[2026-10-27 14:32:19.362] [trace] hyperliquid: ignoring channel 'subscriptionResponse'
+[2026-10-27 14:32:19.362] [trace] hyperliquid: RAW FRAME RECEIVED len=1600
+[2026-10-27 14:32:19.362] [trace] hyperliquid: frame channel='l2Book' len=1600
+[2026-10-27 14:32:19.362] [trace] hyperliquid: L2 PARSED ts=1793107938657 bid=79999 bid_qty=24.44436 ask=80000 ask_qty=0.00243
+[2026-10-27 14:32:19.362] [trace] hyperliquid: RAW FRAME RECEIVED len=110
+[2026-10-27 14:32:19.362] [trace] hyperliquid: frame channel='subscriptionResponse' len=110
+[2026-10-27 14:32:19.362] [trace] hyperliquid: ignoring channel 'subscriptionResponse'
+[2026-10-27 14:32:19.417] [trace] hyperliquid: RAW FRAME RECEIVED len=8260
+[2026-10-27 14:32:19.417] [trace] hyperliquid: frame channel='trades' len=8260
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107934179 price=80001 qty=0.16365 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107934179 price=80001 qty=0.12967 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107934179 price=80001 qty=0.08977 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107934984 price=79996 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935322 price=79997 qty=0.00248 is_buyer_maker=false
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935322 price=79996 qty=0.001 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935388 price=79996 qty=0.003 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935609 price=79997 qty=0.00062 is_buyer_maker=false
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935657 price=79994 qty=0.18328 is_buyer_maker=false
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935951 price=79993 qty=0.00062 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107935951 price=79993 qty=0.00126 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107936018 price=79993 qty=0.00087 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107936161 price=79994 qty=0.001 is_buyer_maker=false
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107936218 price=79993 qty=7e-05 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107936218 price=79993 qty=0.00173 is_buyer_maker=true
+[2026-10-27 14:32:19.417] [trace] hyperliquid: TRADE PARSED ts=1793107936218 price=79993 qty=0.00073 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107936353 price=79993 qty=0.00065 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107936498 price=79993 qty=0.001 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107936971 price=79993 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937048 price=79993 qty=0.001 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937582 price=79993 qty=0.001 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937712 price=79994 qty=0.00093 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937712 price=79994 qty=0.00086 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937785 price=79994 qty=0.06071 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937853 price=79998 qty=0.0625 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937853 price=80000 qty=0.0575 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107937915 price=79999 qty=0.25 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107938054 price=80000 qty=0.00244 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107938255 price=80000 qty=0.00013 is_buyer_maker=false
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107938793 price=79999 qty=0.001 is_buyer_maker=true
+[2026-10-27 14:32:19.418] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:19.418] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:19.418] [trace] hyperliquid: TRADE PARSED ts=1793107938933 price=80000 qty=0.00021 is_buyer_maker=false
+[2026-10-27 14:32:19.498] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:19.498] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:19.498] [trace] hyperliquid: TRADE PARSED ts=1793107939000 price=79999 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:32:19.598] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:19.598] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:19.598] [trace] hyperliquid: TRADE PARSED ts=1793107939137 price=80000 qty=0.00075 is_buyer_maker=false
+[2026-10-27 14:32:19.838] [trace] hyperliquid: RAW FRAME RECEIVED len=1601
+[2026-10-27 14:32:19.838] [trace] hyperliquid: frame channel='l2Book' len=1601
+[2026-10-27 14:32:19.838] [trace] hyperliquid: L2 PARSED ts=1793107939207 bid=79999 bid_qty=24.84866 ask=80000 ask_qty=0.00147
+[2026-10-27 14:32:20.032] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:20.032] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:20.032] [trace] hyperliquid: TRADE PARSED ts=1793107939462 price=79999 qty=0.00291 is_buyer_maker=true
+[2026-10-27 14:32:20.464] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:20.464] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:20.464] [trace] hyperliquid: TRADE PARSED ts=1793107939865 price=79999 qty=0.00035 is_buyer_maker=true
+[2026-10-27 14:32:20.853] [trace] hyperliquid: RAW FRAME RECEIVED len=62119
+[2026-10-27 14:32:20.857] [trace] hyperliquid: frame channel='trades' len=62119
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80000 qty=0.00147 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80002 qty=0.0147 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80003 qty=0.00187 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80004 qty=0.00124 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80004 qty=0.06249 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80005 qty=0.00956 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80005 qty=0.0152 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80006 qty=0.06249 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80008 qty=0.00124 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80008 qty=0.0124 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80008 qty=0.05009 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80008 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80008 qty=0.03749 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80009 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.08533 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80010 qty=0.03689 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.00153 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.04691 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80011 qty=0.05173 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.0336 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.06687 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.02446 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80012 qty=0.08438 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.00095 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.05335 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.03798 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.07453 is_buyer_maker=false
+[2026-10-27 14:32:20.857] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.0168 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.0822 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.00913 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.09133 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=7.57067 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80013 qty=0.81372 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80014 qty=0.00249 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80014 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80014 qty=0.31295 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80014 qty=1.2518 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80014 qty=0.05 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80015 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80015 qty=0.06898 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80015 qty=0.001 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80015 qty=0.20383 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80015 qty=0.05 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.01989 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.01562 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.66415 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=1.18671 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.81369 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.05748 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80016 qty=0.55965 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80017 qty=0.32809 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80017 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80017 qty=0.002 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80017 qty=0.08278 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80017 qty=0.20383 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80017 qty=0.11979 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80018 qty=0.97893 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80018 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80018 qty=4.3384 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=1.75243 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=0.11752 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=0.10252 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=2.71152 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=0.20382 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80019 qty=0.81366 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.01562 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.09933 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.09614 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.87023 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=1.10804 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.29037 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.25034 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80020 qty=0.0964 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80021 qty=1.37085 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80021 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80021 qty=0.09517 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80021 qty=0.11898 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80021 qty=0.75101 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80021 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=0.00117 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=1.09282 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=0.81362 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=0.11297 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=4.3384 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=0.48596 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80022 qty=0.3364 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.01959 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.01906 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.0191 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.25092 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.11297 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.74806 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=2.71152 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.03666 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.00162 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80023 qty=0.7 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.03918 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.03811 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.0382 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.13538 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=1.28789 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.11297 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=1.12649 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=5.27869 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80024 qty=0.29485 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=1.27976 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=0.00013 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=0.11296 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=0.006 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=0.11919 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=12.54646 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=0.37373 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80025 qty=0.11444 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=5.0186 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=2.50929 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=0.00499 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=0.11296 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=0.01 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=1.20704 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=0.11444 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80026 qty=12.54644 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.01989 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.05876 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.05717 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.0573 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.11296 is_buyer_maker=false
+[2026-10-27 14:32:20.858] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.11444 is_buyer_maker=false
+[2026-10-27 14:32:20.859] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80027 qty=0.36477 is_buyer_maker=false
+[2026-10-27 14:32:20.859] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80028 qty=0.11296 is_buyer_maker=false
+[2026-10-27 14:32:20.859] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80028 qty=0.11444 is_buyer_maker=false
+[2026-10-27 14:32:20.859] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80028 qty=0.93718 is_buyer_maker=false
+[2026-10-27 14:32:20.859] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80028 qty=0.16777 is_buyer_maker=false
+[2026-10-27 14:32:20.859] [trace] hyperliquid: TRADE PARSED ts=1793107940177 price=80028 qty=14.84362 is_buyer_maker=false
+[2026-10-27 14:32:20.885] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:20.885] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:20.885] [trace] hyperliquid: TRADE PARSED ts=1793107940376 price=80017 qty=0.00026 is_buyer_maker=false
+[2026-10-27 14:32:21.387] [trace] hyperliquid: RAW FRAME RECEIVED len=301
+[2026-10-27 14:32:21.387] [trace] hyperliquid: frame channel='trades' len=301
+[2026-10-27 14:32:21.387] [trace] hyperliquid: TRADE PARSED ts=1793107940822 price=80023 qty=0.05 is_buyer_maker=false
+[2026-10-27 14:32:21.634] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:32:21.634] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:32:21.634] [trace] hyperliquid: TRADE PARSED ts=1793107941121 price=80024 qty=0.0006 is_buyer_maker=true
+[2026-10-27 14:32:21.634] [trace] hyperliquid: TRADE PARSED ts=1793107941121 price=80024 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:32:21.809] [trace] hyperliquid: RAW FRAME RECEIVED len=1954
+[2026-10-27 14:32:21.809] [trace] hyperliquid: frame channel='trades' len=1954
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80025 qty=0.00153 is_buyer_maker=false
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80025 qty=0.14312 is_buyer_maker=false
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80025 qty=0.05565 is_buyer_maker=false
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80026 qty=0.06248 is_buyer_maker=false
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80026 qty=0.02652 is_buyer_maker=false
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80026 qty=0.07157 is_buyer_maker=false
+[2026-10-27 14:32:21.810] [trace] hyperliquid: TRADE PARSED ts=1793107941313 price=80024 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:32:22.348] [trace] hyperliquid: RAW FRAME RECEIVED len=300
+[2026-10-27 14:32:22.348] [trace] hyperliquid: frame channel='trades' len=300
+[2026-10-27 14:32:22.348] [trace] hyperliquid: TRADE PARSED ts=1793107941647 price=80026 qty=0.1 is_buyer_maker=false
+[2026-10-27 14:32:24.097] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:24.097] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:24.097] [trace] hyperliquid: TRADE PARSED ts=1793107943371 price=80025 qty=0.00143 is_buyer_maker=true
+[2026-10-27 14:32:24.763] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:32:24.763] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:32:24.763] [trace] hyperliquid: TRADE PARSED ts=1793107944007 price=80026 qty=0.00422 is_buyer_maker=false
+[2026-10-27 14:32:24.763] [trace] hyperliquid: TRADE PARSED ts=1793107944007 price=80026 qty=0.00545 is_buyer_maker=false
+[2026-10-27 14:32:25.187] [trace] hyperliquid: RAW FRAME RECEIVED len=1603
+[2026-10-27 14:32:25.187] [trace] hyperliquid: frame channel='l2Book' len=1603
+[2026-10-27 14:32:25.187] [trace] hyperliquid: L2 PARSED ts=1793107944577 bid=80025 bid_qty=6.21149 ask=80026 ask_qty=4.13744
+[2026-10-27 14:32:25.187] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:25.187] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:25.187] [trace] hyperliquid: TRADE PARSED ts=1793107944577 price=80026 qty=0.00422 is_buyer_maker=false
+[2026-10-27 14:32:25.772] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:25.772] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:25.772] [trace] hyperliquid: TRADE PARSED ts=1793107945144 price=80025 qty=0.02318 is_buyer_maker=true
+[2026-10-27 14:32:26.401] [trace] hyperliquid: RAW FRAME RECEIVED len=1122
+[2026-10-27 14:32:26.401] [trace] hyperliquid: frame channel='trades' len=1122
+[2026-10-27 14:32:26.401] [trace] hyperliquid: TRADE PARSED ts=1793107945963 price=80018 qty=0.08 is_buyer_maker=false
+[2026-10-27 14:32:26.401] [trace] hyperliquid: TRADE PARSED ts=1793107945963 price=80018 qty=0.246 is_buyer_maker=false
+[2026-10-27 14:32:26.401] [trace] hyperliquid: TRADE PARSED ts=1793107945963 price=80018 qty=0.1491 is_buyer_maker=false
+[2026-10-27 14:32:26.401] [trace] hyperliquid: TRADE PARSED ts=1793107945963 price=80018 qty=0.0249 is_buyer_maker=false
+[2026-10-27 14:32:26.784] [trace] hyperliquid: RAW FRAME RECEIVED len=853
+[2026-10-27 14:32:26.784] [trace] hyperliquid: frame channel='trades' len=853
+[2026-10-27 14:32:26.784] [trace] hyperliquid: TRADE PARSED ts=1793107946158 price=80013 qty=0.00124 is_buyer_maker=true
+[2026-10-27 14:32:26.784] [trace] hyperliquid: TRADE PARSED ts=1793107946158 price=80012 qty=0.00275 is_buyer_maker=true
+[2026-10-27 14:32:26.784] [trace] hyperliquid: TRADE PARSED ts=1793107946158 price=80011 qty=0.00112 is_buyer_maker=true
+[2026-10-27 14:32:26.784] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:32:26.784] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:32:26.784] [trace] hyperliquid: TRADE PARSED ts=1793107946316 price=80012 qty=0.00543 is_buyer_maker=false
+[2026-10-27 14:32:27.110] [trace] hyperliquid: RAW FRAME RECEIVED len=1127
+[2026-10-27 14:32:27.110] [trace] hyperliquid: frame channel='trades' len=1127
+[2026-10-27 14:32:27.110] [trace] hyperliquid: TRADE PARSED ts=1793107946646 price=80011 qty=0.00488 is_buyer_maker=true
+[2026-10-27 14:32:27.110] [trace] hyperliquid: TRADE PARSED ts=1793107946646 price=80011 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:32:27.110] [trace] hyperliquid: TRADE PARSED ts=1793107946646 price=80011 qty=0.0015 is_buyer_maker=true
+[2026-10-27 14:32:27.110] [trace] hyperliquid: TRADE PARSED ts=1793107946646 price=80010 qty=0.00287 is_buyer_maker=true
+[2026-10-27 14:32:29.042] [trace] hyperliquid: RAW FRAME RECEIVED len=857
+[2026-10-27 14:32:29.042] [trace] hyperliquid: frame channel='trades' len=857
+[2026-10-27 14:32:29.042] [trace] hyperliquid: TRADE PARSED ts=1793107948488 price=80011 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:29.042] [trace] hyperliquid: TRADE PARSED ts=1793107948488 price=80011 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:29.042] [trace] hyperliquid: TRADE PARSED ts=1793107948488 price=80011 qty=0.02575 is_buyer_maker=true
+[2026-10-27 14:32:29.242] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:29.242] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:29.242] [trace] hyperliquid: TRADE PARSED ts=1793107948614 price=80011 qty=0.00931 is_buyer_maker=true
+[2026-10-27 14:32:29.242] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:29.242] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:29.242] [trace] hyperliquid: TRADE PARSED ts=1793107948683 price=80011 qty=0.02742 is_buyer_maker=true
+[2026-10-27 14:32:29.242] [trace] hyperliquid: TRADE PARSED ts=1793107948683 price=80011 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:32:29.244] [trace] hyperliquid: RAW FRAME RECEIVED len=1399
+[2026-10-27 14:32:29.244] [trace] hyperliquid: frame channel='trades' len=1399
+[2026-10-27 14:32:29.244] [trace] hyperliquid: TRADE PARSED ts=1793107948752 price=80004 qty=0.0937 is_buyer_maker=false
+[2026-10-27 14:32:29.244] [trace] hyperliquid: TRADE PARSED ts=1793107948752 price=80004 qty=0.20823 is_buyer_maker=false
+[2026-10-27 14:32:29.244] [trace] hyperliquid: TRADE PARSED ts=1793107948752 price=80004 qty=0.41647 is_buyer_maker=false
+[2026-10-27 14:32:29.244] [trace] hyperliquid: TRADE PARSED ts=1793107948752 price=80004 qty=0.03 is_buyer_maker=false
+[2026-10-27 14:32:29.244] [trace] hyperliquid: TRADE PARSED ts=1793107948752 price=80004 qty=0.2516 is_buyer_maker=false
+[2026-10-27 14:32:29.722] [trace] hyperliquid: RAW FRAME RECEIVED len=305
+[2026-10-27 14:32:29.722] [trace] hyperliquid: frame channel='trades' len=305
+[2026-10-27 14:32:29.722] [trace] hyperliquid: TRADE PARSED ts=1793107949153 price=80004 qty=0.00382 is_buyer_maker=false
+[2026-10-27 14:32:30.143] [trace] hyperliquid: RAW FRAME RECEIVED len=300
+[2026-10-27 14:32:30.143] [trace] hyperliquid: frame channel='trades' len=300
+[2026-10-27 14:32:30.143] [trace] hyperliquid: TRADE PARSED ts=1793107949590 price=80004 qty=0.2 is_buyer_maker=false
+[2026-10-27 14:32:30.678] [trace] hyperliquid: RAW FRAME RECEIVED len=1608
+[2026-10-27 14:32:30.679] [trace] hyperliquid: frame channel='l2Book' len=1608
+[2026-10-27 14:32:30.679] [trace] hyperliquid: L2 PARSED ts=1793107949883 bid=80003 bid_qty=0.06796 ask=80004 ask_qty=9.71099
+[2026-10-27 14:32:31.109] [trace] hyperliquid: RAW FRAME RECEIVED len=854
+[2026-10-27 14:32:31.109] [trace] hyperliquid: frame channel='trades' len=854
+[2026-10-27 14:32:31.109] [trace] hyperliquid: TRADE PARSED ts=1793107950396 price=80003 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:31.109] [trace] hyperliquid: TRADE PARSED ts=1793107950396 price=80003 qty=0.00124 is_buyer_maker=true
+[2026-10-27 14:32:31.109] [trace] hyperliquid: TRADE PARSED ts=1793107950396 price=80003 qty=0.0031 is_buyer_maker=true
+[2026-10-27 14:32:31.496] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:31.496] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:31.496] [trace] hyperliquid: TRADE PARSED ts=1793107950845 price=80004 qty=0.00264 is_buyer_maker=false
+[2026-10-27 14:32:31.496] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:32:31.496] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:32:31.496] [trace] hyperliquid: TRADE PARSED ts=1793107950896 price=80003 qty=0.05311 is_buyer_maker=true
+[2026-10-27 14:32:32.110] [trace] hyperliquid: RAW FRAME RECEIVED len=852
+[2026-10-27 14:32:32.110] [trace] hyperliquid: frame channel='trades' len=852
+[2026-10-27 14:32:32.110] [trace] hyperliquid: TRADE PARSED ts=1793107951416 price=80003 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:32.110] [trace] hyperliquid: TRADE PARSED ts=1793107951416 price=80003 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:32.110] [trace] hyperliquid: TRADE PARSED ts=1793107951416 price=79998 qty=0.005 is_buyer_maker=true
+[2026-10-27 14:32:32.314] [trace] hyperliquid: RAW FRAME RECEIVED len=1679
+[2026-10-27 14:32:32.314] [trace] hyperliquid: frame channel='trades' len=1679
+[2026-10-27 14:32:32.314] [trace] hyperliquid: TRADE PARSED ts=1793107951461 price=79995 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:32:32.314] [trace] hyperliquid: TRADE PARSED ts=1793107951461 price=79992 qty=0.00057 is_buyer_maker=true
+[2026-10-27 14:32:32.314] [trace] hyperliquid: TRADE PARSED ts=1793107951461 price=79992 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:32:32.314] [trace] hyperliquid: TRADE PARSED ts=1793107951461 price=79990 qty=0.00014 is_buyer_maker=true
+[2026-10-27 14:32:32.314] [trace] hyperliquid: TRADE PARSED ts=1793107951461 price=79990 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:32:32.314] [trace] hyperliquid: TRADE PARSED ts=1793107951461 price=79990 qty=0.00313 is_buyer_maker=true
+[2026-10-27 14:32:32.403] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:32:32.403] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:32:32.403] [trace] hyperliquid: TRADE PARSED ts=1793107951691 price=79991 qty=0.0018 is_buyer_maker=false
+[2026-10-27 14:32:33.264] [trace] hyperliquid: RAW FRAME RECEIVED len=1401
+[2026-10-27 14:32:33.264] [trace] hyperliquid: frame channel='trades' len=1401
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952153 price=79991 qty=0.02399 is_buyer_maker=false
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952153 price=79991 qty=0.02579 is_buyer_maker=false
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952153 price=79991 qty=0.10062 is_buyer_maker=false
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952153 price=79991 qty=0.08 is_buyer_maker=false
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952153 price=79991 qty=0.2696 is_buyer_maker=false
+[2026-10-27 14:32:33.264] [trace] hyperliquid: RAW FRAME RECEIVED len=852
+[2026-10-27 14:32:33.264] [trace] hyperliquid: frame channel='trades' len=852
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952285 price=79990 qty=0.00058 is_buyer_maker=true
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952285 price=79990 qty=0.01561 is_buyer_maker=true
+[2026-10-27 14:32:33.264] [trace] hyperliquid: TRADE PARSED ts=1793107952285 price=79990 qty=0.005 is_buyer_maker=true
+[2026-10-27 14:32:34.081] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:34.081] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:34.081] [trace] hyperliquid: TRADE PARSED ts=1793107953490 price=79991 qty=0.00013 is_buyer_maker=false
+[2026-10-27 14:32:34.274] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:34.274] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:34.274] [trace] hyperliquid: TRADE PARSED ts=1793107953614 price=79990 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:32:34.464] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:34.464] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:34.465] [trace] hyperliquid: TRADE PARSED ts=1793107953880 price=79992 qty=0.00049 is_buyer_maker=false
+[2026-10-27 14:32:34.799] [trace] hyperliquid: RAW FRAME RECEIVED len=580
+[2026-10-27 14:32:34.799] [trace] hyperliquid: frame channel='trades' len=580
+[2026-10-27 14:32:34.799] [trace] hyperliquid: TRADE PARSED ts=1793107954017 price=79992 qty=0.06202 is_buyer_maker=false
+[2026-10-27 14:32:34.799] [trace] hyperliquid: TRADE PARSED ts=1793107954017 price=79994 qty=0.06251 is_buyer_maker=false
+[2026-10-27 14:32:34.988] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:34.988] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:34.988] [trace] hyperliquid: TRADE PARSED ts=1793107954225 price=79996 qty=0.06251 is_buyer_maker=false
+[2026-10-27 14:32:35.182] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:32:35.182] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:32:35.182] [trace] hyperliquid: TRADE PARSED ts=1793107954636 price=79998 qty=0.06251 is_buyer_maker=false
+[2026-10-27 14:32:35.182] [trace] hyperliquid: TRADE PARSED ts=1793107954636 price=79999 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:32:35.420] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:35.420] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:35.420] [trace] hyperliquid: TRADE PARSED ts=1793107954836 price=80000 qty=0.06251 is_buyer_maker=false
+[2026-10-27 14:32:36.005] [trace] hyperliquid: RAW FRAME RECEIVED len=1598
+[2026-10-27 14:32:36.005] [trace] hyperliquid: frame channel='l2Book' len=1598
+[2026-10-27 14:32:36.005] [trace] hyperliquid: L2 PARSED ts=1793107955228 bid=80003 bid_qty=21.27051 ask=80004 ask_qty=0.06289
+[2026-10-27 14:32:36.205] [trace] hyperliquid: RAW FRAME RECEIVED len=577
+[2026-10-27 14:32:36.205] [trace] hyperliquid: frame channel='trades' len=577
+[2026-10-27 14:32:36.205] [trace] hyperliquid: TRADE PARSED ts=1793107955572 price=80004 qty=0.0004 is_buyer_maker=false
+[2026-10-27 14:32:36.205] [trace] hyperliquid: TRADE PARSED ts=1793107955572 price=80004 qty=0.0496 is_buyer_maker=false
+[2026-10-27 14:32:36.293] [trace] hyperliquid: RAW FRAME RECEIVED len=1127
+[2026-10-27 14:32:36.293] [trace] hyperliquid: frame channel='trades' len=1127
+[2026-10-27 14:32:36.293] [trace] hyperliquid: TRADE PARSED ts=1793107955658 price=80004 qty=0.01289 is_buyer_maker=false
+[2026-10-27 14:32:36.293] [trace] hyperliquid: TRADE PARSED ts=1793107955658 price=80004 qty=0.01562 is_buyer_maker=false
+[2026-10-27 14:32:36.293] [trace] hyperliquid: TRADE PARSED ts=1793107955658 price=80006 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:32:36.293] [trace] hyperliquid: TRADE PARSED ts=1793107955658 price=80006 qty=0.04212 is_buyer_maker=false
+[2026-10-27 14:32:36.726] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:36.726] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:36.726] [trace] hyperliquid: TRADE PARSED ts=1793107956045 price=80006 qty=0.02037 is_buyer_maker=false
+[2026-10-27 14:32:36.726] [trace] hyperliquid: TRADE PARSED ts=1793107956045 price=80008 qty=0.03694 is_buyer_maker=false
+[2026-10-27 14:32:37.493] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:32:37.493] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:32:37.493] [trace] hyperliquid: TRADE PARSED ts=1793107956911 price=80008 qty=0.02554 is_buyer_maker=false
+[2026-10-27 14:32:37.493] [trace] hyperliquid: TRADE PARSED ts=1793107956911 price=80010 qty=0.02446 is_buyer_maker=false
+[2026-10-27 14:32:37.982] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:37.982] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:37.983] [trace] hyperliquid: TRADE PARSED ts=1793107957030 price=80010 qty=0.00015 is_buyer_maker=false
+[2026-10-27 14:32:37.983] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:37.983] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:37.983] [trace] hyperliquid: TRADE PARSED ts=1793107957298 price=80010 qty=0.00074 is_buyer_maker=false
+[2026-10-27 14:32:37.983] [trace] hyperliquid: TRADE PARSED ts=1793107957298 price=80009 qty=0.00428 is_buyer_maker=true
+[2026-10-27 14:32:37.983] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:37.983] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:37.983] [trace] hyperliquid: TRADE PARSED ts=1793107957367 price=80009 qty=0.00024 is_buyer_maker=true
+[2026-10-27 14:32:38.405] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:38.405] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:38.405] [trace] hyperliquid: TRADE PARSED ts=1793107957561 price=80010 qty=0.03713 is_buyer_maker=false
+[2026-10-27 14:32:38.598] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:32:38.598] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:32:38.598] [trace] hyperliquid: TRADE PARSED ts=1793107958041 price=80012 qty=0.06248 is_buyer_maker=false
+[2026-10-27 14:32:38.598] [trace] hyperliquid: TRADE PARSED ts=1793107958041 price=80012 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:32:39.077] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:39.078] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:39.078] [trace] hyperliquid: TRADE PARSED ts=1793107958649 price=80012 qty=0.01593 is_buyer_maker=true
+[2026-10-27 14:32:39.606] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:32:39.606] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:32:39.606] [trace] hyperliquid: TRADE PARSED ts=1793107959052 price=80013 qty=0.0003 is_buyer_maker=false
+[2026-10-27 14:32:40.713] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:40.713] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:40.713] [trace] hyperliquid: TRADE PARSED ts=1793107960060 price=80012 qty=0.00054 is_buyer_maker=true
+[2026-10-27 14:32:40.713] [trace] hyperliquid: TRADE PARSED ts=1793107960060 price=80012 qty=0.00016 is_buyer_maker=true
+[2026-10-27 14:32:40.760] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:40.760] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:40.760] [trace] hyperliquid: TRADE PARSED ts=1793107960281 price=80012 qty=0.00418 is_buyer_maker=true
+[2026-10-27 14:32:41.394] [trace] hyperliquid: RAW FRAME RECEIVED len=1611
+[2026-10-27 14:32:41.394] [trace] hyperliquid: frame channel='l2Book' len=1611
+[2026-10-27 14:32:41.394] [trace] hyperliquid: L2 PARSED ts=1793107960655 bid=80012 bid_qty=16.00105 ask=80021 ask_qty=0.08367
+[2026-10-27 14:32:41.394] [trace] hyperliquid: RAW FRAME RECEIVED len=2505
+[2026-10-27 14:32:41.394] [trace] hyperliquid: frame channel='trades' len=2505
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80013 qty=0.01562 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80013 qty=0.00075 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80014 qty=0.06248 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80015 qty=0.00153 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80016 qty=0.06249 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80018 qty=0.06249 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80020 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80020 qty=0.06248 is_buyer_maker=false
+[2026-10-27 14:32:41.394] [trace] hyperliquid: TRADE PARSED ts=1793107960655 price=80021 qty=0.72996 is_buyer_maker=false
+[2026-10-27 14:32:42.464] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:42.464] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:42.464] [trace] hyperliquid: TRADE PARSED ts=1793107961432 price=80020 qty=0.01594 is_buyer_maker=true
+[2026-10-27 14:32:42.464] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:42.464] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:42.464] [trace] hyperliquid: TRADE PARSED ts=1793107961569 price=80020 qty=0.48481 is_buyer_maker=true
+[2026-10-27 14:32:43.545] [trace] hyperliquid: RAW FRAME RECEIVED len=575
+[2026-10-27 14:32:43.545] [trace] hyperliquid: frame channel='trades' len=575
+[2026-10-27 14:32:43.545] [trace] hyperliquid: TRADE PARSED ts=1793107963007 price=80014 qty=0.00017 is_buyer_maker=false
+[2026-10-27 14:32:43.545] [trace] hyperliquid: TRADE PARSED ts=1793107963007 price=80014 qty=0.05 is_buyer_maker=false
+[2026-10-27 14:32:43.681] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:43.681] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:43.681] [trace] hyperliquid: TRADE PARSED ts=1793107963203 price=80013 qty=0.11125 is_buyer_maker=true
+[2026-10-27 14:32:43.681] [trace] hyperliquid: TRADE PARSED ts=1793107963203 price=80013 qty=0.35398 is_buyer_maker=true
+[2026-10-27 14:32:44.158] [trace] hyperliquid: RAW FRAME RECEIVED len=580
+[2026-10-27 14:32:44.158] [trace] hyperliquid: frame channel='trades' len=580
+[2026-10-27 14:32:44.158] [trace] hyperliquid: TRADE PARSED ts=1793107963562 price=80013 qty=0.01565 is_buyer_maker=true
+[2026-10-27 14:32:44.158] [trace] hyperliquid: TRADE PARSED ts=1793107963562 price=80014 qty=0.00511 is_buyer_maker=false
+[2026-10-27 14:32:44.788] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:44.789] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:44.789] [trace] hyperliquid: TRADE PARSED ts=1793107964358 price=80014 qty=0.00721 is_buyer_maker=false
+[2026-10-27 14:32:44.789] [trace] hyperliquid: TRADE PARSED ts=1793107964358 price=80016 qty=0.02563 is_buyer_maker=false
+[2026-10-27 14:32:45.844] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:45.844] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:45.844] [trace] hyperliquid: TRADE PARSED ts=1793107965208 price=80015 qty=0.01565 is_buyer_maker=true
+[2026-10-27 14:32:45.844] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:45.844] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:45.844] [trace] hyperliquid: TRADE PARSED ts=1793107965341 price=80015 qty=0.00111 is_buyer_maker=true
+[2026-10-27 14:32:46.196] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:46.196] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:46.196] [trace] hyperliquid: TRADE PARSED ts=1793107965716 price=80015 qty=0.00049 is_buyer_maker=true
+[2026-10-27 14:32:46.569] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:46.569] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:46.569] [trace] hyperliquid: TRADE PARSED ts=1793107966002 price=80015 qty=0.00088 is_buyer_maker=true
+[2026-10-27 14:32:46.572] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:46.572] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:46.572] [trace] hyperliquid: TRADE PARSED ts=1793107966070 price=80016 qty=0.03686 is_buyer_maker=false
+[2026-10-27 14:32:46.572] [trace] hyperliquid: TRADE PARSED ts=1793107966070 price=80016 qty=0.00154 is_buyer_maker=false
+[2026-10-27 14:32:46.821] [trace] hyperliquid: RAW FRAME RECEIVED len=1601
+[2026-10-27 14:32:46.821] [trace] hyperliquid: frame channel='l2Book' len=1601
+[2026-10-27 14:32:46.821] [trace] hyperliquid: L2 PARSED ts=1793107966124 bid=80015 bid_qty=17.10697 ask=80016 ask_qty=0.43921
+[2026-10-27 14:32:46.821] [trace] hyperliquid: RAW FRAME RECEIVED len=2762
+[2026-10-27 14:32:46.821] [trace] hyperliquid: frame channel='trades' len=2762
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.0803 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=1.30541 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.14719 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.3 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.5 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.5 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.5 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.96128 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.12446 is_buyer_maker=true
+[2026-10-27 14:32:46.821] [trace] hyperliquid: TRADE PARSED ts=1793107966328 price=80015 qty=0.58136 is_buyer_maker=true
+[2026-10-27 14:32:48.315] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:48.315] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:48.315] [trace] hyperliquid: TRADE PARSED ts=1793107967031 price=80016 qty=0.05716 is_buyer_maker=false
+[2026-10-27 14:32:48.315] [trace] hyperliquid: TRADE PARSED ts=1793107967031 price=80015 qty=0.01565 is_buyer_maker=true
+[2026-10-27 14:32:48.315] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:48.315] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:48.315] [trace] hyperliquid: TRADE PARSED ts=1793107967577 price=80015 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:32:48.506] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:48.506] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:48.506] [trace] hyperliquid: TRADE PARSED ts=1793107967699 price=80014 qty=0.00124 is_buyer_maker=true
+[2026-10-27 14:32:49.176] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:49.176] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:49.176] [trace] hyperliquid: TRADE PARSED ts=1793107968502 price=80008 qty=0.00059 is_buyer_maker=false
+[2026-10-27 14:32:49.530] [trace] hyperliquid: RAW FRAME RECEIVED len=576
+[2026-10-27 14:32:49.530] [trace] hyperliquid: frame channel='trades' len=576
+[2026-10-27 14:32:49.530] [trace] hyperliquid: TRADE PARSED ts=1793107968912 price=80008 qty=0.15 is_buyer_maker=false
+[2026-10-27 14:32:49.530] [trace] hyperliquid: TRADE PARSED ts=1793107968912 price=80008 qty=0.06248 is_buyer_maker=false
+[2026-10-27 14:32:49.810] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:49.810] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:49.810] [trace] hyperliquid: TRADE PARSED ts=1793107969169 price=80010 qty=0.00678 is_buyer_maker=false
+[2026-10-27 14:32:49.957] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:49.957] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:49.957] [trace] hyperliquid: TRADE PARSED ts=1793107969407 price=80009 qty=0.01565 is_buyer_maker=true
+[2026-10-27 14:32:49.957] [trace] hyperliquid: TRADE PARSED ts=1793107969407 price=80009 qty=0.0016 is_buyer_maker=true
+[2026-10-27 14:32:50.157] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:50.157] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:50.157] [trace] hyperliquid: TRADE PARSED ts=1793107969685 price=80010 qty=0.00037 is_buyer_maker=false
+[2026-10-27 14:32:51.684] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:51.684] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:51.684] [trace] hyperliquid: TRADE PARSED ts=1793107971072 price=80009 qty=0.01565 is_buyer_maker=true
+[2026-10-27 14:32:51.684] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:51.684] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:51.684] [trace] hyperliquid: TRADE PARSED ts=1793107971207 price=80010 qty=0.05311 is_buyer_maker=false
+[2026-10-27 14:32:52.311] [trace] hyperliquid: RAW FRAME RECEIVED len=1597
+[2026-10-27 14:32:52.311] [trace] hyperliquid: frame channel='l2Book' len=1597
+[2026-10-27 14:32:52.311] [trace] hyperliquid: L2 PARSED ts=1793107971559 bid=80007 bid_qty=0.00062 ask=80008 ask_qty=11.92746
+[2026-10-27 14:32:52.406] [trace] hyperliquid: RAW FRAME RECEIVED len=853
+[2026-10-27 14:32:52.406] [trace] hyperliquid: frame channel='trades' len=853
+[2026-10-27 14:32:52.406] [trace] hyperliquid: TRADE PARSED ts=1793107971827 price=80007 qty=0.00062 is_buyer_maker=true
+[2026-10-27 14:32:52.406] [trace] hyperliquid: TRADE PARSED ts=1793107971827 price=80004 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:32:52.406] [trace] hyperliquid: TRADE PARSED ts=1793107971827 price=80003 qty=0.08117 is_buyer_maker=true
+[2026-10-27 14:32:52.504] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:52.504] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:52.504] [trace] hyperliquid: TRADE PARSED ts=1793107971961 price=80003 qty=0.17512 is_buyer_maker=false
+[2026-10-27 14:32:53.974] [trace] hyperliquid: RAW FRAME RECEIVED len=1127
+[2026-10-27 14:32:53.974] [trace] hyperliquid: frame channel='trades' len=1127
+[2026-10-27 14:32:53.974] [trace] hyperliquid: TRADE PARSED ts=1793107973410 price=79993 qty=0.005 is_buyer_maker=true
+[2026-10-27 14:32:53.974] [trace] hyperliquid: TRADE PARSED ts=1793107973410 price=79993 qty=0.00075 is_buyer_maker=true
+[2026-10-27 14:32:53.974] [trace] hyperliquid: TRADE PARSED ts=1793107973410 price=79993 qty=0.00624 is_buyer_maker=true
+[2026-10-27 14:32:53.974] [trace] hyperliquid: TRADE PARSED ts=1793107973410 price=79993 qty=0.4339 is_buyer_maker=true
+[2026-10-27 14:32:54.371] [trace] hyperliquid: RAW FRAME RECEIVED len=580
+[2026-10-27 14:32:54.371] [trace] hyperliquid: frame channel='trades' len=580
+[2026-10-27 14:32:54.371] [trace] hyperliquid: TRADE PARSED ts=1793107973856 price=79993 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:54.371] [trace] hyperliquid: TRADE PARSED ts=1793107973856 price=79993 qty=0.01549 is_buyer_maker=true
+[2026-10-27 14:32:55.933] [trace] hyperliquid: RAW FRAME RECEIVED len=1953
+[2026-10-27 14:32:55.933] [trace] hyperliquid: frame channel='trades' len=1953
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.00624 is_buyer_maker=true
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.00624 is_buyer_maker=true
+[2026-10-27 14:32:55.934] [trace] hyperliquid: TRADE PARSED ts=1793107975457 price=79993 qty=0.00067 is_buyer_maker=true
+[2026-10-27 14:32:57.366] [trace] hyperliquid: RAW FRAME RECEIVED len=302
+[2026-10-27 14:32:57.366] [trace] hyperliquid: frame channel='trades' len=302
+[2026-10-27 14:32:57.366] [trace] hyperliquid: TRADE PARSED ts=1793107976876 price=79994 qty=0.00026 is_buyer_maker=false
+[2026-10-27 14:32:57.960] [trace] hyperliquid: RAW FRAME RECEIVED len=1604
+[2026-10-27 14:32:57.960] [trace] hyperliquid: frame channel='l2Book' len=1604
+[2026-10-27 14:32:57.960] [trace] hyperliquid: L2 PARSED ts=1793107977017 bid=79993 bid_qty=6.40687 ask=79994 ask_qty=8.95682
+[2026-10-27 14:32:57.960] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:57.960] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:57.960] [trace] hyperliquid: TRADE PARSED ts=1793107977017 price=79993 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:57.960] [trace] hyperliquid: TRADE PARSED ts=1793107977017 price=79993 qty=0.01549 is_buyer_maker=true
+[2026-10-27 14:32:58.490] [trace] hyperliquid: RAW FRAME RECEIVED len=1678
+[2026-10-27 14:32:58.490] [trace] hyperliquid: frame channel='trades' len=1678
+[2026-10-27 14:32:58.490] [trace] hyperliquid: TRADE PARSED ts=1793107977451 price=79993 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:32:58.490] [trace] hyperliquid: TRADE PARSED ts=1793107977451 price=79991 qty=0.00019 is_buyer_maker=true
+[2026-10-27 14:32:58.490] [trace] hyperliquid: TRADE PARSED ts=1793107977451 price=79991 qty=0.00291 is_buyer_maker=true
+[2026-10-27 14:32:58.490] [trace] hyperliquid: TRADE PARSED ts=1793107977451 price=79991 qty=0.00499 is_buyer_maker=true
+[2026-10-27 14:32:58.490] [trace] hyperliquid: TRADE PARSED ts=1793107977451 price=79990 qty=0.00346 is_buyer_maker=true
+[2026-10-27 14:32:58.490] [trace] hyperliquid: TRADE PARSED ts=1793107977451 price=79990 qty=0.00364 is_buyer_maker=true
+[2026-10-27 14:32:59.169] [trace] hyperliquid: RAW FRAME RECEIVED len=854
+[2026-10-27 14:32:59.169] [trace] hyperliquid: frame channel='trades' len=854
+[2026-10-27 14:32:59.169] [trace] hyperliquid: TRADE PARSED ts=1793107978269 price=79990 qty=0.01434 is_buyer_maker=true
+[2026-10-27 14:32:59.169] [trace] hyperliquid: TRADE PARSED ts=1793107978269 price=79990 qty=0.05099 is_buyer_maker=true
+[2026-10-27 14:32:59.169] [trace] hyperliquid: TRADE PARSED ts=1793107978269 price=79990 qty=0.18073 is_buyer_maker=true
+[2026-10-27 14:32:59.263] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:32:59.263] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:32:59.263] [trace] hyperliquid: TRADE PARSED ts=1793107978408 price=79990 qty=0.01246 is_buyer_maker=true
+[2026-10-27 14:32:59.263] [trace] hyperliquid: TRADE PARSED ts=1793107978408 price=79990 qty=0.0097 is_buyer_maker=true
+[2026-10-27 14:32:59.263] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:32:59.263] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:32:59.263] [trace] hyperliquid: TRADE PARSED ts=1793107978531 price=79990 qty=1.72814 is_buyer_maker=true
+[2026-10-27 14:32:59.263] [trace] hyperliquid: TRADE PARSED ts=1793107978531 price=79989 qty=0.1201 is_buyer_maker=true
+[2026-10-27 14:32:59.323] [trace] hyperliquid: RAW FRAME RECEIVED len=854
+[2026-10-27 14:32:59.323] [trace] hyperliquid: frame channel='trades' len=854
+[2026-10-27 14:32:59.323] [trace] hyperliquid: TRADE PARSED ts=1793107978597 price=79988 qty=0.0003 is_buyer_maker=true
+[2026-10-27 14:32:59.323] [trace] hyperliquid: TRADE PARSED ts=1793107978597 price=79988 qty=0.00169 is_buyer_maker=true
+[2026-10-27 14:32:59.323] [trace] hyperliquid: TRADE PARSED ts=1793107978597 price=79987 qty=0.09507 is_buyer_maker=true
+[2026-10-27 14:32:59.414] [trace] hyperliquid: RAW FRAME RECEIVED len=1127
+[2026-10-27 14:32:59.414] [trace] hyperliquid: frame channel='trades' len=1127
+[2026-10-27 14:32:59.415] [trace] hyperliquid: TRADE PARSED ts=1793107978669 price=79985 qty=0.00028 is_buyer_maker=true
+[2026-10-27 14:32:59.415] [trace] hyperliquid: TRADE PARSED ts=1793107978669 price=79983 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:32:59.415] [trace] hyperliquid: TRADE PARSED ts=1793107978669 price=79982 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:32:59.415] [trace] hyperliquid: TRADE PARSED ts=1793107978669 price=79981 qty=0.00359 is_buyer_maker=true
+[2026-10-27 14:32:59.415] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:32:59.415] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:32:59.415] [trace] hyperliquid: TRADE PARSED ts=1793107978815 price=79982 qty=0.01905 is_buyer_maker=false
+[2026-10-27 14:33:00.031] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:00.031] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:00.031] [trace] hyperliquid: TRADE PARSED ts=1793107979423 price=79981 qty=0.06118 is_buyer_maker=true
+[2026-10-27 14:33:00.037] [trace] hyperliquid: RAW FRAME RECEIVED len=1127
+[2026-10-27 14:33:00.037] [trace] hyperliquid: frame channel='trades' len=1127
+[2026-10-27 14:33:00.037] [trace] hyperliquid: TRADE PARSED ts=1793107979478 price=79981 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:33:00.037] [trace] hyperliquid: TRADE PARSED ts=1793107979478 price=79981 qty=0.01464 is_buyer_maker=true
+[2026-10-27 14:33:00.037] [trace] hyperliquid: TRADE PARSED ts=1793107979478 price=79980 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:33:00.037] [trace] hyperliquid: TRADE PARSED ts=1793107979478 price=79980 qty=0.0036 is_buyer_maker=true
+[2026-10-27 14:33:00.125] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:00.125] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:00.125] [trace] hyperliquid: TRADE PARSED ts=1793107979625 price=79979 qty=0.04591 is_buyer_maker=true
+[2026-10-27 14:33:00.125] [trace] hyperliquid: TRADE PARSED ts=1793107979625 price=79979 qty=0.00608 is_buyer_maker=true
+[2026-10-27 14:33:00.513] [trace] hyperliquid: RAW FRAME RECEIVED len=852
+[2026-10-27 14:33:00.513] [trace] hyperliquid: frame channel='trades' len=852
+[2026-10-27 14:33:00.513] [trace] hyperliquid: TRADE PARSED ts=1793107979882 price=79978 qty=0.0003 is_buyer_maker=true
+[2026-10-27 14:33:00.513] [trace] hyperliquid: TRADE PARSED ts=1793107979882 price=79978 qty=0.00137 is_buyer_maker=true
+[2026-10-27 14:33:00.513] [trace] hyperliquid: TRADE PARSED ts=1793107979882 price=79977 qty=0.0224 is_buyer_maker=true
+[2026-10-27 14:33:00.902] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:00.902] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:00.903] [trace] hyperliquid: TRADE PARSED ts=1793107980285 price=79977 qty=0.0859 is_buyer_maker=true
+[2026-10-27 14:33:01.090] [trace] hyperliquid: RAW FRAME RECEIVED len=576
+[2026-10-27 14:33:01.090] [trace] hyperliquid: frame channel='trades' len=576
+[2026-10-27 14:33:01.090] [trace] hyperliquid: TRADE PARSED ts=1793107980544 price=79977 qty=0.005 is_buyer_maker=true
+[2026-10-27 14:33:01.090] [trace] hyperliquid: TRADE PARSED ts=1793107980544 price=79978 qty=1e-05 is_buyer_maker=false
+[2026-10-27 14:33:01.611] [trace] hyperliquid: RAW FRAME RECEIVED len=10195
+[2026-10-27 14:33:01.612] [trace] hyperliquid: frame channel='trades' len=10195
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79978 qty=0.00088 is_buyer_maker=false
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.01362 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.02586 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.04798 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.79924 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.09346 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.02253 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79977 qty=0.02253 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79976 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79976 qty=0.00101 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79976 qty=0.00091 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79975 qty=0.09507 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79975 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79974 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79974 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79973 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79973 qty=0.0018 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79973 qty=0.19537 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79972 qty=1.30694 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79972 qty=0.00098 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79971 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79971 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79971 qty=0.00152 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.00019 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.09507 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.00373 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.00153 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.00211 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79970 qty=0.18312 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79969 qty=0.00031 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79969 qty=0.37395 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79969 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79969 qty=0.00665 is_buyer_maker=true
+[2026-10-27 14:33:01.612] [trace] hyperliquid: TRADE PARSED ts=1793107980948 price=79969 qty=0.7652 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: RAW FRAME RECEIVED len=1676
+[2026-10-27 14:33:02.089] [trace] hyperliquid: frame channel='trades' len=1676
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981350 price=79968 qty=0.00014 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981350 price=79968 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981350 price=79968 qty=0.00225 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981350 price=79968 qty=0.0035 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981350 price=79967 qty=0.00153 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981350 price=79967 qty=0.00224 is_buyer_maker=true
+[2026-10-27 14:33:02.089] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:02.089] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:02.089] [trace] hyperliquid: TRADE PARSED ts=1793107981434 price=79967 qty=0.0006 is_buyer_maker=true
+[2026-10-27 14:33:02.331] [trace] hyperliquid: RAW FRAME RECEIVED len=576
+[2026-10-27 14:33:02.331] [trace] hyperliquid: frame channel='trades' len=576
+[2026-10-27 14:33:02.331] [trace] hyperliquid: TRADE PARSED ts=1793107981727 price=79967 qty=0.03 is_buyer_maker=false
+[2026-10-27 14:33:02.331] [trace] hyperliquid: TRADE PARSED ts=1793107981727 price=79967 qty=0.00585 is_buyer_maker=false
+[2026-10-27 14:33:03.729] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:03.729] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:03.729] [trace] hyperliquid: TRADE PARSED ts=1793107982176 price=79965 qty=0.00253 is_buyer_maker=false
+[2026-10-27 14:33:03.731] [trace] hyperliquid: RAW FRAME RECEIVED len=7712
+[2026-10-27 14:33:03.731] [trace] hyperliquid: frame channel='trades' len=7712
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.09507 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.0009 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.2 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.16631 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.07862 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.09366 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79964 qty=0.00182 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79963 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79963 qty=0.00623 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79963 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79963 qty=1.30792 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79963 qty=0.01252 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79962 qty=0.00046 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79962 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79962 qty=0.05001 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79962 qty=0.00089 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79961 qty=0.0008 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79961 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79961 qty=0.05001 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79961 qty=0.00108 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.00387 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.02167 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.006 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.005 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.03751 is_buyer_maker=true
+[2026-10-27 14:33:03.731] [trace] hyperliquid: TRADE PARSED ts=1793107982319 price=79960 qty=0.13396 is_buyer_maker=true
+[2026-10-27 14:33:03.732] [trace] hyperliquid: RAW FRAME RECEIVED len=1600
+[2026-10-27 14:33:03.732] [trace] hyperliquid: frame channel='l2Book' len=1600
+[2026-10-27 14:33:03.732] [trace] hyperliquid: L2 PARSED ts=1793107982377 bid=79964 bid_qty=0.05 ask=79965 ask_qty=8.44347
+[2026-10-27 14:33:04.503] [trace] hyperliquid: RAW FRAME RECEIVED len=2504
+[2026-10-27 14:33:04.503] [trace] hyperliquid: frame channel='trades' len=2504
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79964 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79964 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79963 qty=0.00049 is_buyer_maker=true
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79960 qty=0.01483 is_buyer_maker=true
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79960 qty=0.0074 is_buyer_maker=true
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79965 qty=0.00311 is_buyer_maker=false
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79965 qty=0.00695 is_buyer_maker=false
+[2026-10-27 14:33:04.503] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79960 qty=0.05145 is_buyer_maker=true
+[2026-10-27 14:33:04.504] [trace] hyperliquid: TRADE PARSED ts=1793107983761 price=79960 qty=0.26497 is_buyer_maker=true
+[2026-10-27 14:33:04.605] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:04.605] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:04.605] [trace] hyperliquid: TRADE PARSED ts=1793107983863 price=79959 qty=0.00226 is_buyer_maker=true
+[2026-10-27 14:33:05.426] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:05.426] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:05.426] [trace] hyperliquid: TRADE PARSED ts=1793107984495 price=79960 qty=0.05195 is_buyer_maker=false
+[2026-10-27 14:33:05.619] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:05.619] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984675 price=79959 qty=0.01971 is_buyer_maker=true
+[2026-10-27 14:33:05.619] [trace] hyperliquid: RAW FRAME RECEIVED len=1673
+[2026-10-27 14:33:05.619] [trace] hyperliquid: frame channel='trades' len=1673
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984786 price=79960 qty=0.01 is_buyer_maker=false
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984786 price=79959 qty=0.03326 is_buyer_maker=true
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984786 price=79959 qty=0.03984 is_buyer_maker=true
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984786 price=79959 qty=0.0003 is_buyer_maker=true
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984786 price=79959 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:33:05.619] [trace] hyperliquid: TRADE PARSED ts=1793107984786 price=79958 qty=0.04282 is_buyer_maker=true
+[2026-10-27 14:33:05.720] [trace] hyperliquid: RAW FRAME RECEIVED len=1679
+[2026-10-27 14:33:05.720] [trace] hyperliquid: frame channel='trades' len=1679
+[2026-10-27 14:33:05.720] [trace] hyperliquid: TRADE PARSED ts=1793107984869 price=79958 qty=0.11312 is_buyer_maker=true
+[2026-10-27 14:33:05.720] [trace] hyperliquid: TRADE PARSED ts=1793107984869 price=79958 qty=0.13958 is_buyer_maker=true
+[2026-10-27 14:33:05.720] [trace] hyperliquid: TRADE PARSED ts=1793107984869 price=79958 qty=0.34446 is_buyer_maker=true
+[2026-10-27 14:33:05.720] [trace] hyperliquid: TRADE PARSED ts=1793107984869 price=79958 qty=0.08601 is_buyer_maker=true
+[2026-10-27 14:33:05.720] [trace] hyperliquid: TRADE PARSED ts=1793107984869 price=79958 qty=0.01654 is_buyer_maker=true
+[2026-10-27 14:33:05.720] [trace] hyperliquid: TRADE PARSED ts=1793107984869 price=79958 qty=0.25747 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: RAW FRAME RECEIVED len=2497
+[2026-10-27 14:33:05.992] [trace] hyperliquid: frame channel='trades' len=2497
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79956 qty=0.00039 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79956 qty=0.00216 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79954 qty=0.00045 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79953 qty=0.0039 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79953 qty=0.09117 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79951 qty=0.0059 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79950 qty=0.0002 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79950 qty=0.181 is_buyer_maker=true
+[2026-10-27 14:33:05.992] [trace] hyperliquid: TRADE PARSED ts=1793107985069 price=79950 qty=0.00141 is_buyer_maker=true
+[2026-10-27 14:33:06.337] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:33:06.337] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:33:06.337] [trace] hyperliquid: TRADE PARSED ts=1793107985389 price=79950 qty=0.01759 is_buyer_maker=true
+[2026-10-27 14:33:06.337] [trace] hyperliquid: TRADE PARSED ts=1793107985389 price=79950 qty=0.0097 is_buyer_maker=true
+[2026-10-27 14:33:06.337] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:06.337] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:06.337] [trace] hyperliquid: TRADE PARSED ts=1793107985505 price=79950 qty=0.04974 is_buyer_maker=true
+[2026-10-27 14:33:06.436] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:06.436] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:06.436] [trace] hyperliquid: TRADE PARSED ts=1793107985542 price=79950 qty=0.0031 is_buyer_maker=true
+[2026-10-27 14:33:06.627] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:06.627] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:06.627] [trace] hyperliquid: TRADE PARSED ts=1793107985682 price=79950 qty=0.03119 is_buyer_maker=true
+[2026-10-27 14:33:06.627] [trace] hyperliquid: TRADE PARSED ts=1793107985682 price=79950 qty=0.07667 is_buyer_maker=true
+[2026-10-27 14:33:06.823] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:06.824] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:06.824] [trace] hyperliquid: TRADE PARSED ts=1793107985877 price=79950 qty=0.03442 is_buyer_maker=true
+[2026-10-27 14:33:06.824] [trace] hyperliquid: TRADE PARSED ts=1793107985877 price=79950 qty=0.09201 is_buyer_maker=true
+[2026-10-27 14:33:06.859] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:06.859] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:06.859] [trace] hyperliquid: TRADE PARSED ts=1793107985946 price=79950 qty=0.0432 is_buyer_maker=true
+[2026-10-27 14:33:07.064] [trace] hyperliquid: RAW FRAME RECEIVED len=1950
+[2026-10-27 14:33:07.065] [trace] hyperliquid: frame channel='trades' len=1950
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=2.59889 is_buyer_maker=true
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=0.03349 is_buyer_maker=true
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=0.1 is_buyer_maker=true
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=0.06135 is_buyer_maker=true
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=0.07308 is_buyer_maker=true
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=0.05876 is_buyer_maker=true
+[2026-10-27 14:33:07.065] [trace] hyperliquid: TRADE PARSED ts=1793107986077 price=79950 qty=0.06458 is_buyer_maker=true
+[2026-10-27 14:33:07.103] [trace] hyperliquid: RAW FRAME RECEIVED len=852
+[2026-10-27 14:33:07.103] [trace] hyperliquid: frame channel='trades' len=852
+[2026-10-27 14:33:07.103] [trace] hyperliquid: TRADE PARSED ts=1793107986154 price=79950 qty=0.75 is_buyer_maker=true
+[2026-10-27 14:33:07.103] [trace] hyperliquid: TRADE PARSED ts=1793107986154 price=79950 qty=0.00019 is_buyer_maker=true
+[2026-10-27 14:33:07.103] [trace] hyperliquid: TRADE PARSED ts=1793107986154 price=79950 qty=0.01566 is_buyer_maker=true
+[2026-10-27 14:33:07.442] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:07.442] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:07.442] [trace] hyperliquid: TRADE PARSED ts=1793107986353 price=79950 qty=0.90397 is_buyer_maker=true
+[2026-10-27 14:33:07.864] [trace] hyperliquid: RAW FRAME RECEIVED len=1126
+[2026-10-27 14:33:07.864] [trace] hyperliquid: frame channel='trades' len=1126
+[2026-10-27 14:33:07.864] [trace] hyperliquid: TRADE PARSED ts=1793107986683 price=79949 qty=0.0004 is_buyer_maker=true
+[2026-10-27 14:33:07.864] [trace] hyperliquid: TRADE PARSED ts=1793107986683 price=79949 qty=0.004 is_buyer_maker=true
+[2026-10-27 14:33:07.864] [trace] hyperliquid: TRADE PARSED ts=1793107986683 price=79948 qty=0.00034 is_buyer_maker=true
+[2026-10-27 14:33:07.864] [trace] hyperliquid: TRADE PARSED ts=1793107986683 price=79947 qty=0.00026 is_buyer_maker=true
+[2026-10-27 14:33:07.867] [trace] hyperliquid: RAW FRAME RECEIVED len=13217
+[2026-10-27 14:33:07.867] [trace] hyperliquid: frame channel='trades' len=13217
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79948 qty=0.00359 is_buyer_maker=false
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.005 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.00552 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.00564 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.01878 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.0247 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.0401 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.03199 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79947 qty=0.06308 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79945 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79945 qty=0.0004 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79943 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79943 qty=0.00063 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79942 qty=0.09507 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79942 qty=0.00108 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79942 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79941 qty=0.00013 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79939 qty=0.00414 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79938 qty=0.0004 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79938 qty=0.00023 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79937 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79937 qty=0.03358 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79937 qty=0.0166 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79937 qty=0.00715 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79936 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79936 qty=0.09507 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79936 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79936 qty=0.01161 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79935 qty=0.00038 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79935 qty=0.00246 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79934 qty=0.00092 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00025 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00014 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00045 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00017 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00014 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00036 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00014 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.0003 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00021 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00014 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00015 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00021 is_buyer_maker=true
+[2026-10-27 14:33:07.868] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.01563 is_buyer_maker=true
+[2026-10-27 14:33:07.869] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.00383 is_buyer_maker=true
+[2026-10-27 14:33:07.869] [trace] hyperliquid: TRADE PARSED ts=1793107986924 price=79933 qty=0.21825 is_buyer_maker=true
+[2026-10-27 14:33:09.201] [trace] hyperliquid: RAW FRAME RECEIVED len=305
+[2026-10-27 14:33:09.201] [trace] hyperliquid: frame channel='trades' len=305
+[2026-10-27 14:33:09.201] [trace] hyperliquid: TRADE PARSED ts=1793107987475 price=79933 qty=0.04982 is_buyer_maker=true
+[2026-10-27 14:33:09.201] [trace] hyperliquid: RAW FRAME RECEIVED len=1614
+[2026-10-27 14:33:09.201] [trace] hyperliquid: frame channel='l2Book' len=1614
+[2026-10-27 14:33:09.202] [trace] hyperliquid: L2 PARSED ts=1793107987803 bid=79933 bid_qty=6.02277 ask=79934 ask_qty=3.02213
+[2026-10-27 14:33:09.202] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:09.202] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:09.202] [trace] hyperliquid: TRADE PARSED ts=1793107987894 price=79933 qty=0.0002 is_buyer_maker=true
+[2026-10-27 14:33:09.430] [trace] hyperliquid: RAW FRAME RECEIVED len=1130
+[2026-10-27 14:33:09.430] [trace] hyperliquid: frame channel='trades' len=1130
+[2026-10-27 14:33:09.430] [trace] hyperliquid: TRADE PARSED ts=1793107988151 price=79933 qty=0.05798 is_buyer_maker=true
+[2026-10-27 14:33:09.430] [trace] hyperliquid: TRADE PARSED ts=1793107988151 price=79933 qty=0.48826 is_buyer_maker=true
+[2026-10-27 14:33:09.430] [trace] hyperliquid: TRADE PARSED ts=1793107988151 price=79933 qty=0.09235 is_buyer_maker=true
+[2026-10-27 14:33:09.430] [trace] hyperliquid: TRADE PARSED ts=1793107988151 price=79933 qty=0.09794 is_buyer_maker=true
+[2026-10-27 14:33:09.430] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:09.430] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:09.430] [trace] hyperliquid: TRADE PARSED ts=1793107988312 price=79934 qty=0.00125 is_buyer_maker=false
+[2026-10-27 14:33:09.625] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:09.625] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:09.625] [trace] hyperliquid: TRADE PARSED ts=1793107988604 price=79934 qty=0.00552 is_buyer_maker=false
+[2026-10-27 14:33:10.013] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:10.013] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:10.013] [trace] hyperliquid: TRADE PARSED ts=1793107989009 price=79934 qty=0.0003 is_buyer_maker=false
+[2026-10-27 14:33:10.013] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:10.013] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:10.013] [trace] hyperliquid: TRADE PARSED ts=1793107989087 price=79933 qty=0.01567 is_buyer_maker=true
+[2026-10-27 14:33:10.014] [trace] hyperliquid: TRADE PARSED ts=1793107989087 price=79933 qty=0.00174 is_buyer_maker=true
+[2026-10-27 14:33:10.439] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:10.439] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:10.439] [trace] hyperliquid: TRADE PARSED ts=1793107989690 price=79933 qty=0.00894 is_buyer_maker=true
+[2026-10-27 14:33:10.439] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:10.439] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:10.439] [trace] hyperliquid: TRADE PARSED ts=1793107989815 price=79933 qty=0.00129 is_buyer_maker=true
+[2026-10-27 14:33:10.492] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:10.492] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:10.492] [trace] hyperliquid: TRADE PARSED ts=1793107989868 price=79934 qty=0.06254 is_buyer_maker=false
+[2026-10-27 14:33:10.492] [trace] hyperliquid: TRADE PARSED ts=1793107989868 price=79936 qty=0.00248 is_buyer_maker=false
+[2026-10-27 14:33:10.649] [trace] hyperliquid: RAW FRAME RECEIVED len=5789
+[2026-10-27 14:33:10.649] [trace] hyperliquid: frame channel='trades' len=5789
+[2026-10-27 14:33:10.649] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79936 qty=0.06006 is_buyer_maker=false
+[2026-10-27 14:33:10.649] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79938 qty=0.06254 is_buyer_maker=false
+[2026-10-27 14:33:10.649] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79938 qty=0.35 is_buyer_maker=false
+[2026-10-27 14:33:10.649] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79940 qty=0.15 is_buyer_maker=false
+[2026-10-27 14:33:10.649] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79940 qty=0.06254 is_buyer_maker=false
+[2026-10-27 14:33:10.649] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79940 qty=0.9843 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79941 qty=0.00167 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79942 qty=0.09 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79942 qty=0.06254 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79942 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79944 qty=1.60365 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79945 qty=1.30006 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79945 qty=0.00125 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79945 qty=0.26919 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79945 qty=0.001 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79945 qty=0.00195 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79945 qty=0.00233 is_buyer_maker=false
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79935 qty=0.0044 is_buyer_maker=true
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79935 qty=0.05967 is_buyer_maker=true
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79935 qty=0.14434 is_buyer_maker=true
+[2026-10-27 14:33:10.650] [trace] hyperliquid: TRADE PARSED ts=1793107989940 price=79935 qty=0.10395 is_buyer_maker=true
+[2026-10-27 14:33:10.697] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:10.697] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:10.697] [trace] hyperliquid: TRADE PARSED ts=1793107990021 price=79935 qty=0.00054 is_buyer_maker=true
+[2026-10-27 14:33:10.697] [trace] hyperliquid: TRADE PARSED ts=1793107990021 price=79935 qty=0.00016 is_buyer_maker=true
+[2026-10-27 14:33:11.370] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:11.370] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:11.370] [trace] hyperliquid: TRADE PARSED ts=1793107990470 price=79945 qty=0.00099 is_buyer_maker=false
+[2026-10-27 14:33:11.943] [trace] hyperliquid: RAW FRAME RECEIVED len=303
+[2026-10-27 14:33:11.944] [trace] hyperliquid: frame channel='trades' len=303
+[2026-10-27 14:33:11.944] [trace] hyperliquid: TRADE PARSED ts=1793107991360 price=79944 qty=0.0031 is_buyer_maker=true
+[2026-10-27 14:33:12.185] [trace] hyperliquid: RAW FRAME RECEIVED len=855
+[2026-10-27 14:33:12.185] [trace] hyperliquid: frame channel='trades' len=855
+[2026-10-27 14:33:12.185] [trace] hyperliquid: TRADE PARSED ts=1793107991540 price=79945 qty=0.19901 is_buyer_maker=false
+[2026-10-27 14:33:12.185] [trace] hyperliquid: TRADE PARSED ts=1793107991540 price=79945 qty=0.04773 is_buyer_maker=false
+[2026-10-27 14:33:12.185] [trace] hyperliquid: TRADE PARSED ts=1793107991540 price=79944 qty=0.01567 is_buyer_maker=true
+[2026-10-27 14:33:12.232] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:12.232] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:12.232] [trace] hyperliquid: TRADE PARSED ts=1793107991680 price=79945 qty=0.00038 is_buyer_maker=false
+[2026-10-27 14:33:12.660] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:12.660] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:12.660] [trace] hyperliquid: TRADE PARSED ts=1793107991972 price=79945 qty=0.00017 is_buyer_maker=false
+[2026-10-27 14:33:12.660] [trace] hyperliquid: TRADE PARSED ts=1793107991972 price=79945 qty=0.04983 is_buyer_maker=false
+[2026-10-27 14:33:13.621] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:13.621] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:13.621] [trace] hyperliquid: TRADE PARSED ts=1793107992559 price=79945 qty=0.00402 is_buyer_maker=false
+[2026-10-27 14:33:13.818] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:13.818] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:13.818] [trace] hyperliquid: TRADE PARSED ts=1793107993040 price=79945 qty=0.00018 is_buyer_maker=false
+[2026-10-27 14:33:14.101] [trace] hyperliquid: RAW FRAME RECEIVED len=1599
+[2026-10-27 14:33:14.102] [trace] hyperliquid: frame channel='l2Book' len=1599
+[2026-10-27 14:33:14.102] [trace] hyperliquid: L2 PARSED ts=1793107993172 bid=79944 bid_qty=10.14523 ask=79945 ask_qty=1.08971
+[2026-10-27 14:33:14.206] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:14.206] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:14.206] [trace] hyperliquid: TRADE PARSED ts=1793107993457 price=79944 qty=0.00104 is_buyer_maker=true
+[2026-10-27 14:33:14.206] [trace] hyperliquid: TRADE PARSED ts=1793107993457 price=79944 qty=0.00974 is_buyer_maker=true
+[2026-10-27 14:33:14.579] [trace] hyperliquid: RAW FRAME RECEIVED len=853
+[2026-10-27 14:33:14.580] [trace] hyperliquid: frame channel='trades' len=853
+[2026-10-27 14:33:14.580] [trace] hyperliquid: TRADE PARSED ts=1793107993774 price=79949 qty=0.00265 is_buyer_maker=false
+[2026-10-27 14:33:14.580] [trace] hyperliquid: TRADE PARSED ts=1793107993774 price=79949 qty=0.01298 is_buyer_maker=false
+[2026-10-27 14:33:14.580] [trace] hyperliquid: TRADE PARSED ts=1793107993774 price=79950 qty=0.0107 is_buyer_maker=false
+[2026-10-27 14:33:14.727] [trace] hyperliquid: RAW FRAME RECEIVED len=1404
+[2026-10-27 14:33:14.727] [trace] hyperliquid: frame channel='trades' len=1404
+[2026-10-27 14:33:14.727] [trace] hyperliquid: TRADE PARSED ts=1793107993898 price=79949 qty=0.10796 is_buyer_maker=true
+[2026-10-27 14:33:14.727] [trace] hyperliquid: TRADE PARSED ts=1793107993898 price=79949 qty=0.10796 is_buyer_maker=true
+[2026-10-27 14:33:14.727] [trace] hyperliquid: TRADE PARSED ts=1793107993898 price=79949 qty=0.10796 is_buyer_maker=true
+[2026-10-27 14:33:14.727] [trace] hyperliquid: TRADE PARSED ts=1793107993898 price=79949 qty=0.10796 is_buyer_maker=true
+[2026-10-27 14:33:14.727] [trace] hyperliquid: TRADE PARSED ts=1793107993898 price=79949 qty=0.04701 is_buyer_maker=true
+[2026-10-27 14:33:14.917] [trace] hyperliquid: RAW FRAME RECEIVED len=1951
+[2026-10-27 14:33:14.917] [trace] hyperliquid: frame channel='trades' len=1951
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79950 qty=0.01205 is_buyer_maker=false
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79950 qty=0.01371 is_buyer_maker=false
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79950 qty=0.02608 is_buyer_maker=false
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79952 qty=0.06254 is_buyer_maker=false
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79953 qty=0.0022 is_buyer_maker=false
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79954 qty=0.06254 is_buyer_maker=false
+[2026-10-27 14:33:14.917] [trace] hyperliquid: TRADE PARSED ts=1793107994006 price=79956 qty=0.05 is_buyer_maker=false
+[2026-10-27 14:33:15.201] [trace] hyperliquid: RAW FRAME RECEIVED len=854
+[2026-10-27 14:33:15.201] [trace] hyperliquid: frame channel='trades' len=854
+[2026-10-27 14:33:15.201] [trace] hyperliquid: TRADE PARSED ts=1793107994259 price=79956 qty=0.01252 is_buyer_maker=false
+[2026-10-27 14:33:15.201] [trace] hyperliquid: TRADE PARSED ts=1793107994259 price=79957 qty=0.00125 is_buyer_maker=false
+[2026-10-27 14:33:15.201] [trace] hyperliquid: TRADE PARSED ts=1793107994259 price=79958 qty=0.05661 is_buyer_maker=false
+[2026-10-27 14:33:15.405] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:15.405] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:15.405] [trace] hyperliquid: TRADE PARSED ts=1793107994398 price=79957 qty=0.00152 is_buyer_maker=true
+[2026-10-27 14:33:16.228] [trace] hyperliquid: RAW FRAME RECEIVED len=579
+[2026-10-27 14:33:16.228] [trace] hyperliquid: frame channel='trades' len=579
+[2026-10-27 14:33:16.228] [trace] hyperliquid: TRADE PARSED ts=1793107994927 price=79958 qty=0.00591 is_buyer_maker=false
+[2026-10-27 14:33:16.228] [trace] hyperliquid: TRADE PARSED ts=1793107994927 price=79958 qty=0.01785 is_buyer_maker=false
+[2026-10-27 14:33:16.228] [trace] hyperliquid: RAW FRAME RECEIVED len=304
+[2026-10-27 14:33:16.228] [trace] hyperliquid: frame channel='trades' len=304
+[2026-10-27 14:33:16.228] [trace] hyperliquid: TRADE PARSED ts=1793107995145 price=79958 qty=0.00623 is_buyer_maker=false
+[2026-10-27 14:33:16.554] [trace] hyperliquid: RAW FRAME RECEIVED len=851
+[2026-10-27 14:33:16.554] [trace] hyperliquid: frame channel='trades' len=851
+[2026-10-27 14:33:16.554] [trace] hyperliquid: TRADE PARSED ts=1793107995736 price=79949 qty=0.002 is_buyer_maker=true
+[2026-10-27 14:33:16.554] [trace] hyperliquid: TRADE PARSED ts=1793107995736 price=79949 qty=0.0022 is_buyer_maker=true
+[2026-10-27 14:33:16.554] [trace] hyperliquid: TRADE PARSED ts=1793107995736 price=79949 qty=0.00076 is_buyer_maker=true
+[2026-10-27 14:33:16.658] [trace] hyperliquid: RAW FRAME RECEIVED len=305
+[2026-10-27 14:33:16.658] [trace] hyperliquid: frame channel='trades' len=305
+[2026-10-27 14:33:16.658] [trace] hyperliquid: TRADE PARSED ts=1793107995935 price=79949 qty=0.00118 is_buyer_maker=true
+[2026-10-27 14:33:16.794] [trace] hyperliquid: RAW FRAME RECEIVED len=577
+[2026-10-27 14:33:16.794] [trace] hyperliquid: frame channel='trades' len=577
+[2026-10-27 14:33:16.794] [trace] hyperliquid: TRADE PARSED ts=1793107996057 price=79949 qty=0.00088 is_buyer_maker=true
+[2026-10-27 14:33:16.794] [trace] hyperliquid: TRADE PARSED ts=1793107996057 price=79950 qty=0.00108 is_buyer_maker=false
+[2026-10-27 14:33:16.990] [trace] hyperliquid: RAW FRAME RECEIVED len=578
+[2026-10-27 14:33:16.990] [trace] hyperliquid: frame channel='trades' len=578
+[2026-10-27 14:33:16.990] [trace] hyperliquid: TRADE PARSED ts=1793107996334 price=79949 qty=0.00055 is_buyer_maker=true
+[2026-10-27 14:33:16.990] [trace] hyperliquid: TRADE PARSED ts=1793107996334 price=79950 qty=0.00176 is_buyer_maker=false
+[2026-10-27 14:33:17.428] [trace] hyperliquid: RAW FRAME RECEIVED len=580
+[2026-10-27 14:33:17.428] [trace] hyperliquid: frame channel='trades' len=580
+[2026-10-27 14:33:17.428] [trace] hyperliquid: TRADE PARSED ts=1793107996854 price=79949 qty=0.00682 is_buyer_maker=true
+[2026-10-27 14:33:17.428] [trace] hyperliquid: TRADE PARSED ts=1793107996854 price=79950 qty=0.01098 is_buyer_maker=false

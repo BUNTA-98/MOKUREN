@@ -13,8 +13,10 @@
 #include <csignal>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <thread>
 
 // set by the SIGINT handler; polled by the live loop for graceful shutdown.
@@ -92,18 +94,24 @@ int RunProbe(const std::string& config_path) {
   }
 
   const std::string venue = cfg.exchange;
-  mokuren::integrity::FeedRouter router(
-      venue, mokuren::integrity::ProfileForVenue(venue), cfg.probe,
-      NowMillis());
+  // resolved once: the router needs it and the log line below reports the
+  // effective l2 requirement, which is a function of it.
+  const mokuren::integrity::VenueProfile profile =
+      mokuren::integrity::ProfileForVenue(venue);
+  mokuren::integrity::FeedRouter router(venue, profile, cfg.probe, NowMillis());
   router.Attach(*engine.streamer);
 
   // rates, not counts: print the threshold as it will be judged, so the line
   // in the log matches the verdict instead of describing a criterion the gate
   // no longer applies.
+  // the l2 number printed is the one the gate will enforce, not the raw
+  // config value: a venue that republishes its whole book every ~5s is capped
+  // by its declared cadence, and a log line quoting 300/min next to a passed
+  // probe would describe a criterion the gate no longer applies.
   LOG_INFO("probe: checking {} via the public feed (trades>={}/min "
            "l2>={}/min depth>={} for >={}ms, timeout {}ms)",
            venue, cfg.probe.min_trades_per_min,
-           cfg.probe.min_l2_frames_per_min, cfg.probe.min_l2_depth,
+           cfg.probe.EffectiveMinL2PerMin(profile), cfg.probe.min_l2_depth,
            cfg.probe.min_duration_ms, cfg.probe.timeout_ms);
 
   engine.streamer->Start();
@@ -333,6 +341,21 @@ int main(int argc, char** argv) {
   mokuren::InitLogger("logs/engine.log",
                       debug_mode ? spdlog::level::trace : spdlog::level::info,
                       live_mode || paper_mode || probe_mode);
+
+  if (debug_mode) {
+    // One trace per run. The default is a fixed name in the working directory,
+    // truncated when the logger is first used, so a second --debug session
+    // destroys the first one's evidence -- and the mainnet probe that answered
+    // "is this feed healthy" is exactly the trace someone wants to re-read
+    // afterwards. Set after InitLogger because that call is what creates
+    // logs/; basic_logger_mt throws on a missing directory, and
+    // LiveDebugLogger swallows that into a null logger, so setting it earlier
+    // would produce --debug runs with no trace at all and no error saying why.
+    const char* mode = probe_mode ? "probe" : (paper_mode ? "paper" : "live");
+    mokuren::debug::LiveDebugLogPath() =
+        std::string("logs/live_debug_") + mode + "_" +
+        std::to_string(NowMillis()) + ".log";
+  }
   // pin the global level to the same threshold. spdlog::set_level(trace) was
   // unconditional, so every release run logged at trace into the rotating
   // audit file and drowned the events that matter.

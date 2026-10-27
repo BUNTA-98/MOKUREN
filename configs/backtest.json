@@ -27,13 +27,13 @@
     "modules": [
       {
         "active": true,
-        "name": "MaxLeverageLock",
-        "max_leverage": 10.0
+        "max_leverage": 10.0,
+        "name": "MaxLeverageLock"
       },
       {
         "active": true,
-        "name": "MaxStopDistanceLock",
-        "max_stop_pct": 0.02
+        "max_stop_pct": 0.02,
+        "name": "MaxStopDistanceLock"
       },
       {
         "active": true,
@@ -42,11 +42,11 @@
     ],
     "risk_per_trade_pct": 0.02,
     "sl_pct": {
-      "max": 0.1,
-      "min": 0.01,
+      "max": 0.01,
+      "min": 0.001,
       "mode": "range",
-      "step": 0.01,
-      "val": 0.01
+      "step": 0.001,
+      "val": 0.001
     },
     "tp_r": 2.0
   },
@@ -74,7 +74,7 @@
   },
   "triggers": [
     {
-      "active": false,
+      "active": true,
       "drop_threshold": {
         "max": 1.0,
         "min": 0.5,
@@ -99,8 +99,8 @@
       "name": "SpoofHunter"
     },
     {
-      "active": true,
-      "min_level_qty": 0.01,
+      "active": false,
+      "min_level_qty": 0.001,
       "min_stacked_count": 3.0,
       "name": "StackedImbalance",
       "ratio_threshold": {
@@ -110,7 +110,7 @@
         "step": 2.0,
         "val": 3.0
       },
-      "require_candle_agreement": true
+      "require_candle_agreement": false
     },
     {
       "active": false,

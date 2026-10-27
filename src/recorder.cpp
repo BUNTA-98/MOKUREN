@@ -2,6 +2,7 @@
 
 #include "data_integrity.hpp"
 
+#include <chrono>
 #include <utility>
 
 namespace mokuren {
@@ -11,6 +12,19 @@ namespace {
 // ms on ingest) and the .mkn format stores nanoseconds. One integer shift, at
 // the only boundary where the two units meet.
 int64_t MsToNs(int64_t ms) { return ms * 1'000'000; }
+
+// When the frame reached the recorder. TradeEvent and L2Snapshot carry only the
+// exchange stamp, so this cannot be the socket's arrival time -- but the
+// callback runs immediately after the streamer emits, which makes it the
+// closest honest measurement and the only field that can show a late frame or a
+// venue clock offset. Copying the exchange stamp instead made both invisible: a
+// session whose first trade is timestamped 8s before its own filename reads as
+// perfectly consistent.
+int64_t NowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
 
 }  // namespace
 
@@ -59,11 +73,7 @@ void MarketDataRecorder::OnTrade(const TradeEvent& t) {
 
   mdf::TradeRec rec{};
   rec.ts_exchange_ns = MsToNs(t.timestamp);
-  // TradeEvent carries no local receive stamp. Copying the exchange time keeps
-  // the field inside the record's contract (non-zero, monotonic per block)
-  // instead of writing the 0 sentinel, which reads as "unknown" and would make
-  // a latency analysis silently divide by a missing value.
-  rec.ts_recv_ns = rec.ts_exchange_ns;
+  rec.ts_recv_ns = NowNs();  // see NowNs: not a copy of the exchange clock
   rec.seq = 0;  // the public trade stream has no id we persist
   rec.price = t.price;
   rec.qty = t.quantity;
@@ -130,7 +140,7 @@ void MarketDataRecorder::OnL2(const L2Snapshot& s) {
 
   mdf::BookSnapshotRec rec{};
   rec.ts_exchange_ns = MsToNs(s.timestamp);
-  rec.ts_recv_ns = rec.ts_exchange_ns;  // see OnTrade
+  rec.ts_recv_ns = NowNs();  // see OnTrade
   rec.seq = 0;
   rec.n_bids = n_bids;
   rec.n_asks = n_asks;

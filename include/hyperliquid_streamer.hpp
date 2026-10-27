@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 
 // Live market-data adapter for the Hyperliquid public websocket API.
@@ -53,7 +54,9 @@ private:
   // does not start the socket -- Start() does.
   void Connect();
 
-  // sends the l2Book subscription for symbol_.
+  // sends the l2Book AND trades subscriptions for symbol_. trades is not
+  // optional: the bar aggregator only advances on TradeEvents, so an
+  // l2Book-only session closes no candle.
   void SendSubscription();
 
   std::string symbol_;
@@ -62,4 +65,25 @@ private:
   ix::WebSocket ws_;
   std::atomic<bool> running_{false};
   std::atomic<bool> connected_{false};
+
+  // per-channel tallies, summarised once in Stop(). The recorder's own stats
+  // start one layer later, at EmitL2, so they cannot distinguish "the venue
+  // pushes books this rarely" from "HandleOrderBook discarded the frame" --
+  // the only question a thin l2 channel raises. Atomic because they are
+  // written on the ixwebsocket callback thread and read on the caller's.
+  std::atomic<uint64_t> frames_l2book_{0};
+  std::atomic<uint64_t> frames_trades_{0};
+  std::atomic<uint64_t> frames_other_{0};
+  std::atomic<uint64_t> l2_emitted_{0};
+
+  // one gap per outage, cleared by the first real snapshot.
+  //
+  // ixwebsocket reports a single failed connection three times -- Error, then
+  // Close, then Open -- and all three handlers used to emit the sentinel. the
+  // gate counts each one as a reconnect, so one transient drop was reported as
+  // three: enough to fail Development() (max_reconnects 0) and Production()
+  // (max_reconnects 1) on a feed that recovered immediately. set on the first
+  // signalled gap, cleared once an actual book arrives, so the NEXT outage is
+  // reported again.
+  std::atomic<bool> gap_reported_{false};
 };

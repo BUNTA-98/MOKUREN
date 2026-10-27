@@ -233,10 +233,23 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
                  "this subscription",
                  cfg.symbol);
       }
-      inst.streamer = std::make_unique<HyperliquidDataStreamer>(cfg.symbol);
-      LOG_INFO("factory: hyperliquid shadow (paper execution) symbol={}; no "
-               "orders will be sent",
-               cfg.symbol);
+      // environment selects the endpoint, exactly as it does for bybit through
+      // venue::Resolve. the streamer's default url is mainnet, so a config that
+      // said "testnet" used to stream mainnet data with nothing to show for it
+      // -- the same broker/streamer disagreement the shared venue spec was
+      // introduced to remove.
+      if (cfg.env == mokuren::venue::Env::Demo) {
+        LOG_WARN("factory: hyperliquid has no demo environment; using its "
+                 "testnet endpoint");
+      }
+      const char* hl_ws = cfg.env == mokuren::venue::Env::Mainnet
+                              ? "wss://api.hyperliquid.xyz/ws"
+                              : "wss://api.hyperliquid-testnet.xyz/ws";
+      inst.streamer =
+          std::make_unique<HyperliquidDataStreamer>(cfg.symbol, hl_ws);
+      LOG_INFO("factory: hyperliquid shadow (paper execution) symbol={} ws={}; "
+               "no orders will be sent",
+               cfg.symbol, hl_ws);
     } else {
       // a backtest must never dial out to an exchange. the adapter also trades
       // nothing until its websocket state feed is populated, so constructing it

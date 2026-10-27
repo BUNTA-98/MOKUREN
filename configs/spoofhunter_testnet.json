@@ -2,7 +2,7 @@
   "api_key": "",
   "api_secret": "",
   "backtest": {
-    "config_profile": "configs/spoofhunter_testnet.json",
+    "config_profile": "configs/default.json",
     "wfa_in_sample_days": 14,
     "wfa_mode": false,
     "wfa_out_of_sample_days": 7,
@@ -27,6 +27,14 @@
       "name": "MacroTrend"
     }
   ],
+  "venue": {
+    "allow_mainnet": false,
+    "category": "linear",
+    "environment": "testnet",
+    "lot_step": 0.001,
+    "position_mode": "one_way",
+    "symbol": "BTC"
+  },
   "is_testnet": true,
   "risk": {
     "max_daily_loss": 400.0,
@@ -41,15 +49,26 @@
     "sl_price_pct": 0.004,
     "tp_r": 3.0
   },
+  "startup_probe": {
+    "max_reconnects": 2,
+    "on_failure": "abort",
+    "preset": "development"
+  },
   "trade_management": {
     "break_even": {
-      "enabled": false
+      "enabled": false,
+      "target_r": 0.25,
+      "trigger_r": 1.5
     },
     "scale_out": {
-      "enabled": false
+      "enabled": false,
+      "fraction": 0.5,
+      "trigger_r": 2.0
     },
     "trailing": {
-      "enabled": false
+      "distance_r": 0.5,
+      "enabled": false,
+      "trigger_r": 2.5
     }
   },
   "triggers": [

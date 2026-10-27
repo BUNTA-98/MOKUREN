@@ -27,9 +27,28 @@ VenueProfile ProfileForVenue(const std::string& venue_name) {
   if (venue_name == "hyperliquid") {
     // l2Book is a whole-book snapshot on every push and carries no seq.
     profile.has_sequence_numbers = false;
-    // the venue pushes up to 20 levels per side; HyperliquidDataStreamer
-    // truncates anything past MAX_L2_DEPTH.
-    profile.l2_depth = 20;
+    // measured, not assumed: four recordings between 30 s and 5 min all produced
+    // 11-12 book frames per minute (~5.3 s between snapshots) against ~330
+    // trades per minute, with zero frames dropped at socket, envelope, parse or
+    // write. so each book frame is the context for ~30 prints, and replay sees a
+    // book up to 5 s old. that is the venue's cadence, not a gap in the
+    // recording -- a Hyperliquid L2 backtest is therefore not comparable to a
+    // bybit one on the same strategy, and its depth readings should not be read
+    // as if it were.
+    // the venue pushes up to 20 levels per side, and HyperliquidDataStreamer
+    // truncates anything past MAX_L2_DEPTH. clamped for the same reason as
+    // bybit: this number is what the startup gate checks min_l2_depth against,
+    // so it has to be what the engine can actually receive. declaring 20 while
+    // the streamer truncates lower would let a min_l2_depth in between pass the
+    // pre-check and then reject every live frame as shallow.
+    profile.l2_depth = std::min<size_t>(20, static_cast<size_t>(MAX_L2_DEPTH));
+    // measured floor, not the average: four recordings between 30s and 5min
+    // produced 11-12 frames/min each, including the 5-minute one. declared as
+    // 10 so a healthy session clears it with a frame to spare, while a feed
+    // degraded to a trickle still fails -- 3/min is not a quiet venue, it is a
+    // broken one. without this the gate applies a delta feed's 120-300/min and
+    // refuses to arm on the venue above.
+    profile.l2_frames_per_min = 10;
     return profile;
   }
 

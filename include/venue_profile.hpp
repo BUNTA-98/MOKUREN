@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace mokuren::integrity {
@@ -38,6 +39,21 @@ struct VenueProfile {
   // can never satisfy the configured triggers is rejected at startup with a
   // reason, instead of passing the probe on a technically valid depth-1 frame.
   size_t l2_depth = 0;
+
+  // book frames per minute this venue's public l2 feed actually sustains.
+  // 0 means "not declared", which leaves the configured rate requirement
+  // exactly as the operator wrote it -- the strict reading an unknown venue
+  // gets.
+  //
+  // a FACT about the feed, like l2_depth, and it exists for the same reason.
+  // min_l2_frames_per_min describes a healthy DELTA feed: "the book changed at
+  // least this often". a venue that republishes the whole book every ~5s
+  // instead of a delta per change can never clear a delta feed's number, so the
+  // gate would refuse a faithful feed while a silent one still failed -- the
+  // requirement stops measuring health and starts measuring the wrong
+  // architecture. declaring the cadence lets the gate ask for what the venue
+  // can deliver without lowering the bar for a venue that can deliver more.
+  uint64_t l2_frames_per_min = 0;
 };
 
 // One case per integrated venue. Unknown names get the strict defaults.

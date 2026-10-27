@@ -32,6 +32,7 @@ StartupGate::StartupGate(std::string venue, VenueProfile profile,
                          ProbeCriteria criteria, int64_t start_ms)
     : profile_(std::move(profile)),
       criteria_(criteria),
+      configured_min_l2_per_min_(criteria.min_l2_frames_per_min),
       start_ms_(start_ms) {
   report_.venue = std::move(venue);
   report_.trades.channel = "trades";
@@ -44,6 +45,18 @@ StartupGate::StartupGate(std::string venue, VenueProfile profile,
   report_.l2.required = profile_.l2_required;
   report_.l2.min_required = 0;
   l2_limits_.min_depth = criteria_.min_l2_depth;
+
+  // Apply the venue's ceiling exactly once, here, so every reader downstream --
+  // required_count(), ChannelReport::passed(), the shortfall text -- sees the
+  // same number. Doing it in EvaluateLocked would leave ShortfallLocked
+  // computing a requirement the gate no longer applies, which is the failure
+  // this whole convention exists to avoid: a verdict and its explanation
+  // disagreeing about the same feed.
+  //
+  // It can only lower the requirement. A venue with no declared cadence keeps
+  // the operator's number untouched, and a disabled check (0) stays disabled,
+  // so this cannot turn a silent channel into a pass.
+  criteria_.min_l2_frames_per_min = criteria_.EffectiveMinL2PerMin(profile_);
 }
 
 ProbeState StartupGate::ObserveTrade(const TradeEvent& t, int64_t now_ms) {
@@ -217,7 +230,15 @@ std::string StartupGate::ShortfallLocked() const {
   if (profile_.l2_required) {
     os << " l2 " << report_.l2.delivered << " ("
        << observed_per_min(report_.l2.delivered) << "/min, need "
-       << criteria_.min_l2_frames_per_min << "/min)";
+       << criteria_.min_l2_frames_per_min << "/min";
+    // say WHY the requirement is not the configured one. without this the
+    // message contradicts the config file and reads as a bug in the gate.
+    if (criteria_.min_l2_frames_per_min != configured_min_l2_per_min_) {
+      os << "; " << profile_.venue << " publishes at most "
+         << profile_.l2_frames_per_min << "/min, config asked for "
+         << configured_min_l2_per_min_;
+    }
+    os << ")";
   }
   return os.str();
 }

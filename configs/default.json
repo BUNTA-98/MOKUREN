@@ -17,6 +17,14 @@
     "vwap_reset_hour": 0
   },
   "exchange": "hyperliquid",
+  "venue": {
+    "allow_mainnet": true,
+    "category": "linear",
+    "environment": "mainnet",
+    "lot_step": 0.001,
+    "position_mode": "one_way",
+    "symbol": "BTC"
+  },
   "execution": {
     "slippage_pct": 0.0002,
     "taker_fee_pct": 0.0004
@@ -78,7 +86,15 @@
       "ratio": 3.0
     }
   ],
-  "is_testnet": true,
+  "prop": {
+    "daily_reset_hour_utc": 0,
+    "enabled": true,
+    "flatten_on_breach": true,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8
+  },
+  "is_testnet": false,
   "risk": {
     "max_daily_loss": 400.0,
     "min_distance_dollars": 10.0,
