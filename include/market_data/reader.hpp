@@ -23,10 +23,13 @@
 #include "trade_event.hpp"
 
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <vector>
 
 namespace mokuren::mdf {
+
+class Writer;  // only an opaque reference is needed; see CopyPayloadTo
 
 // Metadata block (JSON) as far as the reader cares. Unknown keys are ignored:
 // the block kinds are what the reader dispatches on, so a stale or extended
@@ -78,5 +81,62 @@ struct SessionData {
 bool IsSessionFile(const std::string& path);
 
 SessionData ReadSessionFile(const std::string& path);
+
+// Block-level reader used by the merger.
+//
+// Unlike ReadSessionFile (which decodes into engine types and applies per-
+// record validation), this exposes the raw block stream so a caller can copy
+// payloads verbatim into a Writer. No decode, no re-serialisation -- the
+// recorder already validated at write time, so a merged file is a
+// byte-identical concatenation of its sources' payloads within each window.
+class Reader {
+ public:
+  // Metadata the merger needs, taken from the file's trailer + index. Fields
+  // that ReadSessionFile exposes through SessionMeta are mirrored here so the
+  // merger does not need to pull in the whole decode path.
+  struct Meta {
+    std::string venue;
+    std::string env;
+    std::string category;
+    std::string symbol;
+    std::string source;
+    uint32_t    depth_per_side  = 0;
+    int64_t     created_unix_ns = 0;
+
+    // From the index. Zero when the file is unfinalised.
+    int64_t  first_ts_ns  = 0;
+    int64_t  last_ts_ns   = 0;
+    uint64_t record_count = 0;
+
+    // True when the file carries a writer trailer. An unfinalised file has
+    // readable blocks in front of the crash but no index, so a merger cannot
+    // safely concatenate it: the merged file would silently lose the tail.
+    bool finalised = false;
+  };
+
+  // Reads the header, metadata block and index. Does NOT touch the payload
+  // blocks: scanning a day's worth of files pays only for the table of
+  // contents, not the data.
+  bool Open(const std::string& path);
+
+  bool is_open() const { return in_.is_open(); }
+  const std::string& last_error() const { return error_; }
+  const Meta& metadata() const { return meta_; }
+  uint64_t record_count() const { return meta_.record_count; }
+
+  // Walk the index in physical order, verify each block (magic + crc +
+  // codec), and re-emit it verbatim through Writer::AppendBlock. Returns
+  // false on a hard error -- a corrupted source block is a hard error on
+  // purpose: skipping it would leave a hole in the merged file that looks
+  // exactly like a venue gap.
+  bool CopyPayloadTo(Writer& out);
+
+ private:
+  std::ifstream in_;
+  FileHeader header_{};
+  Meta meta_{};
+  std::vector<IndexEntry> index_;
+  std::string error_;
+};
 
 }  // namespace mokuren::mdf

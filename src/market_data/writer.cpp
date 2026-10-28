@@ -184,6 +184,48 @@ bool Writer::WriteDelta(const BookDeltaRec& rec, const BookChange* changes) {
   return MaybeFlush(book_);
 }
 
+bool Writer::AppendBlock(const BlockHeader& header, const uint8_t* payload,
+                         size_t payload_size) {
+  if (!file_) {
+    Fail("append before open");
+    return false;
+  }
+  if (payload_size > 0 && payload == nullptr) {
+    Fail("block payload pointer is null");
+    return false;
+  }
+  // Flush any typed records in the normal path first: their index entries must
+  // come before this one in block_offset order.
+  if (!FlushAll()) return false;
+
+  const off_t offset = ftello(file_);
+  if (offset < 0) {
+    Fail("ftello failed");
+    return false;
+  }
+
+  BlockHeader h = header;
+  h.magic = kBlockMagic;  // never trust a stored magic
+  h.payload_offset = static_cast<uint64_t>(offset) + kBlockHeaderSize;
+  h.payload_size = static_cast<uint64_t>(payload_size);
+  // payload_crc32c: trust caller. The reader verified it before forwarding.
+
+  if (std::fwrite(&h, sizeof(h), 1, file_) != 1) {
+    Fail("short block header write");
+    return false;
+  }
+  if (payload_size > 0 &&
+      std::fwrite(payload, 1, payload_size, file_) != payload_size) {
+    Fail("short block payload write");
+    return false;
+  }
+
+  index_.push_back(IndexEntry{static_cast<uint64_t>(offset), h.first_ts_ns,
+                              h.last_ts_ns, h.record_count, h.kind, h.codec});
+  records_written_ += h.record_count;
+  return true;
+}
+
 bool Writer::MaybeFlush(PendingBlock& block) {
   if (block.empty()) return true;
   if (block.count >= opts_.max_records_per_block ||

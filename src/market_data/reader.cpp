@@ -1,6 +1,7 @@
 #include "market_data/reader.hpp"
 
 #include "market_data/crc32c.hpp"
+#include "market_data/writer.hpp"   // AppendBlock / is_open / last_error
 #include "order_book.hpp"
 
 #include <nlohmann/json.hpp>
@@ -13,6 +14,7 @@
 #include <utility>
 
 namespace mokuren::mdf {
+
 namespace {
 
 // A payload larger than this is a corrupt size field, not a recording. The
@@ -489,6 +491,133 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
 }
 
 }  // namespace
+
+bool Reader::Open(const std::string& path) {
+  // Reset a previous Open: callers reuse the object to walk a directory.
+  in_ = std::ifstream{};
+  header_ = FileHeader{};
+  meta_ = Meta{};
+  index_.clear();
+  error_.clear();
+
+  in_.open(path, std::ios::binary | std::ios::ate);
+  if (!in_) {
+    error_ = "cannot open '" + path + "'";
+    return false;
+  }
+  const std::streamoff size = in_.tellg();
+  if (size < 0) {
+    error_ = "cannot determine the size of '" + path + "'";
+    return false;
+  }
+  const uint64_t file_size = static_cast<uint64_t>(size);
+
+  FileLayout layout;
+  if (!ReadFileHeader(in_, file_size, layout, error_)) return false;
+  header_ = layout.header;
+
+  // Reuse ParseMetadata instead of duplicating the JSON shape. It fills a
+  // SessionData on purpose; a Reader that parsed json differently would drift
+  // from ReadSessionFile the first time a field is added.
+  SessionData sd;
+  ParseMetadata(in_, layout, file_size, sd);
+  meta_.venue           = sd.meta.venue;
+  meta_.env             = sd.meta.env;
+  meta_.category        = sd.meta.category;
+  meta_.symbol          = sd.meta.symbol;
+  meta_.source          = sd.meta.source;
+  meta_.depth_per_side  = sd.meta.depth_per_side;
+  meta_.created_unix_ns = sd.meta.created_unix_ns;
+
+  // Finalised == trailer exists. A file whose Close() never ran leaves
+  // metadata_size and index_size at zero, which is how the merger tells "a
+  // crash" apart from "a complete day".
+  meta_.finalised = header_.metadata_size > 0 && header_.index_size > 0;
+  if (!meta_.finalised) return true;
+
+  if (header_.index_size % kIndexEntrySize != 0 ||
+      header_.index_offset < header_.header_size ||
+      header_.index_offset + header_.index_size > file_size) {
+    error_ = "index block lies outside the file or has a bad size";
+    return false;
+  }
+  index_.resize(static_cast<size_t>(header_.index_size / kIndexEntrySize));
+  if (!index_.empty() &&
+      !ReadExactAt(in_, header_.index_offset, index_.data(),
+                   static_cast<size_t>(header_.index_size))) {
+    error_ = "short read at index block";
+    return false;
+  }
+
+  if (!index_.empty()) {
+    meta_.first_ts_ns = index_[0].first_ts_ns;
+    meta_.last_ts_ns  = index_[0].last_ts_ns;
+    for (const auto& e : index_) {
+      if (e.first_ts_ns < meta_.first_ts_ns) meta_.first_ts_ns = e.first_ts_ns;
+      if (e.last_ts_ns  > meta_.last_ts_ns)  meta_.last_ts_ns  = e.last_ts_ns;
+      meta_.record_count += e.record_count;
+    }
+  }
+  return true;
+}
+
+bool Reader::CopyPayloadTo(Writer& out) {
+  if (!in_.is_open()) {
+    error_ = "reader is not open";
+    return false;
+  }
+  if (!out.is_open()) {
+    error_ = "destination writer is not open";
+    return false;
+  }
+
+  // Well-formed sources store entries ascending in block_offset, but sorting is
+  // cheap and this is the only place the merge's "concatenation of payloads"
+  // ordering guarantee lives. Sort once, trust once.
+  std::sort(index_.begin(), index_.end(),
+            [](const IndexEntry& a, const IndexEntry& b) {
+              return a.block_offset < b.block_offset;
+            });
+
+  std::vector<uint8_t> payload;
+  for (const auto& entry : index_) {
+    BlockHeader bh{};
+    if (!ReadExactAt(in_, entry.block_offset, &bh, sizeof(bh))) {
+      error_ = "short read at block header, offset " +
+               std::to_string(entry.block_offset);
+      return false;
+    }
+    if (bh.magic != kBlockMagic) {
+      error_ = "block magic mismatch at offset " +
+               std::to_string(entry.block_offset);
+      return false;
+    }
+    if (bh.codec != static_cast<uint16_t>(BlockCodec::None)) {
+      error_ = "block at offset " + std::to_string(entry.block_offset) +
+               " uses block codec " + std::to_string(bh.codec) +
+               "; this build only merges uncompressed blocks";
+      return false;
+    }
+    payload.assign(static_cast<size_t>(bh.payload_size), 0);
+    if (bh.payload_size > 0 &&
+        !ReadExactAt(in_, entry.block_offset + kBlockHeaderSize,
+                     payload.data(), payload.size())) {
+      error_ = "short read at block payload, offset " +
+               std::to_string(entry.block_offset + kBlockHeaderSize);
+      return false;
+    }
+    if (Crc32c(payload.data(), payload.size()) != bh.payload_crc32c) {
+      error_ = "block at offset " + std::to_string(entry.block_offset) +
+               " failed its checksum; refusing to merge damaged data";
+      return false;
+    }
+    if (!out.AppendBlock(bh, payload.data(), payload.size())) {
+      error_ = "append block: " + out.last_error();
+      return false;
+    }
+  }
+  return true;
+}
 
 bool IsSessionFile(const std::string& path) {
   std::error_code ec;

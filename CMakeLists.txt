@@ -196,6 +196,32 @@ target_link_libraries(mokuren_inspect PRIVATE
   CURL::libcurl
 )
 
+# --- dataset merging ---
+#
+# merges a directory of daily .mkn files into weekly/monthly files. separate
+# binary, same reasoning as record/inspect: a data tool, not a trading path, so
+# it must not become a switch on the binary that trades. links the engine
+# sources rather than a reader-only subset, so the merge is produced by the
+# same parser the backtest runs on.
+add_executable(mokuren_merge tools/merge.cpp ${ENGINE_SOURCES} ${HEADERS})
+
+target_include_directories(mokuren_merge PRIVATE
+  include
+  ${ixwebsocket_SOURCE_DIR}
+)
+
+target_link_libraries(mokuren_merge PRIVATE
+  Threads::Threads
+  nlohmann_json::nlohmann_json
+  PkgConfig::NOTCURSES
+  spdlog::spdlog
+  ixwebsocket
+  PkgConfig::HIREDIS
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
+)
+
 # run with ./build/engine_tests (or ./build/engine_tests "*router*" to narrow).
 #
 # the [.live] cases are opt-in and hidden to Catch2, so the plain run never

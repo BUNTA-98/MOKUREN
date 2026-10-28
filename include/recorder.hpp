@@ -9,6 +9,14 @@
 
 namespace mokuren {
 
+// UTC day key (whole days since the Unix epoch). Day boundaries are UTC
+// midnight, matching the recorder's rotation rule. Shared with the merge tool
+// so its window selection cannot drift from the file naming.
+constexpr int64_t kNsPerDay = 86'400'000'000'000LL;
+
+int64_t     DayKeyFromNs(int64_t ts_ns);        // ns -> day key
+std::string DayStringFromKey(int64_t day_key);  // day key -> "YYYY-MM-DD"
+
 struct RecorderConfig {
   std::string path;
 
@@ -30,6 +38,19 @@ struct RecorderConfig {
   bool validate = true;
   bool require_monotonic_timestamps = false;
   size_t min_book_depth = 1;
+
+  // Daily mode. `path` becomes a root directory; each session is lifted into
+  // <root>/<venue>-<symbol>/<venue>-<symbol>-YYYY-MM-DD.mkn, where the date
+  // comes from the first accepted record's ts_exchange_ns. Rotation happens
+  // lazily between records on a UTC-midnight crossing -- never inside a
+  // record, so every closed file ends on a complete block boundary.
+  bool daily = false;
+
+  // Daily mode only. On a name collision (mid-day restart), overwrite the
+  // existing file. Off by default: the restart instead gets a T<HHMMSS>
+  // suffix and both sessions coexist. Only filenames are affected -- the
+  // merger orders by each file's index first_ts_ns, never by name.
+  bool overwrite_existing = false;
 };
 
 // Records one streamer's output to a .mkn file.
@@ -56,6 +77,8 @@ class MarketDataRecorder {
     // the streamer telling us the book is unknown, and there is no frame to
     // record until the next real snapshot arrives.
     uint64_t l2_gaps = 0;
+    // Daily mode: number of UTC-midnight cuts performed.
+    uint64_t rotations = 0;
   };
 
   explicit MarketDataRecorder(RecorderConfig cfg);
@@ -74,13 +97,25 @@ class MarketDataRecorder {
   // file could not be finalised.
   bool Close();
 
-  bool is_open() const { return writer_.is_open(); }
+  // True from a successful Open() until Close(): in daily mode that includes
+  // the window before the first record has created a file.
+  bool is_open() const { return opened_; }
+
   const Stats& stats() const { return stats_; }
-  const std::string& last_error() const { return writer_.last_error(); }
+  const std::string& last_error() const {
+    return error_.empty() ? writer_.last_error() : error_;
+  }
 
  private:
   void OnTrade(const TradeEvent& t);
   void OnL2(const L2Snapshot& s);
+
+  // ensure the writer is attached to the right day's file for ts_ns, rotating
+  // across a midnight boundary if needed; false means "drop this record".
+  bool EnsureOpenFor(int64_t ts_ns);
+  bool RotateIfNeeded(int64_t ts_ns);
+  bool OpenDayFor(int64_t ts_ns);
+  bool CloseCurrentFile();  // flush + close + .part -> .mkn
 
   RecorderConfig cfg_;
   mdf::Writer writer_;
@@ -88,6 +123,14 @@ class MarketDataRecorder {
   int64_t last_trade_ts_ = 0;
   int64_t last_book_ts_ = 0;
   int64_t last_written_book_ts_ = 0;
+
+  // Daily-mode state.
+  bool        opened_ = false;
+  std::string error_;
+  std::string dir_;             // <root>/<venue>-<symbol>
+  std::string current_path_;    // final name, without .part
+  std::string current_part_path_;
+  int64_t     current_day_ = -1;
 };
 
 }  // namespace mokuren

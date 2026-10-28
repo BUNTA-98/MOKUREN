@@ -93,6 +93,18 @@ class Writer {
 
   bool WriteDelta(const BookDeltaRec& rec, const BookChange* changes);
 
+  // Append a complete block verbatim. `header` is a source block header -- its
+  // `payload_offset` is IGNORED and recomputed for this file; `payload_crc32c`
+  // is trusted from the source. Used by the merger to concatenate payloads
+  // from many inputs without re-serialising records, so a merged file is a
+  // byte-identical concatenation of its sources within each window.
+  //
+  // Flushes any buffered typed records first so the index stays ascending in
+  // block_offset. Do not mix with WriteTrade / WriteSnapshot / WriteDelta
+  // expecting that order to survive -- any buffer they hold is flushed here.
+  bool AppendBlock(const BlockHeader& header, const uint8_t* payload,
+                   size_t payload_size);
+
  private:
   struct PendingBlock {
     RecordKind kind = RecordKind::Trade;
