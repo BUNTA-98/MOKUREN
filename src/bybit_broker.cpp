@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <iomanip>
@@ -121,14 +122,24 @@ int64_t BybitBroker::NowSignedMillis() const {
 
 BybitBroker::BybitBroker(const std::string& api_key,
                          const std::string& api_secret,
-                         mokuren::venue::Spec spec)
+                         mokuren::venue::Spec spec,
+                         std::string public_rest_base)
     : api_key_(api_key), api_secret_(api_secret), spec_(spec) {
     // every host comes from the resolved spec, so the broker and the
     // market-data streamer can never disagree about mainnet/testnet/demo.
     rest_base_url_  = spec_.rest_base;
+    market_rest_base_ = public_rest_base;
     private_ws_url_ = spec_.private_ws;
 
     LOG_INFO("BybitBroker: venue {}", mokuren::venue::Manifest(spec_));
+    if (!market_rest_base_.empty() && market_rest_base_ != rest_base_url_) {
+        // only reachable on a mixed run (mainnet data into a demo/testnet
+        // account). say so once: the two startup GETs may land on a different
+        // host than every signed call, and that is worth knowing when reading
+        // the log back.
+        LOG_INFO("BybitBroker: public market-data fallback host {}",
+                 market_rest_base_);
+    }
 
     // before anything can trade: is the clock usable, what does this symbol
     // accept, and is the account already holding something we did not open?
@@ -172,10 +183,16 @@ void BybitBroker::EstablishStartupTruth() {
 
 void BybitBroker::SyncClock() {
     nlohmann::json j;
-    if (!SendRestGet("/v5/market/time", "", j)) {
+    // market-data route, not an account route: it is tried against the exec
+    // host first and falls back to the data world's base, because a demo venue
+    // is not required to serve it and a constructor that throws here never
+    // opens a socket at all.
+    if (!SendMarketGet("/v5/market/time", "", j)) {
         throw std::runtime_error(
-            "BybitBroker: cannot read server time; refusing to sign requests "
-            "against an unverified clock");
+            "BybitBroker: cannot read server time from " + rest_base_url_ +
+            (market_rest_base_.empty() ? std::string()
+                                       : " or " + market_rest_base_) +
+            "; refusing to sign requests against an unverified clock");
     }
 
     int64_t server_ms = 0;
@@ -211,7 +228,10 @@ bool BybitBroker::FetchInstrumentRules() {
         "category=" + spec_.category + "&symbol=" + spec_.symbol;
 
     nlohmann::json j;
-    if (!SendRestGet("/v5/market/instruments-info", query, j)) return false;
+    // same fallback as SyncClock: the rules this reads are per-symbol and
+    // identical across bybit's worlds, so either host answers the same
+    // question. what matters is that ONE of them answers before trading starts.
+    if (!SendMarketGet("/v5/market/instruments-info", query, j)) return false;
     if (!j.contains("result") || !j["result"].is_object() ||
         !j["result"].contains("list") || !j["result"]["list"].is_array() ||
         j["result"]["list"].empty()) {
@@ -475,20 +495,36 @@ void BybitBroker::HandlePrivateMessage(const std::string& payload) {
                 }
             }
         } else if (topic == "wallet") {
-            // uta wallet push. totalEquity is what the sizer multiplies.
+            // uta wallet push. totalEquity is what the sizer multiplies and
+            // what the prop guard measures.
             for (const auto& entry : j["data"]) {
                 if (!entry.is_object()) continue;
                 double equity = 0.0;
+                bool have_equity = false;
                 if (entry.contains("totalEquity")) {
                     equity = JsonNum(entry, "totalEquity");
+                    have_equity = true;
                 } else if (entry.contains("list") && entry["list"].is_array()) {
                     for (const auto& coin : entry["list"]) {
-                        if (coin.is_object()) equity += JsonNum(coin, "equity");
+                        if (!coin.is_object() || !coin.contains("equity")) continue;
+                        equity += JsonNum(coin, "equity");
+                        have_equity = true;
                     }
                 }
+                // accept a reading of zero or below as long as the frame
+                // actually carried the field. the old `> 0.0` test discarded
+                // exactly the frames that matter: an account driven to zero kept
+                // its last healthy equity cached, so the guard went on believing
+                // there was room while the venue's own number said the account
+                // was gone. a frame with no equity field is a different case and
+                // still leaves the cache untouched.
+                if (!have_equity || !std::isfinite(equity)) continue;
+                current_balance_ = equity;
                 if (equity > 0.0) {
-                    current_balance_ = equity;
                     LOG_INFO("BybitBroker: wallet equity {}", current_balance_);
+                } else {
+                    LOG_ERROR("BybitBroker: wallet equity is {} -- the account "
+                              "has no usable equity left", equity);
                 }
             }
         } else if (topic == "execution") {
@@ -620,8 +656,10 @@ int BybitBroker::SendRestRequest(const std::string& method,
     return ret_code;
 }
 
-bool BybitBroker::SendRestGet(const std::string& path, const std::string& query,
-                              nlohmann::json& out) {
+bool BybitBroker::SendRestGetTo(const std::string& base,
+                                const std::string& path,
+                                const std::string& query,
+                                nlohmann::json& out) {
     // GET signs timestamp + api_key + recv_window + query string. the body is
     // empty, which is why this cannot reuse SendRestRequest's POSTFIELDS path.
     const std::string timestamp = std::to_string(NowSignedMillis());
@@ -635,8 +673,7 @@ bool BybitBroker::SendRestGet(const std::string& path, const std::string& query,
         return false;
     }
 
-    const std::string url =
-        rest_base_url_ + path + (query.empty() ? "" : "?" + query);
+    const std::string url = base + path + (query.empty() ? "" : "?" + query);
 
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -679,9 +716,44 @@ bool BybitBroker::SendRestGet(const std::string& path, const std::string& query,
     return ok;
 }
 
+bool BybitBroker::SendRestGet(const std::string& path, const std::string& query,
+                              nlohmann::json& out) {
+    // signed account routes stay where the credentials live. only the two
+    // public startup calls use the fallback below.
+    return SendRestGetTo(rest_base_url_, path, query, out);
+}
+
+bool BybitBroker::SendMarketGet(const std::string& path,
+                                const std::string& query,
+                                nlohmann::json& out) {
+    // exec host first: on a demo account it describes the instrument that will
+    // actually fill. the fallback is the data world, which is where this engine
+    // reads the book from anyway -- and on the mixed mainnet-data/demo-exec
+    // shape it is the only host guaranteed to serve these two routes.
+    if (SendRestGetTo(rest_base_url_, path, query, out)) return true;
+
+    if (market_rest_base_.empty() || market_rest_base_ == rest_base_url_) {
+        return false;
+    }
+    LOG_WARN("BybitBroker: {} was not served by {}; retrying against the "
+             "market-data host {} (public route, auth headers ignored)",
+             path, rest_base_url_, market_rest_base_);
+    return SendRestGetTo(market_rest_base_, path, query, out);
+}
+
 // ---- cached state getters (served without blocking) ----
 
 double BybitBroker::GetBalance() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return current_balance_;
+}
+
+double BybitBroker::GetEquity() const {
+    // the wallet push's totalEquity is already equity, not cash: it carries the
+    // unrealised pnl of the open position. so this is a passthrough, and adding
+    // a floating leg here the way PaperTrader does would count the same pnl
+    // twice. the distinction matters because the prop guard is fed this value
+    // and the firm reads the same field from the same venue.
     std::lock_guard<std::mutex> lock(state_mutex_);
     return current_balance_;
 }

@@ -2,9 +2,9 @@
 #include "logger.hpp"
 #include <cmath>
 
-PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee,
+PaperTrader::PaperTrader(double slip, double taker_fee,
                          double initial_balance)
-    : max_daily_loss_(max_dl), slippage(slip), taker_fee_pct(taker_fee) {
+    : slippage(slip), taker_fee_pct(taker_fee) {
   // a shadow run (--paper) seeds the account from cfg.initial_balance so its
   // drawdown is measured against the capital it will actually be funded with.
   // a non-positive seed is not a valid account: UpdateDrawdown divides by
@@ -16,6 +16,23 @@ PaperTrader::PaperTrader(double max_dl, double slip, double taker_fee,
              initial_balance, kInitialBalance);
     initial_balance = kInitialBalance;
   }
+
+  // the old first argument was an absolute dollar amount, so a caller that
+  // passed only that number now binds it to slippage -- 400.0 would slip every
+  // fill by 400x. AppConfig::Validate already bounds both of these (>= 0.0
+  // and < 0.1), so an out-of-range value here is a stale call site rather
+  // than a strategy decision.
+  if (!(slippage >= 0.0) || slippage >= 0.1) {
+    LOG_WARN("PaperTrader: invalid slippage={}; falling back to 0.0002",
+             slippage);
+    slippage = 0.0002;
+  }
+  if (!(taker_fee_pct >= 0.0) || taker_fee_pct >= 0.1) {
+    LOG_WARN("PaperTrader: invalid taker_fee={}; falling back to 0.0004",
+             taker_fee_pct);
+    taker_fee_pct = 0.0004;
+  }
+
   initial_balance_ = initial_balance;
   balance = initial_balance;
   peak_balance_ = initial_balance;
@@ -29,6 +46,46 @@ TradeSignal PaperTrader::GetCurrentPosition() const {
   sig.stop_loss = current_sl_;
   sig.take_profit = current_tp_;
   return sig;
+}
+
+double PaperTrader::FloatingNetProfit(double price) const {
+  if (position_size <= 0.0 || position_direction_ == SignalDirection::NONE) return 0.0;
+  // mirror the exit maths in CheckRisk/ClosePosition: an exit crosses the
+  // spread, so the mark is slipped against the position before the fee.
+  const bool long_side = (position_direction_ == SignalDirection::BUY);
+  const double exit_price = long_side ? price * (1.0 - slippage) : price * (1.0 + slippage);
+  const double gross = long_side ? (exit_price - entry_price) * position_size
+                                 : (entry_price - exit_price) * position_size;
+  return gross - exit_price * position_size * taker_fee_pct;
+}
+
+double PaperTrader::GetEquityAt(double mark) const {
+  // flat -> nothing floats. no mark -> cash, not a fabricated loss.
+  if (position_size <= 0.0 || !(mark > 0.0)) return balance;
+  return balance + FloatingNetProfit(mark);
+}
+
+double PaperTrader::GetEquity() const {
+  // the account's own view: whatever price it was last ticked with.
+  return GetEquityAt(last_mark_price_);
+}
+
+double PaperTrader::GetEquityAtBidAsk(double bid, double ask) const {
+  // flat -> nothing floats.
+  if (position_size <= 0.0 || position_direction_ == SignalDirection::NONE) {
+    return balance;
+  }
+  // a long exits at the bid, a short at the ask. this is the whole point of
+  // the method: GetEquityAt(mark) treats its argument as a mid and slips it
+  // direction-aware, which is wrong for a one-sided quote.
+  const bool long_side = (position_direction_ == SignalDirection::BUY);
+  const double exit_price = long_side ? bid : ask;
+  // no usable quote -> cash, not a fabricated loss (mirrors GetEquityAt).
+  if (!(exit_price > 0.0)) return balance;
+  const double gross = long_side
+      ? (exit_price - entry_price) * position_size
+      : (entry_price - exit_price) * position_size;
+  return balance + gross - exit_price * position_size * taker_fee_pct;
 }
 
 double PaperTrader::GetWinrate() const {
@@ -51,26 +108,25 @@ void PaperTrader::ApplyManagementConfig(double be_trig, double be_targ,
 }
 
 void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
-  UpdateDay(current_time);
+  last_mark_price_ = current_price;
   if (position_size == 0.0) return;
 
   // track price extremes for trail
   if (current_price > highest_seen_price_) highest_seen_price_ = current_price;
   if (current_price < lowest_seen_price_ || lowest_seen_price_ == 0.0) lowest_seen_price_ = current_price;
 
-  // calc float equity
-  double actual_exit_price = (position_direction_ == SignalDirection::BUY) ? (current_price * (1.0 - slippage)) : (current_price * (1.0 + slippage));
-  double gross_profit = (position_direction_ == SignalDirection::BUY) ? (actual_exit_price - entry_price) * position_size : (entry_price - actual_exit_price) * position_size;
-  double exit_fee = (actual_exit_price * position_size) * taker_fee_pct;
-  double floating_net_profit = gross_profit - exit_fee; 
+  // calc float equity -- the same maths GetEquity() uses to mark the account,
+  // kept in one place so the guard and the internal stop cannot drift apart.
+  const double floating_net_profit = FloatingNetProfit(current_price);
 
   UpdateDrawdown(balance + floating_net_profit);
 
-  // enforce hard daily stop
-  if (current_daily_pnl_ + floating_net_profit <= -max_daily_loss_) {
-    ClosePosition(current_price, "daily_loss_limit", current_time);
-    return;
-  }
+  // NOTE: no daily-loss stop here. the account's daily limit belongs to
+  // PropGuard (prop_equity.hpp on the backtest paths, LiveOrchestrator on the
+  // venue path): one anchor (day-start equity), one unit (fraction of
+  // initial_balance) and one clock (prop.daily_reset_hour_utc). a stop in this
+  // object would be a second ladder that disagrees with it -- and on the venue
+  // path it never ran at all, since BybitBroker::CheckRisk is empty.
 
   // eval partial scale out
   if (enable_scale_out_ && !has_scaled_out_) {
@@ -130,9 +186,10 @@ void PaperTrader::CheckRisk(double current_price, int64_t current_time) {
 }
 
 void PaperTrader::ProcessSignal(TradeSignal signal, double fill_price, int64_t current_time) {
-  UpdateDay(current_time);
-  
-  if (current_daily_pnl_ <= -max_daily_loss_) return;
+  // mark before the entry, so GetEquity() is meaningful the moment the guard
+  // reads it instead of waiting for the next CheckRisk tick.
+  if (fill_price > 0.0) last_mark_price_ = fill_price;
+
   if (position_size > 0.0) return;
 
   if (signal.volume > 0.0 && (signal.direction == SignalDirection::BUY ||
@@ -190,7 +247,6 @@ void PaperTrader::ProcessSignal(TradeSignal signal, double fill_price, int64_t c
     current_entry_fee_ = entry_fee; 
     balance -= entry_fee;
     total_fees_paid += entry_fee;
-    current_daily_pnl_ -= entry_fee; 
     
     UpdateDrawdown(balance);
 
@@ -211,17 +267,7 @@ void PaperTrader::UpdateDrawdown(double current_equity) {
   if (current_dd > max_drawdown_pct_) max_drawdown_pct_ = current_dd;
 }
 
-void PaperTrader::UpdateDay(int64_t current_time) {
-  int64_t day_ms = 86400000; 
-  int64_t new_day = current_time - (current_time % day_ms);
   
-  if (current_day_start_ == 0) {
-    current_day_start_ = new_day;
-  } else if (new_day > current_day_start_) {
-    current_day_start_ = new_day;
-    current_daily_pnl_ = 0.0; 
-  }
-}
 
 void PaperTrader::ClosePartial(double fraction, double current_price, int64_t current_time, const std::string &reason) {
     if (position_size <= 0.0) return;
@@ -242,7 +288,6 @@ void PaperTrader::ClosePartial(double fraction, double current_price, int64_t cu
     double net_profit = gross_profit - exit_fee;
     
     balance += net_profit;
-    current_daily_pnl_ += net_profit; 
     UpdateDrawdown(balance);
 
     double partial_entry_fee = current_entry_fee_ * fraction;
@@ -319,7 +364,6 @@ void PaperTrader::ClosePosition(double current_price, const std::string &reason,
     double net_profit = gross_profit - exit_fee;
     
     balance += net_profit;
-    current_daily_pnl_ += net_profit; 
     UpdateDrawdown(balance);
 
     // remember the closed volume for the live event broadcaster.

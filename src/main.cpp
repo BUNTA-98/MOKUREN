@@ -192,10 +192,12 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
   AppConfig cfg = AppConfig::Load(cfg_json,
                                   /*require_venue_credentials=*/!use_paper_broker);
 
-  // Nothing to seed here any more: the orchestrator derives the prop guard's
-  // base from the active broker at construction -- the seeded PaperTrader on
-  // --paper, the venue's wallet equity on --live. A second copy on PropRules is
-  // what let that base disagree with the account in the first place.
+  // The guard's base is the account's funded capital: cfg.initial_balance,
+  // which the factory also seeds PaperTrader with. Handing it over explicitly
+  // is what lets the guard measure from tick 0 and survive a restart --
+  // deriving it from the venue's first wallet frame instead silently resets the
+  // base on every restart, and on a mid-evaluation restart that base is
+  // already drawn down.
 
   // live_mode=true is what lets the factory construct a venue adapter. the
   // backtest/WFA/replay paths keep the default (false) and can never dial out.
@@ -224,13 +226,16 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
   // made every run look like an unknown venue: the strict profile still
   // applies, but the report could not say which venue passed or which one got
   // checked, and the per-venue streamer is NOT re-derived here -- it comes
-  // from the factory, above.
+  // from the factory, above. the last argument is the funded baseline the prop
+  // guard measures total drawdown against; it is account state, so it travels
+  // with the config and not with the broker.
   LiveOrchestrator orchestrator(std::move(engine), std::move(streamer),
                                 cfg.sl_pct, cfg.tp_pct,
                                 /*redis_host=*/"127.0.0.1", /*redis_port=*/6379,
                                 cfg.symbol,
                                 /*prop_rules=*/cfg.prop,
-                                /*venue=*/cfg.exchange);
+                                /*venue=*/cfg.exchange,
+                                /*account_baseline=*/cfg.initial_balance);
 
   // --- startup data-integrity gate -----------------------------------------
   // the engine is not armed until every required channel has produced

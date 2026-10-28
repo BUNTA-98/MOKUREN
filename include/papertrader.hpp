@@ -17,12 +17,44 @@ public:
   // cfg.initial_balance so drawdown is measured against the capital the
   // account will actually be funded with; every other path keeps the
   // compile-time default and therefore behaves exactly as before.
-  PaperTrader(double max_dl = 400.0, double slip = 0.0002,
+  // NOTE: no daily-loss argument. an account's daily limit is policy, not
+  // account state: PropGuard measures it against day-start EQUITY, resets it
+  // on prop.daily_reset_hour_utc and enforces it on every path. the ladder
+  // this constructor used to take was a second daily rule anchored on today's
+  // realised pnl, denominated in absolute dollars (so it did not scale with
+  // cfg.initial_balance) and reset at a hardcoded utc midnight -- and because
+  // BybitBroker::CheckRisk is empty, it never ran on the venue path at all.
+  PaperTrader(double slip = 0.0002,
               double taker_fee = 0.0004,
               double initial_balance = kInitialBalance);
 
   // basic state getters
   double GetBalance() const override { return balance; }
+  // mark-to-market equity, the number the firm measures: realised cash plus
+  // the floating pnl of the open position, net of the exit fee it would pay.
+  // the mark is the last price handed to CheckRisk/ProcessSignal; with no
+  // position (or no price yet) equity is just the balance. kept separate from
+  // GetBalance() because the prop guard must see an open drawdown the instant
+  // it happens, not when the position finally closes.
+  double GetEquity() const override;
+  // mark at `mark` instead of at the last price this account was ticked with.
+  // the backtest loops hold the current price and hand it to the guard on the
+  // same print, so deriving the floating leg there from last_mark_price_ would
+  // measure equity one tick behind the bar being evaluated. identical maths to
+  // GetEquity() otherwise -- one floating leg, net of the exit it would pay.
+  //
+  // NOTE: `mark` is treated as a mid. FloatingNetProfit applies direction-
+  // aware slippage to it, which is correct for a mid or a trade print but
+  // WRONG for a one-sided quote: passing best_bid for a short exits at
+  // best_bid * (1 + slip), i.e. on the wrong side of the book. callers that
+  // hold both sides of the book must use GetEquityAtBidAsk instead.
+  double GetEquityAt(double mark) const override;
+  // mark-to-market equity with the executable close price given by side: a
+  // long closes at the bid, a short closes at the ask. bid/ask already IS the
+  // spread, so no further slippage is applied -- this is what a market-order
+  // flatten would actually receive at that instant, which is the accounting
+  // the prop guard is measuring. flat or no usable quote -> cash.
+  double GetEquityAtBidAsk(double bid, double ask) const override;
   bool HasOpenPosition() const override { return position_size > 0; }
   double GetPositionSize() const { return position_size; }
   void UpdateStopLoss(double new_sl) override { current_sl_ = new_sl; }
@@ -75,7 +107,10 @@ public:
 private:
   // internal helpers
   void UpdateDrawdown(double current_equity);
-  void UpdateDay(int64_t current_time);
+  // gross minus the exit fee closing at `price` would pay. balance already has
+  // the entry fee taken out, so balance + this is equity without charging the
+  // entry twice.
+  double FloatingNetProfit(double price) const;
   void ClosePosition(double current_price, const std::string &reason, int64_t current_time);
 
   // account state. initialised in-class so no path can read an uninitialised
@@ -96,6 +131,10 @@ private:
   int64_t entry_time_ = 0;
   double current_entry_fee_ = 0.0; 
   double last_closed_size_ = 0.0;
+  // last price seen, used by GetEquity() to mark the open position. zero until
+  // the first CheckRisk/ProcessSignal, which is why GetEquity() falls back to
+  // the balance rather than marking against 0 and fabricating a total loss.
+  double last_mark_price_ = 0.0;
 
   // trade management state
   bool sl_moved_to_be_ = false;
@@ -110,11 +149,6 @@ private:
   bool has_scaled_out_ = false;
   double scale_out_trigger_pct_ = 0.006;
   double scale_out_fraction_ = 0.5;     
-
-  // risk state
-  double max_daily_loss_;
-  double current_daily_pnl_ = 0.0;
-  int64_t current_day_start_ = 0;
 
   // metrics and logs
   int trades_won = 0;

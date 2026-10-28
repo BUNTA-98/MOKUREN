@@ -40,9 +40,20 @@ public:
 
   // prop_rules carries the account's survival POLICY only (limits, warn
   // fraction, reset hour, flatten flag). The equity those limits are measured
-  // against is derived from the active broker at construction -- PaperTrader's
-  // seeded balance on --paper, the venue's wallet equity on --live -- so there
-  // is no second copy of it that can drift from the account.
+  // against is ACCOUNT STATE and is read from the broker this run executes
+  // against -- the seeded PaperTrader on --paper, the venue's wallet equity on
+  // --live -- so there is no second copy of it that can drift from the account.
+  //
+  // account_baseline is the balance the account was FUNDED with, i.e. the
+  // firm's evaluation baseline. pass it whenever the caller knows it
+  // (cfg.initial_balance): it anchors total drawdown from the first tick and,
+  // crucially, survives a restart. deriving the base from the venue's first
+  // wallet frame instead is only correct on a brand-new account -- restarting
+  // mid-evaluation re-derives it from an equity that is already drawn down, so
+  // losses taken before this process started stop counting and the guard
+  // reports less drawdown than the firm measures. 0 keeps that legacy
+  // behaviour, which is right only for shadow runs where the base is the
+  // seeded paper balance anyway.
   LiveOrchestrator(EngineInstance engine,
                    std::unique_ptr<IMarketStreamer> streamer,
                    double sl_pct, double tp_pct,
@@ -50,7 +61,8 @@ public:
                    int redis_port = 6379,
                    std::string symbol = "BTCUSDT",
                    mokuren::PropRules prop_rules = {},
-                   std::string venue = "");
+                   std::string venue = "",
+                   double account_baseline = 0.0);
   ~LiveOrchestrator();
 
   // non-copyable / non-movable (owns threads and a unique engine).
@@ -162,6 +174,22 @@ private:
   // natural cadence and it costs a handful of comparisons.
   void CheckPropGuard(int64_t now_ms, double price);
 
+  // same guard, applied on every L2 snapshot. a floating loss can move on a
+  // quiet book with no prints, so the trade-by-trade cadence misses it. the
+  // equity mark uses the executable close for the open side (bid for a long,
+  // ask for a short) instead of best_bid -- GetEquityAt's mid treatment of a
+  // one-sided quote mispriced every short by the spread and understated its
+  // floating loss.
+  void CheckPropGuardBidAsk(int64_t now_ms, double bid, double ask);
+
+  // shared body: observe `equity` and, on the transition into a breach,
+  // flatten once at `close_price` (or at the aggregator's best bid as a
+  // fallback). entered via CheckPropGuard (trade branch, one price) or
+  // CheckPropGuardBidAsk (L2 branch, direction-aware close); the two must
+  // agree on the price they mark against and the price they flatten at.
+  void CheckPropGuardEquity(int64_t now_ms, IBroker* broker,
+                            double close_price, double equity);
+
   // push an event; returns false if the queue is full (event dropped).
   bool Push(Event&& ev);
 
@@ -204,6 +232,12 @@ private:
   // worker-thread only, so it needs no lock.
   mokuren::PropGuard prop_guard_;
   mokuren::PropDecision last_prop_decision_;
+  // one-shot: compares the guard's base with the venue's own equity the first
+  // time a real reading lands. a config whose initial_balance is the paper
+  // default next to a smaller funded account scales every limit by the ratio
+  // and is otherwise invisible -- the guard simply reports a fraction of the
+  // drawdown the firm does. worker-thread only.
+  bool equity_base_cross_checked_ = false;
 
   // non-blocking redis pub/sub broadcaster for live events.
   std::unique_ptr<RedisPublisher> redis_publisher_;

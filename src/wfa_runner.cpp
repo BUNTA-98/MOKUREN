@@ -187,8 +187,14 @@ void WfaRunner::RunWFA(const std::string &config_path,
                     size_t l2_idx = 0;
 
                     for (const auto &trade : in_sample_data) {
-                        // catch up l2
-                        while (l2_idx < in_sample_l2.size() && in_sample_l2[l2_idx].timestamp <= trade.timestamp) {
+                        // catch up l2 -- strict `<`, matching ReplayManager::Run.
+                        // A book frame sharing this print's millisecond is
+                        // applied at the top of the next iteration, not before
+                        // this print is evaluated. live_streamer.hpp guarantees
+                        // the print is emitted first at identical timestamps,
+                        // so `<=` handed the strategy a book the live run had
+                        // not seen yet.
+                        while (l2_idx < in_sample_l2.size() && in_sample_l2[l2_idx].timestamp < trade.timestamp) {
                             eng.aggregator->ProcessL2(in_sample_l2[l2_idx]);
                             eng.htf_aggregator->ProcessL2(in_sample_l2[l2_idx]);
                             
@@ -197,12 +203,11 @@ void WfaRunner::RunWFA(const std::string &config_path,
                                 eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
                             };
 
-                            const double mark = in_sample_l2[l2_idx].best_bid_price > 0.0
-                                                    ? in_sample_l2[l2_idx].best_bid_price
-                                                    : trade.price;
-                            const mokuren::PropDecision pd = mokuren::ObserveProp(
-                                prop_guard, eng.ptrader.get(), mark,
-                                in_sample_l2[l2_idx].timestamp, "wfa_is");
+                            const L2Snapshot& snap = in_sample_l2[l2_idx];
+                            const mokuren::PropDecision pd = mokuren::ObservePropBook(
+                                prop_guard, eng.ptrader.get(),
+                                snap.best_bid_price, snap.best_ask_price, trade.price,
+                                snap.timestamp, "wfa_is");
                             if (pd.state == mokuren::PropState::DailyHalted ||
                                 pd.state == mokuren::PropState::TotalHalted) {
                                 prop_breached = true;
@@ -302,8 +307,13 @@ void WfaRunner::RunWFA(const std::string &config_path,
         size_t l2_oos_idx = 0;
 
         for (const auto &trade : out_of_sample_data) {
-            // proc oos l2
-            while (l2_oos_idx < out_of_sample_l2.size() && out_of_sample_l2[l2_oos_idx].timestamp <= trade.timestamp) {
+            // proc oos l2 -- strict `<`, matching ReplayManager::Run. A book
+            // frame sharing this print's millisecond is applied at the top of
+            // the next iteration, not before this print is evaluated.
+            // live_streamer.hpp guarantees the print is emitted first at
+            // identical timestamps, so `<=` handed the strategy a book the
+            // live run had not seen yet.
+            while (l2_oos_idx < out_of_sample_l2.size() && out_of_sample_l2[l2_oos_idx].timestamp < trade.timestamp) {
                 oos_eng.aggregator->ProcessL2(out_of_sample_l2[l2_oos_idx]);
                 oos_eng.htf_aggregator->ProcessL2(out_of_sample_l2[l2_oos_idx]);
                 
@@ -312,12 +322,11 @@ void WfaRunner::RunWFA(const std::string &config_path,
                     oos_eng.aggregator->GetSessionMetrics(), oos_eng.aggregator->GetLatestL2(), oos_eng.aggregator->GetL2History()
                 };
 
-                const double mark = out_of_sample_l2[l2_oos_idx].best_bid_price > 0.0
-                                        ? out_of_sample_l2[l2_oos_idx].best_bid_price
-                                        : trade.price;
-                const mokuren::PropDecision pd = mokuren::ObserveProp(
-                    oos_prop_guard, oos_eng.ptrader.get(), mark,
-                    out_of_sample_l2[l2_oos_idx].timestamp, "wfa_oos");
+                const L2Snapshot& snap = out_of_sample_l2[l2_oos_idx];
+                const mokuren::PropDecision pd = mokuren::ObservePropBook(
+                    oos_prop_guard, oos_eng.ptrader.get(),
+                    snap.best_bid_price, snap.best_ask_price, trade.price,
+                    snap.timestamp, "wfa_oos");
                 if (pd.state == mokuren::PropState::DailyHalted ||
                     pd.state == mokuren::PropState::TotalHalted) {
                     oos_prop_breached = true;
@@ -511,8 +520,13 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
         size_t l2_idx = 0;
         
         for (const auto &trade : oos_data) {
-            // catch up oos l2
-            while (l2_idx < oos_l2.size() && oos_l2[l2_idx].timestamp <= trade.timestamp) {
+            // catch up oos l2 -- strict `<`, matching ReplayManager::Run. A
+            // book frame sharing this print's millisecond is applied at the
+            // top of the next iteration, not before this print is evaluated.
+            // live_streamer.hpp guarantees the print is emitted first at
+            // identical timestamps, so `<=` handed the strategy a book the
+            // live run had not seen yet.
+            while (l2_idx < oos_l2.size() && oos_l2[l2_idx].timestamp < trade.timestamp) {
                 eng.aggregator->ProcessL2(oos_l2[l2_idx]);
                 eng.htf_aggregator->ProcessL2(oos_l2[l2_idx]);
                 
@@ -521,12 +535,11 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
                     eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
                 };
 
-                const double mark = oos_l2[l2_idx].best_bid_price > 0.0
-                                        ? oos_l2[l2_idx].best_bid_price
-                                        : trade.price;
-                const mokuren::PropDecision pd = mokuren::ObserveProp(
-                    replay_prop_guard, eng.ptrader.get(), mark,
-                    oos_l2[l2_idx].timestamp, "replay_wfa");
+                const L2Snapshot& snap = oos_l2[l2_idx];
+                const mokuren::PropDecision pd = mokuren::ObservePropBook(
+                    replay_prop_guard, eng.ptrader.get(),
+                    snap.best_bid_price, snap.best_ask_price, trade.price,
+                    snap.timestamp, "replay_wfa");
                 if (pd.state == mokuren::PropState::DailyHalted ||
                     pd.state == mokuren::PropState::TotalHalted) {
                     replay_prop_breached = true;

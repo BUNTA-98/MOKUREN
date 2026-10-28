@@ -194,7 +194,14 @@ struct AppConfig {
   // determined by risk_per_trade_pct / stop_pct, so a sizer-side cap and a
   // MaxLeverageLock veto are the same decision -- and only the veto is visible.
   // one number, one owner: risk.modules[MaxLeverageLock].max_leverage.
-  double max_daily_loss = 400.0;
+  //
+  // NOTE: there is no max_daily_loss here either. the account's daily limit is
+  // prop.max_daily_drawdown_pct, a fraction of initial_balance measured
+  // against day-start EQUITY and reset on the firm's own hour. the old dollar
+  // field was a second ladder anchored on realised pnl, so it neither scaled
+  // with initial_balance nor matched what the firm measures -- and on the
+  // venue path nothing ever consulted it. a config that still carries
+  // risk.max_daily_loss keeps loading; the key is simply ignored.
 
   // starting capital of the paper account, on every path. the factory hands
   // this to PaperTrader for --paper, scan, wfa and replay alike, so risk per

@@ -2,29 +2,22 @@
   "api_key": "",
   "api_secret": "",
   "backtest": {
-    "config_profile": "configs/backtest.json",
+    "config_profile": "configs/default.json",
     "wfa_in_sample_days": 14,
     "wfa_mode": false,
     "wfa_out_of_sample_days": 7,
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/2026-05",
+    "dataset": "data",
+    "filepath": "data/2026/bybit1",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
     "tick_size": 0.1,
     "vwap_reset_hour": 0
   },
-  "exchange": "hyperliquid",
-  "venue": {
-    "allow_mainnet": true,
-    "category": "linear",
-    "environment": "mainnet",
-    "lot_step": 0.001,
-    "position_mode": "one_way",
-    "symbol": "BTC"
-  },
+  "exchange": "bybit",
   "execution": {
     "slippage_pct": 0.0002,
     "taker_fee_pct": 0.0004
@@ -32,23 +25,35 @@
   "filters": [
     {
       "active": true,
+      "lookback": 1440,
+      "name": "MacroTrend"
+    },
+    {
+      "active": true,
       "min_volume": 2.0,
       "name": "MinVolume"
     },
     {
       "active": true,
-      "name": "VwapTrend",
-      "require_trend_alignment": false
+      "lookback": 20,
+      "name": "RVOL",
+      "threshold": 2.0
     },
     {
-      "active": false,
+      "active": true,
+      "lookback": 25.0,
+      "min_atr": 40.0,
+      "name": "ATRChop"
+    },
+    {
+      "active": true,
+      "name": "VwapTrend",
+      "require_trend_alignment": true
+    },
+    {
+      "active": true,
       "lookback": 5,
       "name": "CVDDivergence"
-    },
-    {
-      "active": false,
-      "lookback": 1440,
-      "name": "MacroTrend"
     },
     {
       "active": false,
@@ -67,25 +72,9 @@
     {
       "active": false,
       "name": "POCTrend"
-    },
-    {
-      "active": false,
-      "lookback": 20,
-      "name": "RVOL",
-      "threshold": 2.0
-    },
-    {
-      "active": false,
-      "lookback": 14,
-      "min_atr": 40.0,
-      "name": "ATRChop"
-    },
-    {
-      "active": false,
-      "name": "OrderbookImbalance",
-      "ratio": 3.0
     }
   ],
+  "initial_balance": 10000.0,
   "prop": {
     "daily_reset_hour_utc": 0,
     "enabled": true,
@@ -94,19 +83,12 @@
     "max_total_drawdown_pct": 0.06,
     "warn_fraction": 0.8
   },
-  "is_testnet": false,
   "risk": {
-    "max_daily_loss": 400.0,
-    "min_distance_dollars": 10.0,
+    "min_distance_dollars": 0.0,
     "modules": [
       {
-        "active": true,
-        "name": "SinglePositionLock"
-      },
-      {
         "active": false,
-        "max_stop_pct": 0.015,
-        "name": "MaxStopDistanceLock"
+        "name": "SinglePositionLock"
       },
       {
         "active": false,
@@ -115,49 +97,105 @@
       },
       {
         "active": false,
+        "max_stop_pct": 0.02,
+        "name": "MaxStopDistanceLock"
+      },
+      {
+        "active": false,
         "cooldown_ms": 1800000,
         "name": "AntiRevengeLock"
       }
     ],
-    "risk_per_trade_pct": 0.01,
-    "sl_pct": 0.005,
+    "risk_per_trade_pct": 0.02,
+    "sl_pct": {
+      "max": 0.01,
+      "min": 0.001,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.002
+    },
     "tp_r": 2.0
+  },
+  "startup_probe": {
+    "min_l2_depth": 20,
+    "on_failure": "abort",
+    "preset": "development"
   },
   "trade_management": {
     "break_even": {
       "enabled": false,
-      "target_r": 0.2,
+      "target_r": 0.0,
       "trigger_r": 1.0
     },
     "scale_out": {
       "enabled": false,
       "fraction": 0.5,
-      "trigger_r": 0.8
+      "trigger_r": 2.0
     },
     "trailing": {
       "distance_r": 0.5,
-      "enabled": true,
-      "trigger_r": 1.5
+      "enabled": false,
+      "trigger_r": 1.0
     }
   },
   "triggers": [
     {
       "active": false,
-      "drop_threshold": 0.9,
-      "lookback_ms": 500,
-      "min_wall_qty": 30.0,
+      "drop_threshold": {
+        "max": 1.0,
+        "min": 0.5,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.5
+      },
+      "lookback_ms": {
+        "max": 2000.0,
+        "min": 500.0,
+        "mode": "range",
+        "step": 500.0,
+        "val": 500.0
+      },
+      "min_wall_qty": {
+        "max": 1.0,
+        "min": 0.5,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.5
+      },
       "name": "SpoofHunter"
     },
     {
-      "active": true,
-      "levels": 2,
+      "active": false,
+      "min_level_qty": 0.001,
+      "min_stacked_count": 3.0,
       "name": "StackedImbalance",
-      "ratio": 1.5
+      "ratio_threshold": {
+        "max": 15.0,
+        "min": 3.0,
+        "mode": "range",
+        "step": 2.0,
+        "val": 3.0
+      },
+      "require_candle_agreement": false
     },
     {
       "active": false,
-      "delta": 1.0,
+      "min_delta_threshold": {
+        "max": 100.0,
+        "min": 1.0,
+        "mode": "range",
+        "step": 1.0,
+        "val": 10.0
+      },
       "name": "DeltaAbsorption"
     }
-  ]
+  ],
+  "venue": {
+    "allow_mainnet": false,
+    "category": "linear",
+    "environment": "testnet",
+    "lot_step": 0.001,
+    "position_mode": "one_way",
+    "symbol": "BTCUSDT"
+  }
 }

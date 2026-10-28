@@ -170,8 +170,11 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
   // for every path. a --live run never reads ptrader (it has a venue adapter),
   // so this only moves the paper/scan/wfa/replay numbers -- which is the point.
   const double seed_balance = cfg.initial_balance;
-  inst.ptrader = std::make_unique<PaperTrader>(cfg.max_daily_loss,
-                                               cfg.slippage_pct,
+  // no daily-loss argument: the account's daily limit is PropGuard's, armed
+  // from cfg.prop on every path. passing risk.max_daily_loss here used to
+  // create a second, dollar-denominated ladder that scaled with neither the
+  // account nor the firm's rule.
+  inst.ptrader = std::make_unique<PaperTrader>(cfg.slippage_pct,
                                                cfg.taker_fee_pct,
                                                seed_balance);
 
@@ -198,8 +201,14 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
 
     if (live_mode && !use_paper_broker) {
       // the broker follows the EXEC world: its hosts, its symbol, its keys.
-      inst.broker =
-          std::make_unique<BybitBroker>(cfg.api_key, cfg.api_secret, exec_spec);
+      // the data spec is handed over as well, but ONLY as the fallback host
+      // for the two public market-data calls startup needs (server time,
+      // instruments-info). a demo venue is not required to serve those, and
+      // without the fallback SyncClock throws before the socket opens -- which
+      // reads as a safety check firing rather than as the connectivity gap it
+      // actually is.
+      inst.broker = std::make_unique<BybitBroker>(
+          cfg.api_key, cfg.api_secret, exec_spec, data_spec.rest_base);
       LOG_INFO("factory: bybit live exec {}",
                mokuren::venue::Manifest(exec_spec));
       if (data_spec.env != exec_spec.env) {

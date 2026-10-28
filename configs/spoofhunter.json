@@ -1,4 +1,6 @@
 {
+  "exchange": "bybit",
+  "initial_balance": 10000.0,
   "backtest": {
     "config_profile": "configs/default.json",
     "wfa_in_sample_days": 14,
@@ -8,7 +10,6 @@
   },
   "environment": {
     "dataset": "data/BTCUSDT-2024-04",
-    "exchange": "bybit",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -72,7 +73,6 @@
     }
   ],
   "risk": {
-    "max_daily_loss": 400.0,
     "min_distance_dollars": 10.0,
     "modules": [
       {
@@ -91,7 +91,7 @@
       }
     ],
     "risk_per_trade_pct": 0.02,
-    "sl_price_pct": 0.004,
+    "sl_pct": 0.004,
     "tp_r": 3.0
   },
   "trade_management": {
@@ -114,14 +114,14 @@
   "triggers": [
     {
       "active": false,
-      "delta": 1.6,
+      "min_delta_threshold": 1.6,
       "name": "DeltaAbsorption"
     },
     {
       "active": false,
-      "levels": 6.0,
+      "min_stacked_count": 6.0,
       "name": "StackedImbalance",
-      "ratio": 3.0
+      "ratio_threshold": 3.0
     },
     {
       "active": true,

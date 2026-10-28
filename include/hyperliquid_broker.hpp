@@ -37,6 +37,14 @@ public:
 
     // ---- IBroker: cached state getters ----
     double GetBalance() const override;
+    // wallet portfolio value from webData2's marginSummary.accountValue,
+    // including the open position's unrealized pnl. this is the same reading
+    // BybitBroker::GetEquity returns from the wallet push's totalEquity --
+    // the venue's own mark-to-market value -- and the number the prop guard's
+    // total-drawdown cross-check reads. the class was abstract until this
+    // existed, which is why it compiled only because the factory refuses to
+    // construct it on any path.
+    double GetEquity() const override;
     bool HasOpenPosition() const override;
     TradeSignal GetCurrentPosition() const override;
     void UpdateStopLoss(double new_sl) override;

@@ -1,6 +1,13 @@
 {
+  "backtest": {
+    "config_profile": "configs/backtest.json",
+    "wfa_in_sample_days": 14,
+    "wfa_mode": false,
+    "wfa_out_of_sample_days": 7,
+    "wfa_step_days": 7
+  },
   "environment": {
-    "dataset": "data/2026/nightly.mkn",
+    "dataset": "data/2026/bybit1",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "tick_size": 0.1,
@@ -22,7 +29,6 @@
     "warn_fraction": 0.8
   },
   "risk": {
-    "max_daily_loss": 400.0,
     "min_distance_dollars": 0.0,
     "modules": [
       {

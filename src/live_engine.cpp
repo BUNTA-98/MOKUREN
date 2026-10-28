@@ -66,14 +66,19 @@ void PublishJson(RedisPublisher* publisher, nlohmann::json& ev) {
 //
 //   --paper         PaperTrader, seeded from cfg.initial_balance by the factory
 //                   on every path, so the base IS the funded account.
-//   --live (venue)  the adapter's mark-to-market wallet equity. GetBalance() is
-//                   0.0 until the private wallet stream delivers its first
-//                   frame, so the guard starts Unarmed -- refusing entries
-//                   rather than trading against a limit it cannot measure --
-//                   and adopts the first positive reading as its base.
+//   --live (venue)  the adapter's mark-to-market wallet equity. it is 0.0 until
+//                   the private wallet stream delivers its first frame, so
+//                   reading it as a base here only works on a brand-new
+//                   account; the caller's account_baseline, when supplied,
+//                   takes precedence precisely because of that.
+//
+// GetEquity(), not GetBalance(): on the venue path the wallet's totalEquity
+// already carries the open position's floating pnl, and on the paper path the
+// derived leg is net of the exit it would pay. GetBalance() is realised cash
+// and would understate a loss taken while the position is still open.
 double AccountStartingEquity(const EngineInstance& engine) {
-  if (engine.broker) return engine.broker->GetBalance();
-  if (engine.ptrader) return engine.ptrader->GetBalance();
+  if (engine.broker) return engine.broker->GetEquity();
+  if (engine.ptrader) return engine.ptrader->GetEquity();
   return 0.0;
 }
 
@@ -85,17 +90,23 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
                                    std::string redis_host, int redis_port,
                                    std::string symbol,
                                    mokuren::PropRules prop_rules,
-                                   std::string venue)
+                                   std::string venue,
+                                   double account_baseline)
     : engine_(std::move(engine)),
       streamer_(std::move(streamer)),
       sl_pct_(sl_pct),
       tp_pct_(tp_pct),
       symbol_(std::move(symbol)),
       venue_(std::move(venue)),
-      // the drawdown base comes from the broker, not from a PropRules field:
-      // one number, and it is the account's. engine_ is declared above
+      // the funded baseline wins over everything: it is the number the firm
+      // measures total drawdown against, and unlike a venue reading it does not
+      // move between restarts. without one, fall back to the broker's equity --
+      // correct on a fresh account, and only then. engine_ is declared above
       // prop_guard_, so it is already moved into place here.
-      prop_guard_(prop_rules, AccountStartingEquity(engine_)) {
+      prop_guard_(prop_rules,
+                  account_baseline > 0.0
+                      ? account_baseline
+                      : AccountStartingEquity(engine_)) {
   LOG_INFO("LiveOrchestrator constructed (queue cap={} sl_pct={} tp_pct={} "
            "symbol={} venue={})",
            kMaxQueueDepth, sl_pct_, tp_pct_, symbol_,
@@ -127,14 +138,20 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
   // The one case still worth saying out loud is a venue whose wallet frame has
   // not landed yet.
   if (prop_rules.enabled && engine_.broker) {
-    const double venue_equity = engine_.broker->GetBalance();
-    if (!(venue_equity > 0.0)) {
+    const double venue_equity = engine_.broker->GetEquity();
+    if (account_baseline > 0.0) {
+      // the base is known up front, so the guard measures from tick 0 and a
+      // restart cannot reset it to a reduced equity.
+      LOG_INFO("LiveOrchestrator: prop guard anchored to the funded baseline "
+               "{} (venue equity right now: {})",
+               account_baseline, venue_equity);
+    } else if (!(venue_equity > 0.0)) {
       LOG_WARN("LiveOrchestrator: prop guard has no equity base yet (venue "
-               "balance is {}) -- entries are refused until the wallet stream "
-               "reports a balance, and the total-drawdown base will then be "
-               "the FIRST reading it sees. On a restart mid-evaluation that "
-               "base is already drawn down, so losses taken before this "
-               "process started are not counted.",
+               "equity is {}) -- entries are refused until the wallet stream "
+               "reports one, and the total-drawdown base will then be the "
+               "FIRST reading it sees. On a restart mid-evaluation that base "
+               "is already drawn down, so losses taken before this process "
+               "started are not counted. Pass account_baseline to avoid this.",
                venue_equity);
     }
   }
@@ -223,10 +240,13 @@ bool LiveOrchestrator::Start(
     stream_error_.clear();
   }
 
-  // clear the per-run halt latches. the total-drawdown base survives (it is a
-  // config constant), so a restart keeps measuring from the funded balance
-  // instead of quietly re-deriving it from a reduced equity.
+  // clear the per-run halt latches. when the caller supplied a baseline the
+  // total-drawdown base survives, so a restart keeps measuring from the funded
+  // balance instead of quietly re-deriving it from a reduced equity. without
+  // one, Reset() returns to Unarmed and the base becomes the first positive
+  // reading again -- the legacy behaviour, and the reason to pass it.
   prop_guard_.Reset();
+  equity_base_cross_checked_ = false;
   last_prop_decision_ = mokuren::PropDecision{};
   // drop the previous run's gate so PreflightReport() cannot answer with a
   // stale verdict after a restart.
@@ -529,24 +549,51 @@ void LiveOrchestrator::RequestShutdown() {
 void LiveOrchestrator::CheckPropGuard(int64_t now_ms, double price) {
   IBroker* broker = ActiveBroker();
   if (!broker) return;
+  CheckPropGuardEquity(now_ms, broker, price, broker->GetEquityAt(price));
+}
 
-  // venue path: GetBalance() is mark-to-market equity (wallet totalEquity,
-  // which includes open pnl) -- that is what the firm measures. it arrives
-  // asynchronously on the private wallet stream.
-  //
-  // paper / shadow path: there is no wallet stream at all. balance only moves
-  // when a trade closes, so the floating leg must be derived from the open
-  // position here; measuring the closed balance alone made the guard report
-  // realised drawdown and look safer than live while a losing trade was open.
-  // entry/exit fees are not subtracted; on a 4-6% limit they are noise, and
-  // CheckRisk already folds them into its own drawdown tracking.
-  double equity = broker->GetBalance();
-  if (engine_.ptrader && broker == engine_.ptrader.get() && price > 0.0) {
-    const TradeSignal pos = broker->GetCurrentPosition();
-    if (pos.volume > 0.0 && pos.entry_price > 0.0 &&
-        pos.direction != SignalDirection::NONE) {
-      const double dir = pos.direction == SignalDirection::BUY ? 1.0 : -1.0;
-      equity += (price - pos.entry_price) * pos.volume * dir;
+void LiveOrchestrator::CheckPropGuardBidAsk(int64_t now_ms, double bid, double ask) {
+  IBroker* broker = ActiveBroker();
+  if (!broker) return;
+  // the executable close for the open side: bid for a long, ask for a short.
+  // equity and flatten price come from the same quote, so the guard and the
+  // flatten tell the same story about the same book. best_bid was used
+  // unconditionally before, which understated a short's floating loss by the
+  // spread.
+  const bool is_short =
+      broker->GetCurrentPosition().direction == SignalDirection::SELL;
+  const double close_price = is_short ? ask : bid;
+  CheckPropGuardEquity(now_ms, broker, close_price,
+                       broker->GetEquityAtBidAsk(bid, ask));
+}
+
+void LiveOrchestrator::CheckPropGuardEquity(int64_t now_ms, IBroker* broker,
+                                            double close_price, double equity) {
+  // mark-to-market equity at the price this frame carries, asked of the broker
+  // rather than assembled here. the venue ignores the argument -- its wallet
+  // push already holds the open position's floating pnl -- while the paper
+  // account derives the leg from this mark, net of the exit fee and slippage
+  // the position would pay. building a third version inline (realised balance
+  // plus a gross floating leg, fees ignored) is how the live guard ended up
+  // the most optimistic of the three and stayed blind to a loss that was open
+  // but not yet booked.
+
+  // one-shot sanity check: the guard's base and the venue's own equity must
+  // describe the same account. a config carrying the paper default (10000) next
+  // to a smaller funded account scales every limit by the ratio, and nothing
+  // else would ever say so -- the guard would simply report a fraction of the
+  // drawdown the firm measures.
+  if (!equity_base_cross_checked_ && equity > 0.0 &&
+      prop_guard_.initial_equity() > 0.0) {
+    equity_base_cross_checked_ = true;
+    const double base = prop_guard_.initial_equity();
+    const double drift = std::abs(equity - base) / base;
+    if (drift > 0.5) {
+      LOG_ERROR("prop guard: equity base {} disagrees with the account's "
+                "current equity {} (off by {}%) -- every limit is being "
+                "measured against the wrong capital; set initial_balance to "
+                "the funded baseline",
+                base, equity, drift * 100.0);
     }
   }
   const mokuren::PropDecision d = prop_guard_.Observe(equity, now_ms);
@@ -592,15 +639,15 @@ void LiveOrchestrator::CheckPropGuard(int64_t now_ms, double price) {
     nlohmann::json halt;
     halt["timestamp"] = now_ms;
     halt["action"] = "PROP_HALT";
-    halt["price"] = price;
+    halt["price"] = close_price;
     halt["symbol"] = symbol_;
     halt["reason"] = d.reason;
     PublishJson(redis_publisher_.get(), halt);
   }
   LOG_ERROR("prop guard: {} -- flattening the open position at {}",
-            d.reason, price);
+            d.reason, close_price);
 
-  double flatten_price = price;
+  double flatten_price = close_price;
   if (!(flatten_price > 0.0) && engine_.aggregator) {
     flatten_price = engine_.aggregator->GetLatestL2().best_bid_price;
   }
@@ -754,9 +801,8 @@ void LiveOrchestrator::WorkerLoop() {
         // daily limit without the guard noticing -- and, now that the
         // backtest/WFA/replay paths observe on every L2 snapshot, leaving it
         // here would make live the one path that misses a breach.
-        CheckPropGuard(ev.l2.timestamp,
-                       ev.l2.best_bid_price > 0.0 ? ev.l2.best_bid_price
-                                                  : ev.l2.best_ask_price);
+        CheckPropGuardBidAsk(ev.l2.timestamp,
+                             ev.l2.best_bid_price, ev.l2.best_ask_price);
 
         // guard: the bar must already be initialized by a real trade.
         // evaluating with a 0.0 close feeds garbage into the strategy.

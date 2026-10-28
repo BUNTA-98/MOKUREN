@@ -52,8 +52,16 @@ double PropGuard::daily_drawdown() const {
   // block or size here, but "total_dd=100%" on a healthy shadow run is exactly
   // the line that gets misread during an incident.
   if (!rules_.enabled) return 0.0;
-  if (!(day_start_equity_ > 0.0)) return 0.0;
-  return (day_start_equity_ - last_equity_) / day_start_equity_;
+  // The firm's daily floor is day_start_equity - (initial_balance * pct): a
+  // fixed dollar band, not a fixed percentage of today's opening equity.
+  // Expressing the day's loss as a fraction of the *initial* balance is what
+  // makes the comparison against max_daily_drawdown_pct mean the same thing
+  // on every day. Dividing by day_start_equity_ instead widens the band on a
+  // green day (up 10% -> 4.4% of initial) and narrows it on a red one, so the
+  // guard would be most lenient exactly when the account is furthest above
+  // its baseline.
+  if (!(initial_equity_ > 0.0)) return 0.0;
+  return (day_start_equity_ - last_equity_) / initial_equity_;
 }
 
 double PropGuard::total_drawdown() const {

@@ -61,7 +61,6 @@
     "tp_r": 2.0,
     "risk_per_trade_pct": 0.005,
     "min_distance_dollars": 0.0,
-    "max_daily_loss": 200.0,
     "modules": [
       { "name": "SinglePositionLock" },
       { "name": "MaxLeverageLock", "max_leverage": 5.0 },

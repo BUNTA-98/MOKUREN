@@ -249,8 +249,13 @@ void GridRunner::Run(const std::string &config_path,
                 size_t l2_idx = 0;
 
                 for (const auto &trade : all_trades) {
-                    // catch up l2
-                    while (l2_idx < all_l2.size() && all_l2[l2_idx].timestamp <= trade.timestamp) {
+                    // catch up l2 -- strict `<`, matching ReplayManager::Run.
+                    // A book frame sharing this print's millisecond is applied
+                    // at the top of the next iteration, not before this print
+                    // is evaluated. live_streamer.hpp guarantees the print is
+                    // emitted first at identical timestamps, so `<=` handed
+                    // the strategy a book the live run had not seen yet.
+                    while (l2_idx < all_l2.size() && all_l2[l2_idx].timestamp < trade.timestamp) {
                         // update l2 state
                         eng.aggregator->ProcessL2(all_l2[l2_idx]);
                         eng.htf_aggregator->ProcessL2(all_l2[l2_idx]);
@@ -264,12 +269,11 @@ void GridRunner::Run(const std::string &config_path,
                         // observe the guard on every L2 tick too: a floating
                         // loss can cross a limit on a quiet book with no
                         // prints, and the live path has the same gap.
-                        const double mark = all_l2[l2_idx].best_bid_price > 0.0
-                                                ? all_l2[l2_idx].best_bid_price
-                                                : trade.price;
-                        const mokuren::PropDecision pd = mokuren::ObserveProp(
-                            prop_guard, eng.ptrader.get(), mark,
-                            all_l2[l2_idx].timestamp, "scan");
+                        const L2Snapshot& snap = all_l2[l2_idx];
+                        const mokuren::PropDecision pd = mokuren::ObservePropBook(
+                            prop_guard, eng.ptrader.get(),
+                            snap.best_bid_price, snap.best_ask_price, trade.price,
+                            snap.timestamp, "scan");
                         if (pd.state == mokuren::PropState::DailyHalted ||
                             pd.state == mokuren::PropState::TotalHalted) {
                             prop_breached = true;

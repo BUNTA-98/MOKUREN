@@ -24,9 +24,20 @@ class BybitBroker : public IBroker {
 public:
     // the spec carries env, category, symbol and every host. there is no
     // default here on purpose: a venue cannot be selected by omission.
+    //
+    // public_rest_base is the DATA world's REST base, used only as a fallback
+    // for the two public market-data calls startup needs (server time and
+    // instruments-info). the exec host is tried first: a demo venue describing
+    // the instrument it will actually fill is the most faithful source. the
+    // fallback exists because demo is not guaranteed to expose the public
+    // market-data routes, and when it does not, SyncClock throws and the run
+    // dies with "refusing to sign against an unverified clock" before a single
+    // frame is read -- a connectivity failure wearing a safety message's
+    // clothes. empty means "no fallback": the exec host is the only host.
     BybitBroker(const std::string& api_key,
                 const std::string& api_secret,
-                mokuren::venue::Spec spec);
+                mokuren::venue::Spec spec,
+                std::string public_rest_base = "");
     ~BybitBroker() override;
 
     // test-only tag: opts out of EstablishStartupTruth() and the private
@@ -50,6 +61,14 @@ public:
 
     // ---- IBroker: cached state getters ----
     double GetBalance() const override;
+    // mark-to-market equity from the wallet channel's totalEquity. on UTA this
+    // already includes the unrealised pnl of every open position and the fees
+    // charged, so it is the number the venue's risk engine and the prop firm
+    // both measure -- unlike PaperTrader::GetEquity(), which has to derive a
+    // floating leg from its own last price. 0.0 until the first wallet frame
+    // arrives, which leaves the guard Unarmed (refusing entries) rather than
+    // measuring a drawdown against a figure the venue never reported.
+    double GetEquity() const override;
     bool HasOpenPosition() const override;
     TradeSignal GetCurrentPosition() const override;
     void UpdateStopLoss(double new_sl) override;
@@ -105,6 +124,18 @@ private:
     bool SendRestGet(const std::string& path, const std::string& query,
                      nlohmann::json& out);
 
+    // the body of SendRestGet, against an explicit base. the signature is still
+    // computed from the exec key because that is the only secret in scope; both
+    // callers of the fallback are public endpoints that ignore the headers.
+    bool SendRestGetTo(const std::string& base, const std::string& path,
+                       const std::string& query, nlohmann::json& out);
+
+    // public market-data GET: exec host first, then the data world's base.
+    // used only by SyncClock and FetchInstrumentRules -- the two calls that
+    // must succeed before the socket opens.
+    bool SendMarketGet(const std::string& path, const std::string& query,
+                       nlohmann::json& out);
+
     // true while a submitted entry awaits its exchange echo. expires so a lost
     // push cannot leave the local guard stuck forever.
     bool PendingEntryLocked() const;
@@ -122,6 +153,9 @@ private:
     std::string api_secret_;
     mokuren::venue::Spec spec_;
     std::string rest_base_url_;
+    // where the public market-data GETs go when the exec host does not serve
+    // them. resolved once at construction; empty disables the fallback.
+    std::string market_rest_base_;
     std::string private_ws_url_;
 
     // what this symbol actually accepts. filled by FetchInstrumentRules()

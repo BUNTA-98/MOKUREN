@@ -146,15 +146,15 @@ public:
                 eng.aggregator->GetL2History()
             };
 
-            // best bid, or the last print when the frame arrived one-sided: a
-            // zero mark would make the guard read as Unarmed and refuse entries
-            // for a reason that has nothing to do with the account.
-            const double mark = all_l2[idx].best_bid_price > 0.0
-                                    ? all_l2[idx].best_bid_price
-                                    : last_price;
-            const mokuren::PropDecision pd = mokuren::ObserveProp(
-                prop_guard, eng.ptrader.get(), mark, all_l2[idx].timestamp,
-                "replay");
+            // direction-aware mark: bid for a long, ask for a short. the
+            // last print is the fallback for a one-sided frame, so a zero
+            // mark does not make the guard read as Unarmed for a reason that
+            // has nothing to do with the account.
+            const L2Snapshot& snap = all_l2[idx];
+            const mokuren::PropDecision pd = mokuren::ObservePropBook(
+                prop_guard, eng.ptrader.get(),
+                snap.best_bid_price, snap.best_ask_price, last_price,
+                snap.timestamp, "replay");
             if (pd.state == mokuren::PropState::DailyHalted ||
                 pd.state == mokuren::PropState::TotalHalted) {
                 result.prop_breached = true;
@@ -169,7 +169,7 @@ public:
                         ? all_l2[idx].best_ask_price
                         : all_l2[idx].best_bid_price;
                 if (exec_price <= 0.0) {
-                    exec_price = live_bar.close > 0.0 ? live_bar.close : mark;
+                    exec_price = live_bar.close > 0.0 ? live_bar.close : last_price;
                 }
                 executor.Execute(tick_signal, exec_price,
                                  all_l2[idx].timestamp);

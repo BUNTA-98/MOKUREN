@@ -1,4 +1,5 @@
 #pragma once
+#include "config_parser.hpp"
 #include "ui_pages.hpp"
 #include "ui_theme.hpp"
 #include <vector>
@@ -63,61 +64,49 @@ private:
     
     ParamConfigState sub_state;
 
-   json CreateDefaultConfig() {
-        return json::parse(R"({
-          "backtest": {
-            "config_profile": "configs/default.json",
-            "wfa_mode": false,
-            "wfa_in_sample_days": 14,
-            "wfa_out_of_sample_days": 7,
-            "wfa_step_days": 7
-          },
-          "environment": {
-            "dataset": "data",
-            "interval_ms": 60000,
-            "macro_interval_ms": 900000,
-            "vwap_reset_hour": 0,
-            "max_cores": 0,
-            "tick_size": 0.1
-          },
-          "execution": {
-            "taker_fee_pct": 0.0004,
-            "slippage_pct": 0.0002
-          },
-          "filters": [
-            { "active": true, "lookback": 1440, "name": "MacroTrend" },
-            { "active": true, "min_volume": 2.0, "name": "MinVolume" },
-            { "active": true, "lookback": 20, "name": "RVOL", "threshold": 2.0 },
-            { "active": true, "lookback": 25.0, "min_atr": 40.0, "name": "ATRChop" },
-            { "active": false, "lookback": 5, "min_dollar": 150.0, "name": "Volatility" },
-            { "active": false, "end_h": 17, "end_m": 0, "name": "TimeOfDay", "start_h": 8, "start_m": 0 },
-            { "active": false, "name": "POCTrend" },
-            { "active": true, "name": "VwapTrend", "require_trend_alignment": true },
-            { "active": true, "lookback": 5, "name": "CVDDivergence" }
-          ],
-          "risk": {
-            "max_daily_loss": 400.0,
-            "min_distance_dollars": 10.0,
-            "modules": [
-              { "active": true, "name": "SinglePositionLock" },
-              { "active": true, "max_leverage": 10.0, "name": "MaxLeverageLock" },
-              { "active": true, "cooldown_ms": 1800000, "name": "AntiRevengeLock" }
-            ],
-            "risk_per_trade_pct": 0.02,
-            "sl_price_pct": 0.004,
-            "tp_r": 3.0
-          },
-          "trade_management": {
-            "break_even": { "enabled": false, "target_r": 0.25, "trigger_r": 1.5 },
-            "scale_out": { "enabled": false, "fraction": 0.5, "trigger_r": 2.0 },
-            "trailing": { "distance_r": 0.5, "enabled": false, "trigger_r": 2.5 }
-          },
-          "triggers": [
-            { "active": true, "delta": 1.6, "name": "DeltaAbsorption" },
-            { "active": false, "levels": 6.0, "name": "StackedImbalance", "ratio": 3.0 },
-            { "active": false, "name": "SpoofHunter", "lookback_ms": 500, "min_wall_qty": 30.0, "drop_threshold": 0.9 }
-          ]
-        })");
+    static constexpr const char* kDefaultsPath = "configs/_defaults.json";
+
+    // The template is the schema: seed a fresh profile from it, and refuse to
+    // continue if it does not load. A silently-invented template is exactly the
+    // class of bug this file replaces -- the old raw-string template had no
+    // exchange and no venue, so every profile the TUI created failed at
+    // AppConfig::Load's first required key. Validating here turns that into a
+    // startup abort naming the file, not a run abort mid-scan.
+    json LoadDefaults() {
+        std::ifstream f(kDefaultsPath);
+        if (!f.is_open()) {
+            throw std::runtime_error(
+                std::string("fatal: cannot open the config template '") +
+                kDefaultsPath + "'. New profiles are seeded from this file; "
+                "without it a fresh profile would not load (it needs exchange "
+                "and venue, which only the template supplies).");
+        }
+
+        json tpl;
+        try {
+            tpl = json::parse(f);
+        } catch (const json::exception& e) {
+            throw std::runtime_error(
+                std::string("fatal: config template '") + kDefaultsPath +
+                "' is not valid json: " + e.what());
+        }
+
+        // Grid nodes are what the menu and GridScanner see. Load is what a run
+        // sees, and it only accepts scalars -- so flatten a copy and prove the
+        // seed would arm. require_venue_credentials=false because the template
+        // is a shape, not an account: a fresh profile is seeded before the
+        // operator has pasted a key.
+        json flat = tpl;
+        FlattenGrids(flat);
+        try {
+            (void)AppConfig::Load(flat, /*require_venue_credentials=*/false);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                std::string("fatal: config template '") + kDefaultsPath +
+                "' does not load once its grid nodes are flattened: " + e.what());
+        }
+
+        return tpl;
     }
 
     std::string DoubleToStr(double d) {
@@ -152,8 +141,12 @@ private:
                             options.push_back(entry.path().string());
                         }
                     } else {
-                        if (entry.is_regular_file() && 
+                        if (entry.is_regular_file() &&
                            (entry.path().extension() == ".csv" || entry.path().extension() == ".json")) {
+                            // _defaults.json is the template the TUI seeds from, not a
+                            // selectable profile: picking it would rewrite the template on
+                            // every save and short-circuit the whole refactor.
+                            if (entry.path().filename() == "_defaults.json") continue;
                             options.push_back(entry.path().string());
                         }
                     }
@@ -250,20 +243,23 @@ private:
                 if (config_data.contains("error")) throw std::runtime_error("corrupt json");
             } 
             catch (...) { 
-                config_data = CreateDefaultConfig(); 
+                config_data = LoadDefaults(); 
                 needs_save = true;
             }
             file.close();
         } else {
-            config_data = CreateDefaultConfig();
+            config_data = LoadDefaults();
             needs_save = true;
         }
 
-        if (config_data.contains("backtest")) {
-            if (config_data["backtest"].value("config_profile", "") != config_path) {
-                config_data["backtest"]["config_profile"] = config_path;
-            }
-        }
+        // write the profile pointer unconditionally. the old guard only
+        // updated an existing "backtest" block, so a profile without one
+        // (hyro_split.json, bybit_depth_test.json) lost the config_profile
+        // picker row on the next LoadConfigSmart -- the menu could no longer
+        // switch away from a file it had just opened. creating the block here
+        // keeps the picker present on every profile, and the value is the
+        // path the menu is actually editing.
+        config_data["backtest"]["config_profile"] = config_path;
 
         if (needs_save) {
             std::ofstream out(config_path);

@@ -4,14 +4,26 @@
 
 namespace mokuren {
 
-// A funded account's survival rules, expressed as fractions of equity. These
-// are the firm's numbers, not the strategy's, so they live outside both: one
-// guard, evaluated the same way on the paper, replay and live paths, instead
-// of a third risk ladder hidden inside a venue adapter.
+// A funded account's survival rules. Both limits share one denominator, and
+// it is the INITIAL balance, not current equity: the daily floor is
+// day_start_equity - (initial_balance * pct), i.e. a fixed dollar band that
+// does not widen when the account runs up. These are the firm's numbers, not
+// the strategy's, so they live outside both: one guard, evaluated the same way
+// on the paper, replay and live paths, instead of a third risk ladder hidden
+// inside a venue adapter.
 struct PropRules {
+  // default off so a directly-constructed PropRules (tests, tooling) is inert
+  // until asked. AppConfig::Load arms this whenever the config carries a "prop"
+  // block, so a backtest that writes one enforces the firm's limits for real:
+  // it no longer needs a separate "enabled": true to take effect, and a run
+  // that means "no account limits" says so by dropping the block entirely.
   bool enabled = false;
 
-  // hyrotrader: 4% daily, 6% overall. fractions, not percent.
+  // hyrotrader one-step: 4% daily (3% zero-step, 5% two-step), 6% overall.
+  // fractions, not percent, and of the INITIAL balance in both cases: up 10%
+  // today still leaves the same dollar band of daily room, and the band does
+  // not shrink after a red day either. the plan tier is the only thing that
+  // moves these -- changing account type means changing them explicitly.
   double max_daily_drawdown_pct = 0.04;
   double max_total_drawdown_pct = 0.06;
 
@@ -82,8 +94,13 @@ public:
   double initial_equity() const { return initial_equity_; }
   double day_start_equity() const { return day_start_equity_; }
   double peak_equity() const { return peak_equity_; }
-  double daily_drawdown() const; // fraction of the day's start, 0 if unarmed
-  double total_drawdown() const; // fraction of the initial balance
+  // both are fractions of the INITIAL balance, so both compare directly
+  // against the limits above. daily_* is the day's loss measured from
+  // day_start_equity_; total_* is measured from initial_equity_. dividing
+  // daily_* by day_start_equity_ instead would be wrong in both directions
+  // (wider band when up, narrower when down). 0 if disabled or unarmed.
+  double daily_drawdown() const;
+  double total_drawdown() const;
 
 private:
   void RollDay(int64_t now_ms, double equity);

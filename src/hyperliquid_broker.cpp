@@ -304,6 +304,19 @@ double HyperliquidBroker::GetBalance() const {
     return current_balance_;
 }
 
+double HyperliquidBroker::GetEquity() const {
+    // accountValue from webData2's marginSummary IS the portfolio value:
+    // equity including the open position's unrealized pnl. HandlePrivateMessage
+    // already folds that leg into current_balance_ via the accountValue field
+    // — adding unrealized_pnl_ here would count the same pnl twice. this
+    // mirrors BybitBroker::GetEquity, where the wallet push's totalEquity
+    // plays the same role: the venue is the source of truth for what the
+    // account is worth right now, and the prop guard must read that number
+    // and not one derived from a local mark.
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return current_balance_;
+}
+
 bool HyperliquidBroker::HasOpenPosition() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return position_size_ > 0.0;

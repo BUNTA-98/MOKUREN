@@ -330,9 +330,6 @@ void AppConfig::Validate(bool require_venue_credentials) const {
     fail("risk.min_distance_dollars must be >= 0.0 in quote-currency units "
          "(0 disables the widening) (got " + std::to_string(min_distance_dollars) + ")");
   }
-  if (max_daily_loss <= 0.0) {
-    fail("risk.max_daily_loss must be > 0.0 (got " + std::to_string(max_daily_loss) + ")");
-  }
   // starting capital is the denominator of every drawdown figure
   // (PaperTrader::UpdateDrawdown divides by peak_balance_). a zero or negative
   // seed produced NaN drawdowns instead of an error.
@@ -613,6 +610,21 @@ void ParseSection(const std::string& section, Fn&& fn) {
 AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   AppConfig cfg;
 
+  // collapse any grid node ({"min":..,"max":..,"step":..,"val":..}) into its
+  // scalar "val" before reading. the TUI seeds configs from _defaults.json,
+  // which carries grid nodes on purpose so GridScanner can sweep them; the
+  // normal run path (single backtest, --paper, --live) must see plain numbers
+  // or every numeric reader falls back to its default. FlattenGrids is a
+  // no-op on an already-flat config, so this is safe on every path.
+  //
+  // the backtest grid path (GridRunner/WfaRunner) calls GenerateGrid on the
+  // ORIGINAL json first, then Load on each permutation's full_json -- which
+  // Generate already wrote as scalars -- so flattening here does not disturb
+  // the sweep.
+  json flat = j;
+  FlattenGrids(flat);
+  const json& src = flat;
+
   // --- auth ---
   // credentials live at the root of the config, and may also be nested under
   // "exchange" or "environment" for configs that group connection settings:
@@ -622,34 +634,40 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     // resolve the source once so all three fields are read from the same
     // place. root keys win; the nested lookup only applies when the root has
     // no credential keys at all.
-    const json* creds = &j;
-    if (!j.contains("api_key") && !j.contains("api_secret")) {
-      if (j.contains("exchange") && j["exchange"].is_object()) {
-        creds = &j["exchange"];
-      } else if (j.contains("environment") && j["environment"].is_object()) {
-        creds = &j["environment"];
+    const json* creds = &src;
+    if (!src.contains("api_key") && !src.contains("api_secret")) {
+      if (src.contains("exchange") && src["exchange"].is_object()) {
+        creds = &src["exchange"];
+      } else if (src.contains("environment") && src["environment"].is_object()) {
+        creds = &src["environment"];
       }
     }
 
-    cfg.api_key = SafeString(j, "api_key", SafeString(*creds, "api_key", ""));
-    cfg.api_secret = SafeString(j, "api_secret", SafeString(*creds, "api_secret", ""));
+    cfg.api_key = SafeString(src, "api_key", SafeString(*creds, "api_key", ""));
+    cfg.api_secret = SafeString(src, "api_secret", SafeString(*creds, "api_secret", ""));
     // cfg.is_testnet already defaults to true, so it doubles as the fallback.
-    cfg.is_testnet = SafeBool(j, "is_testnet", SafeBool(*creds, "is_testnet", cfg.is_testnet));
+    cfg.is_testnet = SafeBool(src, "is_testnet", SafeBool(*creds, "is_testnet", cfg.is_testnet));
   });
 
   // --- paper account starting capital ---
   // only consumed in --paper (shadow) mode, where the factory hands this to
   // PaperTrader instead of the compile-time default. optional on purpose: a
   // config that omits it must behave exactly like today's paper runs.
-  cfg.initial_balance = SafeNumber(j, "initial_balance", cfg.initial_balance);
+  //
+  // presence is captured here so the prop section below can refuse a
+  // prop-enabled config that never named a base. the struct default stays
+  // 10000 for directly-constructed AppConfig (tests, tooling); the check
+  // belongs at load time, not at use time.
+  const bool has_initial_balance = src.contains("initial_balance");
+  cfg.initial_balance = SafeNumber(src, "initial_balance", cfg.initial_balance);
 
   // --- environment ---
   ParseSection("environment", [&]() {
-    if (!j.contains("environment") || !j["environment"].is_object()) {
+    if (!src.contains("environment") || !src["environment"].is_object()) {
       throw std::runtime_error("config error: missing required section 'environment'");
     }
     {
-      const auto& env = j["environment"];
+      const auto& env = src["environment"];
       cfg.filepath = SafeString(env, "filepath", "");
       cfg.interval_ms = RequireInt(env, "interval_ms", "environment");
       cfg.macro_interval_ms = RequireInt(env, "macro_interval_ms", "environment");
@@ -673,8 +691,8 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     // never default the venue. a missing key used to mean "binance", which
     // would stream binance data for an account configured elsewhere.
     bool found = false;
-    if (j.contains("exchange")) {
-      const auto& ex = j["exchange"];
+    if (src.contains("exchange")) {
+      const auto& ex = src["exchange"];
       if (ex.is_string()) {
         cfg.exchange = ex.get<std::string>();
         found = !cfg.exchange.empty();
@@ -688,8 +706,8 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
         }
       }
     }
-    if (!found && j.contains("environment") && j["environment"].is_object()) {
-      const std::string name = SafeString(j["environment"], "exchange", "");
+    if (!found && src.contains("environment") && src["environment"].is_object()) {
+      const std::string name = SafeString(src["environment"], "exchange", "");
       if (!name.empty()) {
         cfg.exchange = name;
         found = true;
@@ -706,8 +724,8 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   // host or a symbol of its own -- that is how a config ended up streaming
   // mainnet data into a testnet account.
   ParseSection("venue", [&]() {
-    if (j.contains("venue") && j["venue"].is_object()) {
-      const auto& v = j["venue"];
+    if (src.contains("venue") && src["venue"].is_object()) {
+      const auto& v = src["venue"];
       const std::string env_name =
           SafeString(v, "environment", SafeString(v, "env", ""));
       if (!env_name.empty()) {
@@ -726,9 +744,9 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       // increment: it is a per-symbol venue constraint, not a tuning knob.
       cfg.lot_step = SafeNumber(v, "lot_step", cfg.lot_step);
       cfg.allow_mainnet = SafeBool(v, "allow_mainnet", cfg.allow_mainnet);
-    } else if (j.contains("is_testnet")) {
+    } else if (src.contains("is_testnet")) {
       // legacy spelling. demo cannot be selected this way, on purpose.
-      cfg.is_testnet = SafeBool(j, "is_testnet", true);
+      cfg.is_testnet = SafeBool(src, "is_testnet", true);
       cfg.env = cfg.is_testnet ? mokuren::venue::Env::Testnet
                                : mokuren::venue::Env::Mainnet;
     }
@@ -752,15 +770,15 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
         if (!block.is_object()) return std::string();
         return SafeString(block, "environment", SafeString(block, "env", ""));
       };
-      if (j.contains("venue") && j["venue"].is_object()) {
-        const auto& v = j["venue"];
+      if (src.contains("venue") && src["venue"].is_object()) {
+        const auto& v = src["venue"];
         data_env_name = SafeString(v, "data_environment", "");
         if (data_env_name.empty() && v.contains("data_venue")) {
           data_env_name = read_block(v["data_venue"]);
         }
       }
-      if (data_env_name.empty() && j.contains("data_venue")) {
-        data_env_name = read_block(j["data_venue"]);
+      if (data_env_name.empty() && src.contains("data_venue")) {
+        data_env_name = read_block(src["data_venue"]);
       }
       if (!data_env_name.empty()) {
         try {
@@ -773,17 +791,17 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     }
 
     // root-level overrides for the instrument identity.
-    cfg.category = SafeString(j, "category", cfg.category);
-    cfg.symbol = SafeString(j, "symbol", cfg.symbol);
-    cfg.allow_mainnet = SafeBool(j, "allow_mainnet", cfg.allow_mainnet);
+    cfg.category = SafeString(src, "category", cfg.category);
+    cfg.symbol = SafeString(src, "symbol", cfg.symbol);
+    cfg.allow_mainnet = SafeBool(src, "allow_mainnet", cfg.allow_mainnet);
   });
 
   // --- funded-account survival rules ---
   // parsed as their own section and deliberately not under a strategy block:
   // these limits belong to the account, not to a parameter set. a fraction
   // (0.04) is the unit here, matching every other pct in this file.
-  if (j.contains("prop") && j["prop"].is_object()) {
-    const auto& p = j["prop"];
+  if (src.contains("prop") && src["prop"].is_object()) {
+    const auto& p = src["prop"];
 
     // numbers or numeric strings, as the rest of this loader accepts.
     auto read_num = [&p](const char* key, double fallback) {
@@ -800,7 +818,13 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       return fallback;
     };
 
-    cfg.prop.enabled = SafeBool(p, "enabled", cfg.prop.enabled);
+    // presence of the block IS the opt-in. a config that writes
+    // "prop": { ... } means "measure this account", and the old fallback
+    // (false) made a block whose author omitted one key behave exactly like no
+    // block at all: no daily limit, no total limit, in a backtest that looked
+    // configured. an explicit "enabled": false still turns it off, and that is
+    // now the only way to say it.
+    cfg.prop.enabled = SafeBool(p, "enabled", true);
     cfg.prop.max_daily_drawdown_pct =
         read_num("max_daily_drawdown_pct", cfg.prop.max_daily_drawdown_pct);
     cfg.prop.max_total_drawdown_pct =
@@ -826,6 +850,21 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     // a zero or >100% limit silently disables half the protection, and a warn
     // fraction at 1.0 means the only warning is the breach itself.
     if (cfg.prop.enabled) {
+      // a prop-enabled config silently armed the survival guard against the
+      // compiled-in 10000 when initial_balance was absent. every drawdown
+      // percentage is a fraction of that base, so a $25k account with no
+      // initial_balance was halted at 4% of 10000 = $400 down, not $1000.
+      // the factory seeds PaperTrader from the same field, so the two agree --
+      // they just both describe an account the config never named. refuse at
+      // load, the same way prop.initial_balance is refused below, rather than
+      // run against capital nobody chose.
+      if (!has_initial_balance) {
+        throw std::runtime_error(
+            "config error: a config with a 'prop' block needs an explicit "
+            "'initial_balance' at the root; drawdown limits are fractions of "
+            "that base, and falling back to the compiled-in 10000 would arm "
+            "the guard against an account the config never described");
+      }
       auto bad_pct = [](double v) { return !(v > 0.0) || v > 1.0; };
       if (bad_pct(cfg.prop.max_daily_drawdown_pct)) {
         throw std::runtime_error(
@@ -852,8 +891,8 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   // --- startup data-integrity gate ---
   // sits next to prop rather than under a strategy block: like the account's
   // survival limits, this is an operational precondition, not a tuning knob.
-  if (j.contains("startup_probe") && j["startup_probe"].is_object()) {
-    const auto& p = j["startup_probe"];
+  if (src.contains("startup_probe") && src["startup_probe"].is_object()) {
+    const auto& p = src["startup_probe"];
 
     const std::string preset = SafeString(p, "preset", "");
     if (preset == "production") {
@@ -923,11 +962,11 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     // "environment".
     const json* ex = nullptr;
     std::string section;
-    if (j.contains("execution") && j["execution"].is_object()) {
-      ex = &j["execution"];
+    if (src.contains("execution") && src["execution"].is_object()) {
+      ex = &src["execution"];
       section = "execution";
-    } else if (j.contains("environment") && j["environment"].is_object()) {
-      ex = &j["environment"];
+    } else if (src.contains("environment") && src["environment"].is_object()) {
+      ex = &src["environment"];
       section = "environment";
     }
     if (!ex) {
@@ -940,10 +979,10 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   // --- triggers ---
   ParseSection("triggers", [&]() {
     const json* arr = nullptr;
-    if (j.contains("triggers")) {
-      arr = &j["triggers"];
-    } else if (j.contains("strategy") && j["strategy"].contains("triggers")) {
-      arr = &j["strategy"]["triggers"];
+    if (src.contains("triggers")) {
+      arr = &src["triggers"];
+    } else if (src.contains("strategy") && src["strategy"].contains("triggers")) {
+      arr = &src["strategy"]["triggers"];
     }
     if (arr && arr->is_array()) {
       for (const auto& item : *arr) {
@@ -956,10 +995,10 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   // --- filters ---
   ParseSection("filters", [&]() {
     const json* arr = nullptr;
-    if (j.contains("filters")) {
-      arr = &j["filters"];
-    } else if (j.contains("strategy") && j["strategy"].contains("filters")) {
-      arr = &j["strategy"]["filters"];
+    if (src.contains("filters")) {
+      arr = &src["filters"];
+    } else if (src.contains("strategy") && src["strategy"].contains("filters")) {
+      arr = &src["strategy"]["filters"];
     }
     if (arr && arr->is_array()) {
       for (const auto& item : *arr) {
@@ -971,17 +1010,17 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
 
   // --- risk ---
   ParseSection("risk", [&]() {
-    if (!j.contains("risk") || !j["risk"].is_object()) {
+    if (!src.contains("risk") || !src["risk"].is_object()) {
       throw std::runtime_error("config error: missing required section 'risk'");
     }
     {
-      const auto& risk = j["risk"];
+      const auto& risk = src["risk"];
       // 1R is defined by sl_pct and nothing else.
       cfg.sl_pct = RequireNumberAny(risk, {"sl_pct", "sl_price_pct"}, "risk");
       // tp_r (a multiple of sl_pct, i.e. of 1R) wins over the legacy absolute
       // tp_pct. a config that names neither fails to load instead of keeping
       // a 1% guess.
-      cfg.tp_pct = mokuren::ResolveTpPct(j, cfg.sl_pct);
+      cfg.tp_pct = mokuren::ResolveTpPct(src, cfg.sl_pct);
       // remember the multiple the config wrote. ResolveTpPct honours tp_r only
       // when it is a json number, so mirror that exact rule here -- reading a
       // numeric string it ignored would let Validate report an R that never
@@ -993,7 +1032,11 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       // optional by design: 0 (the default here) means "never widen the
       // strategy's own stop", so absence has a defined, non-arbitrary meaning.
       cfg.min_distance_dollars = SafeNumber(risk, "min_distance_dollars", 0.0);
-      cfg.max_daily_loss = RequireNumber(risk, "max_daily_loss", "risk");
+      // risk.max_daily_loss is no longer read. a config that still carries it
+      // loads unchanged -- the key is ignored, not an error -- because the
+      // account's daily limit is prop.max_daily_drawdown_pct now: one anchor
+      // (day-start equity), one unit (fraction of the funded balance) and one
+      // reset hour, instead of a dollar amount measured from realised pnl.
 
       if (risk.contains("modules") && risk["modules"].is_array()) {
         for (const auto& item : risk["modules"]) {
@@ -1006,12 +1049,12 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
 
   // --- trade_management ---
   ParseSection("trade_management", [&]() {
-    if (!j.contains("trade_management") || !j["trade_management"].is_object()) {
+    if (!src.contains("trade_management") || !src["trade_management"].is_object()) {
       throw std::runtime_error(
           "config error: missing required section 'trade_management'");
     }
     {
-      const auto& tm = j["trade_management"];
+      const auto& tm = src["trade_management"];
       // every level is required, in R or via the legacy absolute key. sl_pct
       // is 1R, so one config means the same thing in every path.
       if (!tm.contains("break_even") || !tm["break_even"].is_object()) {

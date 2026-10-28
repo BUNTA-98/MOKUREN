@@ -43,7 +43,6 @@
     "sl_pct": 0.004,
     "tp_r": 3.0,
     "risk_per_trade_pct": 0.02,
-    "max_daily_loss": 400.0,
     "min_distance_dollars": 10.0,
     "modules": [
       { "active": true, "name": "SinglePositionLock" }

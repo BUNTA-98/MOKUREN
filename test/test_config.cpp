@@ -58,7 +58,16 @@ TEST_CASE("Config Parser Basics", "[config]") {
         REQUIRE(cfg.exchange == "hyperliquid");
         REQUIRE(cfg.tick_size == 0.5);
         REQUIRE(cfg.sl_pct == 0.01);
-        REQUIRE(cfg.max_daily_loss == 500.0);
+        // this fixture deliberately still carries risk.max_daily_loss, a key
+        // Load no longer reads. reaching this assertion at all is the
+        // compatibility guarantee made when that ladder was deleted: an old
+        // config loads unchanged, and the key is ignored rather than rejected.
+        //
+        // what the account's limit is now lives under "prop", and this fixture
+        // has no such block -- so the guard is inert here. it is NOT silently
+        // armed off the dead dollar amount, which is the failure the presence
+        // rule below is written to rule out.
+        REQUIRE_FALSE(cfg.prop.enabled);
         // tp_r is a multiple of sl_pct (1R), so 2R of a 1% stop is 2%.
         REQUIRE(cfg.tp_pct == 0.02);
         REQUIRE(cfg.tm_config.be_trigger_pct == 0.01);
@@ -89,7 +98,14 @@ TEST_CASE("AppConfig struct defaults hold apart from the venue", "[config]") {
     REQUIRE(cfg.tp_pct == 0.01);
     REQUIRE(cfg.risk_per_trade_pct == 0.01);
     REQUIRE(cfg.min_distance_dollars == 0.0);
-    REQUIRE(cfg.max_daily_loss == 400.0);
+    // a directly-constructed AppConfig carries an INERT prop guard: the numbers
+    // are the firm's, but nothing enforces them until a config's "prop" block
+    // arms them. the old max_daily_loss default of 400.0 had no opt-out and,
+    // being an absolute amount, scaled with nothing -- not with the account,
+    // not with the rule.
+    REQUIRE_FALSE(cfg.prop.enabled);
+    REQUIRE(cfg.prop.max_daily_drawdown_pct == 0.04);
+    REQUIRE(cfg.prop.max_total_drawdown_pct == 0.06);
 
     // fail-safe default: a misspelled is_testnet must not route live orders
     REQUIRE(cfg.is_testnet == true);
@@ -144,5 +160,96 @@ TEST_CASE("Grid Scanner Logic", "[grid]") {
         REQUIRE(runs[0].grid_values["ratio"] == 2.0);
         REQUIRE(runs[1].grid_values["ratio"] == 3.0);
         REQUIRE(runs[2].grid_values["ratio"] == 4.0);
+    }
+}
+
+TEST_CASE("a prop block arms the account limits by its presence", "[config][prop]") {
+    // every key that changes what a run does is still required; only the prop
+    // block varies below. hyperliquid with require_venue_credentials=false, so
+    // the fixture needs no api key and no venue block.
+    auto load_with_prop = [](const json& prop_block) {
+        json cfg = R"({
+            "exchange": "hyperliquid",
+            "environment": {
+                "interval_ms": 60000,
+                "macro_interval_ms": 900000,
+                "tick_size": 0.5,
+                "vwap_reset_hour": 0
+            },
+            "execution": {"taker_fee_pct": 0.0004, "slippage_pct": 0.0002},
+            "initial_balance": 5000.0,
+            "triggers": [{"name": "StackedImbalance", "ratio": 3.0}],
+            "risk": {"sl_pct": 0.01, "tp_r": 2.0, "risk_per_trade_pct": 0.01},
+            "trade_management": {
+                "break_even": {"trigger_r": 1.0, "target_r": 0.2},
+                "trailing": {"enabled": true, "trigger_r": 1.5, "distance_r": 0.5},
+                "scale_out": {"enabled": false, "trigger_r": 0.8, "fraction": 0.5}
+            }
+        })"_json;
+        if (prop_block.is_null()) {
+            cfg.erase("prop");
+        } else {
+            cfg["prop"] = prop_block;
+        }
+        return AppConfig::Load(cfg, /*require_venue_credentials=*/false);
+    };
+
+    SECTION("an absent block leaves the guard inert") {
+        // the only way to say "no account limits" now, which is why a backtest
+        // config that means to enforce them has to write the block out.
+        const AppConfig cfg = load_with_prop(json());
+        REQUIRE_FALSE(cfg.prop.enabled);
+    }
+
+    SECTION("presence alone arms it and its values win") {
+        // the semantics this pins: a block that omitted "enabled" used to parse
+        // as OFF, so a config that looked like it configured the firm's limits
+        // enforced nothing and reported nothing. presence is now the opt-in,
+        // and these are the numbers the guard actually measures against.
+        const AppConfig cfg = load_with_prop(json{
+            {"max_daily_drawdown_pct", 0.03},
+            {"max_total_drawdown_pct", 0.08},
+            {"warn_fraction", 0.5},
+            {"daily_reset_hour_utc", 7},
+            {"flatten_on_breach", false},
+        });
+        REQUIRE(cfg.prop.enabled);
+        REQUIRE(cfg.prop.max_daily_drawdown_pct == 0.03);
+        REQUIRE(cfg.prop.max_total_drawdown_pct == 0.08);
+        REQUIRE(cfg.prop.warn_fraction == 0.5);
+        REQUIRE(cfg.prop.daily_reset_hour_utc == 7);
+        REQUIRE_FALSE(cfg.prop.flatten_on_breach);
+    }
+
+    SECTION("an explicit false still turns it off") {
+        // the one escape hatch left. a run that wants the block documented but
+        // inactive (a template, a shared config) says so here.
+        const AppConfig cfg = load_with_prop(json{{"enabled", false}});
+        REQUIRE_FALSE(cfg.prop.enabled);
+    }
+
+    SECTION("arming the guard is what makes its limits checked") {
+        // 5.0 is 500%, not a fraction. this only throws because the block armed
+        // the guard -- which is the point of the presence rule: a typo in a
+        // block that looks configured can no longer hide behind a guard that
+        // never ran.
+        REQUIRE_THROWS_AS(
+            load_with_prop(json{{"max_daily_drawdown_pct", 5.0}}),
+            std::runtime_error);
+        // the same number is tolerated when the guard is explicitly off, so a
+        // config carrying the block for the other fields stays loadable.
+        const AppConfig off =
+            load_with_prop(json{{"enabled", false},
+                                {"max_daily_drawdown_pct", 5.0}});
+        REQUIRE_FALSE(off.prop.enabled);
+    }
+
+    SECTION("prop.initial_balance is a hard error, not a second base") {
+        // accepting it here is how total drawdown once got measured against a
+        // number the account never had. the base is account state and travels
+        // as initial_balance, so naming it must fail rather than be ignored.
+        REQUIRE_THROWS_AS(
+            load_with_prop(json{{"initial_balance", 5000.0}}),
+            std::runtime_error);
     }
 }
