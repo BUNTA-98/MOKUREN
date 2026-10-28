@@ -316,56 +316,40 @@ public:
       }
     }
 
-    const double buffer = real_tick > 0.0 ? real_tick : 0.0;
     const double entry = bar.close;
 
-    // THE structural stop. The trigger already knows where the imbalance
-    // began, which is the only invalidation it has evidence for; discarding
-    // that and letting risk.sl_pct stand in is what put a 1% stop and a 2%
-    // target on a trade whose entire favorable excursion was 0.12%. The
-    // target is left at 0 on purpose: SignalExecutor::FinalizeTakeProfit
-    // derives it as tp_r x the risk actually placed, so the configured 2R
-    // applies to THIS stop instead of to a global guess.
-    auto make_signal = [&](SignalDirection dir, double stop, const StackRun& run) {
-      const double risk = dir == SignalDirection::BUY ? entry - stop : stop - entry;
-      if (!(risk > buffer)) {
-        // a stop within one tick of the close is not a stop. the funnel would
-        // drop it, and dropping it here says why instead of reporting "no
-        // setups" for a signal that did fire.
-        LOG_TRACE("stacked_imbalance: rejected {} band [{},{}]: stop={} gives "
-                  "risk={} <= tick={}",
-                  dir == SignalDirection::BUY ? "buy" : "sell", run.lo, run.hi,
-                  stop, risk, buffer);
-        return TradeSignal{};
-      }
+    // No stop, no target. The trigger reports the PATTERN; the risk geometry
+    // is policy and comes from risk.sl_pct / risk.tp_r via SignalExecutor.
+    //
+    //  - the band is a sub-minute invalidation: ~0.03% from the close on a 1m
+    //    bar. At 0.04% taker + 0.02% slippage the round trip costs 3.8R, so a
+    //    2R winner nets -1.8R and breakeven winrate exceeds 100%. Nothing said
+    //    by the tape survives being paid for at that spread.
+    //  - it made risk.sl_pct un-sweepable: sl_pct fed the tp derivation (where
+    //    it cancels), the no-stop fallback (which never ran), and
+    //    min_distance_dollars (which overrode it). Ten rows, one result.
+    //
+    // SignalExecutor::Execute fills both levels from the config, and its
+    // FinalizeTakeProfit applies tp_r against the stop that actually lands.
+    // SpoofHunter has always worked this way.
+    auto make_signal = [&](SignalDirection dir, const StackRun& run) {
       TradeSignal signal;
       signal.direction = dir;
       signal.entry_price = entry;
-      signal.stop_loss = stop;
+      signal.stop_loss = 0.0;    // 0 => funnel applies risk.sl_pct
       signal.take_profit = 0.0;  // 0 => funnel derives tp_r x placed risk
+      // the band is still the diagnostic: it is what the trigger DETECTED on,
+      // so a reader can see how far the policy stop sits from the level that
+      // fired the signal.
       LOG_TRACE("stacked_imbalance: {} levels={} band=[{},{}] wr={} entry={} "
-                "stop={} risk={} ({:.3f}%)",
+                "(stop and target deferred to risk config)",
                 dir == SignalDirection::BUY ? "buy" : "sell", run.count, run.lo,
-                run.hi, run.worst_ratio, entry, stop, risk,
-                100.0 * risk / entry);
+                run.hi, run.worst_ratio, entry);
       return signal;
     };
 
-    if (want_buy) {
-      // below the base of the imbalance. when the band sits above the close
-      // (buyers stepped up into the candle's top) that level is not a valid
-      // long stop, so fall back to the candle low, the invalidation for the
-      // whole bar.
-      const double band_stop = best_buy.lo - buffer;
-      const double stop = band_stop < entry ? band_stop : (bar.low - buffer);
-      return make_signal(SignalDirection::BUY, stop, best_buy);
-    }
-
-    if (want_sell) {
-      const double band_stop = best_sell.hi + buffer;
-      const double stop = band_stop > entry ? band_stop : (bar.high + buffer);
-      return make_signal(SignalDirection::SELL, stop, best_sell);
-    }
+    if (want_buy) return make_signal(SignalDirection::BUY, best_buy);
+    if (want_sell) return make_signal(SignalDirection::SELL, best_sell);
 
     return TradeSignal{};
   }

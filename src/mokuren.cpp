@@ -44,7 +44,14 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &dataset_path, const nlo
     // hand (CLI, tests) falls back to the config.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        active_dataset = winning_config.value("environment", nlohmann::json::object()).value("dataset", "data");
+        // same rule as the grid runner: environment.dataset is canonical,
+        // filepath is the legacy alias, and there is no silent "data" default.
+        const auto env = winning_config.value("environment", nlohmann::json::object());
+        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+        if (active_dataset.empty()) {
+            LOG_ERROR("replay single run: no dataset configured");
+            return result;
+        }
     }
     LOG_INFO("replay single run: dataset={}", active_dataset);
 

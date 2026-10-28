@@ -28,6 +28,15 @@ void HandleSigint(int /*signum*/) {
   g_quit.store(true, std::memory_order_release);
 }
 
+// SIGINT is what ctrl-c sends; SIGTERM is what `systemctl stop` and a plain
+// `kill` send. Registering only SIGINT meant a service stop killed the process
+// outright -- no orchestrator.Stop(), no clean socket teardown, and the log
+// ended mid-line with no "shutdown requested" to say why.
+void InstallSignalHandlers() {
+  std::signal(SIGINT, HandleSigint);
+  std::signal(SIGTERM, HandleSigint);
+}
+
 // launches the interactive TUI (grid scan / WFA / replay).
 void RunBacktest() {
   try {
@@ -64,7 +73,7 @@ int64_t NowMillis() {
 // To verify the depth the strategy actually needs, set min_l2_depth explicitly
 // in the config being probed.
 int RunProbe(const std::string& config_path) {
-  std::signal(SIGINT, HandleSigint);
+  InstallSignalHandlers();
 
   LOG_INFO("probe: loading config from '{}'", config_path);
 
@@ -168,8 +177,8 @@ int RunProbe(const std::string& config_path) {
 // use_paper_broker selects shadow mode (--paper): the real venue websocket is
 // still used, but no execution adapter is constructed, so every signal fills in
 // the in-process PaperTrader instead of leaving the process.
-void RunLive(const std::string& config_path, bool use_paper_broker) {
-  std::signal(SIGINT, HandleSigint);
+int RunLive(const std::string& config_path, bool use_paper_broker) {
+  InstallSignalHandlers();
 
   LOG_INFO("live mode: loading config from '{}'", config_path);
 
@@ -274,6 +283,10 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
            cfg.exchange, use_paper_broker ? "paper (shadow)" : "venue");
   LIVE_DBG("main: live loop entered, orchestrator started");
 
+  // a stream that aborted is a failure, not a clean end. the exit code is what
+  // systemd's Restart=on-failure reads, so returning 0 here made a dropped
+  // socket look like a normal shutdown and the unit stayed down.
+  bool aborted = false;
   while (!g_quit.load(std::memory_order_acquire)) {
     // a clean end of stream or a dropped socket ends the run by itself.
     // without this the loop slept forever and the failure looked exactly like
@@ -284,6 +297,7 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
         LOG_INFO("live mode: market stream ended");
       } else {
         LOG_ERROR("live mode: market stream aborted: {}", err);
+        aborted = true;
       }
       break;
     }
@@ -293,6 +307,7 @@ void RunLive(const std::string& config_path, bool use_paper_broker) {
   LOG_INFO("live mode: shutdown requested, stopping orchestrator");
   orchestrator.Stop();
   LOG_INFO("live mode: stopped cleanly (dropped events: {})", orchestrator.DroppedEvents());
+  return aborted ? 1 : 0;
 }
 
 } // namespace
@@ -343,9 +358,17 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  mokuren::InitLogger("logs/engine.log",
-                      debug_mode ? spdlog::level::trace : spdlog::level::info,
-                      live_mode || paper_mode || probe_mode);
+  // InitLogger throws when the log directory cannot be created or the sink
+  // cannot be opened. That used to escape main uncaught; report it and exit
+  // non-zero instead of dying with a stack trace.
+  try {
+    mokuren::InitLogger("logs/engine.log",
+                        debug_mode ? spdlog::level::trace : spdlog::level::info,
+                        live_mode || paper_mode || probe_mode);
+  } catch (const std::exception& e) {
+    std::cerr << "cannot initialise logging: " << e.what() << "\n";
+    return 1;
+  }
 
   if (debug_mode) {
     // One trace per run. The default is a fixed name in the working directory,
@@ -385,7 +408,7 @@ int main(int argc, char** argv) {
       // and the report it printed is the useful output, not a stack trace.
       exit_code = RunProbe(config_path);
     } else if (live_mode || paper_mode) {
-      RunLive(config_path, /*use_paper_broker=*/paper_mode);
+      exit_code = RunLive(config_path, /*use_paper_broker=*/paper_mode);
     } else {
       RunBacktest();
     }

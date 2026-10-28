@@ -2,6 +2,11 @@
 Description=Mokuren Trading Engine (%i)
 After=network-online.target
 Wants=network-online.target
+# bound the restart loop. Restart=always with no limit turned a config typo
+# into an infinite respawn: the unit never reached "failed", so nothing
+# surfaced the reason and the journal filled with the same error.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -9,8 +14,17 @@ User=bunta
 Group=bunta
 WorkingDirectory=/home/bunta/src/kaito
 ExecStart=/home/bunta/src/kaito/build/mokuren --live --config=/home/bunta/src/kaito/configs/%i.json
-Restart=always
+# on-failure, not always: a clean exit (ctrl-c, a stream that ended normally)
+# must not be restarted. this is only correct because RunLive now returns
+# non-zero on a stream abort -- before that, every abort exited 0 and the
+# engine would have stayed down.
+Restart=on-failure
 RestartSec=5
+# give the orchestrator time to Stop() and close its sockets before SIGKILL.
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
 

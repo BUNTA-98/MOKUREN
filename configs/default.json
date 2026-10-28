@@ -9,8 +9,7 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data",
-    "filepath": "data/2026/bybit1",
+    "dataset": "data/2026/bybit1.mkn",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "max_cores": 0,
@@ -24,34 +23,34 @@
   },
   "filters": [
     {
-      "active": true,
+      "active": false,
       "lookback": 1440,
       "name": "MacroTrend"
     },
     {
-      "active": true,
+      "active": false,
       "min_volume": 2.0,
       "name": "MinVolume"
     },
     {
-      "active": true,
+      "active": false,
       "lookback": 20,
       "name": "RVOL",
       "threshold": 2.0
     },
     {
-      "active": true,
+      "active": false,
       "lookback": 25.0,
       "min_atr": 40.0,
       "name": "ATRChop"
     },
     {
-      "active": true,
+      "active": false,
       "name": "VwapTrend",
-      "require_trend_alignment": true
+      "require_trend_alignment": false
     },
     {
-      "active": true,
+      "active": false,
       "lookback": 5,
       "name": "CVDDivergence"
     },
@@ -74,7 +73,7 @@
       "name": "POCTrend"
     }
   ],
-  "initial_balance": 10000.0,
+  "initial_balance": 25000.0,
   "prop": {
     "daily_reset_hour_utc": 0,
     "enabled": true,
@@ -87,12 +86,12 @@
     "min_distance_dollars": 0.0,
     "modules": [
       {
-        "active": false,
+        "active": true,
         "name": "SinglePositionLock"
       },
       {
-        "active": false,
-        "max_leverage": 10.0,
+        "active": true,
+        "max_leverage": 5.0,
         "name": "MaxLeverageLock"
       },
       {
@@ -106,15 +105,15 @@
         "name": "AntiRevengeLock"
       }
     ],
-    "risk_per_trade_pct": 0.02,
-    "sl_pct": {
-      "max": 0.01,
-      "min": 0.001,
+    "risk_per_trade_pct": 0.01,
+    "sl_pct": 0.005,
+    "tp_r": {
+      "max": 10.0,
+      "min": 2.0,
       "mode": "range",
-      "step": 0.001,
-      "val": 0.002
-    },
-    "tp_r": 2.0
+      "step": 1.0,
+      "val": 2.0
+    }
   },
   "startup_probe": {
     "min_l2_depth": 20,
@@ -165,17 +164,11 @@
       "name": "SpoofHunter"
     },
     {
-      "active": false,
+      "active": true,
       "min_level_qty": 0.001,
       "min_stacked_count": 3.0,
       "name": "StackedImbalance",
-      "ratio_threshold": {
-        "max": 15.0,
-        "min": 3.0,
-        "mode": "range",
-        "step": 2.0,
-        "val": 3.0
-      },
+      "ratio_threshold": 3.0,
       "require_candle_agreement": false
     },
     {

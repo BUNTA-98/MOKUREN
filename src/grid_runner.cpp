@@ -117,7 +117,16 @@ void GridRunner::Run(const std::string &config_path,
     // actually selected. the fallback keeps CLI/test callers working.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+        // no silent "data" fallback: that default is what turned a config
+        // pointing at a .mkn the operator picked into a scan of the directory
+        // "data", and the failure read as "no trades found".
+        const auto env = base_json.value("environment", nlohmann::json::object());
+        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+    }
+    if (active_dataset.empty()) {
+        LOG_ERROR("grid search: no dataset configured");
+        on_status("ERR: NO DATASET CONFIGURED");
+        return;
     }
     LOG_INFO("grid search start: config={} dataset={} permutations={}",
              config_path, active_dataset, runs.size());

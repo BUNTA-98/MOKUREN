@@ -209,7 +209,15 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
         return std::move(session.trades);
     }
 
-    fs::path path = dataset_path;
+    const fs::path path = dataset_path;
+    // a typo, a wrong extension, or a wrong CWD used to fall through to an
+    // empty vector and surface as "no trades found in dataset". name the
+    // problem instead of letting the caller guess.
+    if (!fs::exists(path)) {
+        throw std::runtime_error(
+            "dataset '" + dataset_path + "' is neither a .mkn session file nor "
+            "an existing path");
+    }
     fs::path csv_file = path / "trades.csv";
     
     // v2: timestamps are normalised to milliseconds before being cached, so a

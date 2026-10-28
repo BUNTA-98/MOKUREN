@@ -128,21 +128,18 @@ private:
                     // data path is resolved from the winning run's config. no
                     // hardcoded fallback: if the config carries no dataset we
                     // surface the error rather than replaying the wrong file.
+                    // one key, one owner: environment.dataset (with filepath
+                    // as the legacy alias). the old recursive last-wins scan
+                    // could pick up a "dataset" key from anywhere in the tree
+                    // and silently replay the wrong file.
                     std::string data_path;
-                    std::function<void(const nlohmann::json&)> find_path = [&](const nlohmann::json& node) {
-                        if (node.is_object()) {
-                            for (auto& [k, v] : node.items()) {
-                                if (v.is_string() && (k == "filepath" || k == "data_path" || k == "dataset")) {
-                                    data_path = v.get<std::string>();
-                                } else { find_path(v); }
-                            }
-                        } else if (node.is_array()) {
-                            for (auto& item : node) find_path(item);
-                        }
-                    };
-                    find_path(winning_run.full_config);
+                    if (winning_run.full_config.contains("environment") &&
+                        winning_run.full_config["environment"].is_object()) {
+                        const auto& env = winning_run.full_config["environment"];
+                        data_path = env.value("dataset", env.value("filepath", std::string{}));
+                    }
                     if (data_path.empty()) {
-                        throw std::runtime_error("winning run has no dataset path in its config");
+                        throw std::runtime_error("winning run has no environment.dataset in its config");
                     }
 
                     // automatic wfa stitching or standard grid replay

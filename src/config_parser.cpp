@@ -196,6 +196,12 @@ void FlattenGrids(json& j) {
   FlattenGridsRec(j);
 }
 
+namespace {
+// defined with the other config readers further down; declared here because
+// Validate rejects an all-disabled pipeline and needs it first.
+bool SafeBool(const json& parent, const std::string& key, bool fallback);
+} // namespace
+
 // ============================================================================
 // AppConfig::Validate
 // ============================================================================
@@ -409,10 +415,23 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   if (triggers.empty()) {
     fail("triggers must not be empty (at least one trigger is required)");
   }
+  bool any_trigger_active = false;
   for (const auto& t : triggers) {
     if (t.name.empty()) {
       fail("triggers contains an entry with an empty name");
     }
+    // a missing flag means enabled, matching GridScanner::FindParams, which
+    // prunes on all three. reading only "active" let {"enabled": false} pass
+    // validation and then vanish from the sweep.
+    const bool disabled = !SafeBool(t.params, "active", true) ||
+                          !SafeBool(t.params, "enabled", true) ||
+                          !SafeBool(t.params, "isActive", true);
+    if (!disabled) any_trigger_active = true;
+  }
+  if (!any_trigger_active) {
+    fail("every entry in 'triggers' is disabled -- the pipeline can never "
+         "emit a signal, so every run yields zero trades (set active: true on "
+         "at least one trigger)");
   }
   for (const auto& f : filters) {
     if (f.name.empty()) {
@@ -668,7 +687,11 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     }
     {
       const auto& env = src["environment"];
-      cfg.filepath = SafeString(env, "filepath", "");
+      // `dataset` is canonical; `filepath` is a legacy alias kept so older
+      // configs keep loading. one key, one owner -- the grid runner already
+      // reads `dataset`, so accepting both under one name removes the
+      // two-readers-one-file bug.
+      cfg.filepath = SafeString(env, "dataset", SafeString(env, "filepath", ""));
       cfg.interval_ms = RequireInt(env, "interval_ms", "environment");
       cfg.macro_interval_ms = RequireInt(env, "macro_interval_ms", "environment");
       cfg.tick_size = RequireNumber(env, "tick_size", "environment");

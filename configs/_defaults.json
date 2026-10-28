@@ -2,17 +2,16 @@
   "exchange": "bybit",
   "api_key": "",
   "api_secret": "",
-  "initial_balance": 10000.0,
+  "initial_balance": 25000.0,
   "backtest": {
-    "config_profile": "configs/backtest.json",
+    "config_profile": "configs/default.json",
     "wfa_mode": false,
     "wfa_in_sample_days": 14,
     "wfa_out_of_sample_days": 7,
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data",
-    "filepath": "data/2026/bybit1",
+    "dataset": "",
     "interval_ms": 60000,
     "macro_interval_ms": 900000,
     "tick_size": 0.1,
@@ -32,7 +31,7 @@
     "allow_mainnet": false
   },
   "prop": {
-    "enabled": true,
+    "enabled": false,
     "max_daily_drawdown_pct": 0.04,
     "max_total_drawdown_pct": 0.06,
     "warn_fraction": 0.8,
@@ -45,13 +44,13 @@
     "on_failure": "abort"
   },
   "risk": {
-    "sl_pct": { "mode": "range", "min": 0.001, "max": 0.01, "step": 0.001, "val": 0.002 },
+    "sl_pct": { "mode": "range", "min": 0.003, "max": 0.010, "step": 0.001, "val": 0.005 },
     "tp_r": 2.0,
-    "risk_per_trade_pct": 0.02,
+    "risk_per_trade_pct": 0.01,
     "min_distance_dollars": 0.0,
     "modules": [
-      { "active": false, "name": "SinglePositionLock" },
-      { "active": false, "max_leverage": 10.0, "name": "MaxLeverageLock" },
+      { "active": true, "name": "SinglePositionLock" },
+      { "active": true, "max_leverage": 5.0, "name": "MaxLeverageLock" },
       { "active": false, "max_stop_pct": 0.02, "name": "MaxStopDistanceLock" },
       { "active": false, "cooldown_ms": 1800000, "name": "AntiRevengeLock" }
     ]
@@ -70,11 +69,11 @@
       "min_wall_qty":    { "mode": "range", "min": 0.5, "max": 1.0, "step": 0.1, "val": 0.5 }
     },
     {
-      "active": false,
+      "active": true,
       "min_level_qty": 0.001,
       "min_stacked_count": 3.0,
       "name": "StackedImbalance",
-      "ratio_threshold": { "mode": "range", "min": 3.0, "max": 15.0, "step": 2.0, "val": 3.0 },
+      "ratio_threshold": 3.0,
       "require_candle_agreement": false
     },
     {
@@ -84,12 +83,12 @@
     }
   ],
   "filters": [
-    { "active": true,  "lookback": 1440, "name": "MacroTrend" },
-    { "active": true,  "min_volume": 2.0, "name": "MinVolume" },
-    { "active": true,  "lookback": 20,   "name": "RVOL", "threshold": 2.0 },
-    { "active": true,  "lookback": 25.0, "min_atr": 40.0, "name": "ATRChop" },
-    { "active": true,  "name": "VwapTrend", "require_trend_alignment": true },
-    { "active": true,  "lookback": 5,    "name": "CVDDivergence" },
+    { "active": false, "lookback": 1440, "name": "MacroTrend" },
+    { "active": false, "min_volume": 2.0, "name": "MinVolume" },
+    { "active": false, "lookback": 20,   "name": "RVOL", "threshold": 2.0 },
+    { "active": false, "lookback": 25.0, "min_atr": 40.0, "name": "ATRChop" },
+    { "active": false, "name": "VwapTrend", "require_trend_alignment": true },
+    { "active": false, "lookback": 5,    "name": "CVDDivergence" },
     { "active": false, "lookback": 5,    "min_dollar": 150.0, "name": "Volatility" },
     { "active": false, "end_h": 17, "end_m": 0, "name": "TimeOfDay", "start_h": 8, "start_m": 0 },
     { "active": false, "name": "POCTrend" }

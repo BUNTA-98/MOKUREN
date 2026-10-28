@@ -6,6 +6,7 @@
 #include <atomic>
 #include <filesystem>
 #include <mutex>
+#include <stdexcept>
 
 namespace mokuren {
 
@@ -27,12 +28,20 @@ void InitLogger(const std::string& log_path, spdlog::level::level_enum level, bo
     return;
   }
 
-  {
+  // the flag is latched before the sink is built, so a failed open used to
+  // leave it set: every later InitLogger() was a silent no-op and GetLogger()
+  // returned null, which is why "check the engine log" could point at a file
+  // nobody ever wrote. clear it on any failure so a retry can succeed.
+  try {
     // ensure the log directory exists
     std::filesystem::path p(log_path);
     if (p.has_parent_path()) {
       std::error_code ec;
       std::filesystem::create_directories(p.parent_path(), ec);
+      if (ec) {
+        throw std::runtime_error("cannot create log directory '" +
+                                 p.parent_path().string() + "': " + ec.message());
+      }
     }
 
     // dedicated async thread pool for non-blocking logging
@@ -54,11 +63,18 @@ void InitLogger(const std::string& log_path, spdlog::level::level_enum level, bo
         spdlog::async_overflow_policy::overrun_oldest);
 
     g_logger->set_level(level);
-    g_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [thread %t] %v");
+    // pid in the pattern: without it a TUI session and the kaito daemon
+    // writing to the same file were indistinguishable, which is how an old
+    // `test.json` launch was mistaken for the run under investigation.
+    g_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [pid %P] [thread %t] %v");
     g_logger->flush_on(spdlog::level::warn);
 
     spdlog::register_logger(g_logger);
     spdlog::set_default_logger(g_logger);
+  } catch (...) {
+    // a failed init must not make every later call a silent no-op
+    g_initialized.store(false);
+    throw;
   }
 }
 
