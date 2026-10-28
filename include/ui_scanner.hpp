@@ -515,18 +515,19 @@ public:
                         return;
                     }
                     json j = json::parse(file);
-                    std::function<void(const json&)> find_path = [&](const json& node) {
-                        if (node.is_object()) {
-                            for (auto& [k, v] : node.items()) {
-                                if (v.is_string() && (k == "filepath" || k == "data_path" || k == "dataset")) {
-                                    data_path = v.get<std::string>();
-                                } else { find_path(v); }
-                            }
-                        } else if (node.is_array()) {
-                            for (auto& item : node) find_path(item);
-                        }
-                    };
-                    find_path(j);
+                    // one key, one owner: environment.dataset (filepath as the
+                    // legacy alias), identical to grid_runner.cpp:Run() and
+                    // AppConfig::Load. the old recursive match took the last
+                    // hit in map order across the whole tree, so a config
+                    // carrying both keys handed RunGridSearch a different
+                    // dataset than Run() would have resolved for itself.
+                    if (j.contains("environment") && j["environment"].is_object()) {
+                        const auto& env = j["environment"];
+                        if (env.contains("dataset") && env["dataset"].is_string())
+                            data_path = env["dataset"].get<std::string>();
+                        else if (env.contains("filepath") && env["filepath"].is_string())
+                            data_path = env["filepath"].get<std::string>();
+                    }
                 } catch (const std::exception& e) {
                     bg_state->SetStatus(std::string("ERR: bad config ") + e.what());
                     bg_state->is_running = false;

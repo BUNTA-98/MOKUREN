@@ -132,7 +132,7 @@ public:
 
     for (auto *module : modules_) {
       if (!module->CheckRisk(signal, current_time)) {
-        LOG_TRACE("risk reject: module={} dir={} entry={} sl={} tp={} vol={} t={}",
+        LOG_DEBUG("risk reject: module={} dir={} entry={} sl={} tp={} vol={} t={}",
                   module->Name(),
                   static_cast<int>(signal.direction),
                   signal.entry_price, signal.stop_loss,
@@ -140,7 +140,7 @@ public:
         return TradeSignal{}; // signal rejected by firewall
       }
     }
-    LOG_TRACE("risk pass: dir={} entry={} sl={} tp={} vol={} t={}",
+    LOG_DEBUG("risk pass: dir={} entry={} sl={} tp={} vol={} t={}",
               static_cast<int>(signal.direction),
               signal.entry_price, signal.stop_loss,
               signal.take_profit, signal.volume, current_time);

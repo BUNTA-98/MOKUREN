@@ -61,7 +61,7 @@ bool FinalizeTakeProfit(TradeSignal& sig, double exec_price,
                                 ? exec_price + r_multiple * placed_risk
                                 : exec_price - r_multiple * placed_risk;
       if (std::abs(new_tp - sig.take_profit) > std::abs(exec_price) * 1e-9) {
-        LOG_TRACE("{}: rescaling {} target {} -> {} to keep {:.2f}R (risk {} "
+        LOG_DEBUG("{}: rescaling {} target {} -> {} to keep {:.2f}R (risk {} "
                   "-> {})",
                   where, is_long ? "long" : "short", sig.take_profit, new_tp,
                   r_multiple, pre_sizing_risk, placed_risk);
@@ -120,7 +120,7 @@ SignalExecutionResult SignalExecutor::Execute(TradeSignal sig, double exec_price
     }
     sig.stop_loss = long_side ? exec_price * (1.0 - sl_pct_)
                               : exec_price * (1.0 + sl_pct_);
-    LOG_TRACE("{}: {} ticket has no stop, defaulting to sl_pct={} -> {}",
+    LOG_DEBUG("{}: {} ticket has no stop, defaulting to sl_pct={} -> {}",
               where_, long_side ? "long" : "short", sl_pct_, sig.stop_loss);
   }
   if (!PrepareSignalRisk(sig, exec_price, where_)) return result;
@@ -162,7 +162,7 @@ SignalExecutionResult SignalExecutor::Execute(TradeSignal sig, double exec_price
     return result;
   }
 
-  LOG_TRACE("{}: executing signal dir={} entry={} sl={} tp={} vol={} ts={}",
+  LOG_DEBUG("{}: executing signal dir={} entry={} sl={} tp={} vol={} ts={}",
             where_, static_cast<int>(final_sig.direction),
             final_sig.entry_price, final_sig.stop_loss, final_sig.take_profit,
             final_sig.volume, ts);

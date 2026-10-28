@@ -213,6 +213,7 @@ void GridRunner::Run(const std::string &config_path,
                 // worker: that calls std::terminate and kills the whole scan.
                 try {
                 const auto& run = runs[idx];
+                int sig_seen = 0, sig_exec = 0, sig_open = 0, sig_veto = 0;
                 // same reason as ValidateRunConfig above: no broker is built
                 // on this path, so credentials are irrelevant to the run.
                 AppConfig cfg = AppConfig::Load(run.full_json, false);
@@ -291,17 +292,23 @@ void GridRunner::Run(const std::string &config_path,
                         // eval tick sigs
                         TradeSignal tick_sig = eng.alpha->Evaluate(tick_ctx, false);
                         
-                        if (tick_sig.direction != SignalDirection::NONE &&
-                            (!prop_on || prop_guard.allow_new_entry())) {
-                            // cross spread for hft exec
-                            double exec_price = (tick_sig.direction == SignalDirection::BUY) 
-                                              ? all_l2[l2_idx].best_ask_price 
-                                              : all_l2[l2_idx].best_bid_price;
-                            
-                            // fallback if no price
-                            if (exec_price <= 0.0) exec_price = live_bar.close > 0.0 ? live_bar.close : trade.price;
-                            
-                            executor.Execute(tick_sig, exec_price, all_l2[l2_idx].timestamp);
+                        if (tick_sig.direction != SignalDirection::NONE) {
+                            ++sig_seen;
+                            if (!prop_on || prop_guard.allow_new_entry()) {
+                                // cross spread for hft exec
+                                double exec_price = (tick_sig.direction == SignalDirection::BUY) 
+                                                  ? all_l2[l2_idx].best_ask_price 
+                                                  : all_l2[l2_idx].best_bid_price;
+                                
+                                // fallback if no price
+                                if (exec_price <= 0.0) exec_price = live_bar.close > 0.0 ? live_bar.close : trade.price;
+                                
+                                auto r = executor.Execute(tick_sig, exec_price, all_l2[l2_idx].timestamp);
+                                if (r.signal.direction != SignalDirection::NONE) ++sig_exec;
+                                if (r.opened_position) ++sig_open;
+                            } else {
+                                ++sig_veto;
+                            }
                         }
                         
                         l2_idx++;
@@ -332,8 +339,15 @@ void GridRunner::Run(const std::string &config_path,
 
                     // eval candle sigs
                     TradeSignal candle_sig = eng.alpha->Evaluate(context, candle_finished);
-                    if (!prop_on || prop_guard.allow_new_entry()) {
-                        executor.Execute(candle_sig, trade.price, trade.timestamp);
+                    if (candle_sig.direction != SignalDirection::NONE) {
+                        ++sig_seen;
+                        if (!prop_on || prop_guard.allow_new_entry()) {
+                            auto r = executor.Execute(candle_sig, trade.price, trade.timestamp);
+                            if (r.signal.direction != SignalDirection::NONE) ++sig_exec;
+                            if (r.opened_position) ++sig_open;
+                        } else {
+                            ++sig_veto;
+                        }
                     }
                 }
 
@@ -398,6 +412,15 @@ void GridRunner::Run(const std::string &config_path,
                         res.mc_drawdown = std::isfinite(am.mc_dd) ? am.mc_dd : 0.0;
                     }
 
+                    // one line per permutation. signals=0 means no trigger
+                    // fired (filters or the evaluator); signals>0 with
+                    // executed<signals and vetoed==0 means a risk module,
+                    // sizer or stop check dropped it -- `[F]` to debug shows
+                    // `risk reject: module=...`; vetoed==signals means the
+                    // prop guard refused every entry; executed>0 opened==0
+                    // means the broker itself dropped it.
+                    LOG_INFO("grid perm {}: signals={} executed={} opened={} vetoed={} trades={}",
+                             idx, sig_seen, sig_exec, sig_open, sig_veto, res.trades);
                     LOG_INFO("grid result: trades={} net={} dd={} winrate={} sharpe={} prop_breached={}",
                              res.trades, res.net_profit, res.max_drawdown,
                              res.winrate, res.sharpe, res.prop_breached);

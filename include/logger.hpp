@@ -22,6 +22,11 @@ void ShutdownLogger();
 // returns the global logger (may be null if InitLogger was never called).
 std::shared_ptr<spdlog::logger> GetLogger();
 
+// runtime control of the in-process log ring (the UI panel). raises or
+// lowers both the ring's own level and the logger gate so the cost of
+// debug/trace capture is paid only while somebody is watching.
+void SetLogRingLevel(spdlog::level::level_enum lvl);
+
 } // namespace mokuren
 
 // convenience macros that are safe even if the logger was never initialized.

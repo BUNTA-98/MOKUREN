@@ -23,8 +23,8 @@
   },
   "filters": [
     {
-      "active": false,
-      "lookback": 1440,
+      "active": true,
+      "lookback": 4.0,
       "name": "MacroTrend"
     },
     {
