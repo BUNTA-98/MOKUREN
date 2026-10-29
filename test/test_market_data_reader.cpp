@@ -1,4 +1,5 @@
 #include "market_data/format.hpp"
+#include "market_data/merger.hpp"
 #include "market_data/reader.hpp"
 #include "market_data/writer.hpp"
 
@@ -200,6 +201,7 @@ TEST_CASE("mdf reader skips a block whose payload was corrupted", "[mdf]") {
   REQUIRE_FALSE(session.warnings.empty());
 }
 
+
 TEST_CASE("mdf reader replays book deltas onto the last snapshot", "[mdf]") {
   ScopedFile file{TempPath("mokuren_mdf_delta.mkn")};
 
@@ -248,4 +250,27 @@ TEST_CASE("mdf reader replays book deltas onto the last snapshot", "[mdf]") {
   CHECK(session.l2[1].bids[1].price == 99.0);
   CHECK(session.l2[1].asks[0].price == 102.0);  // 101.0 was removed
   CHECK(session.l2[1].asks[1].price == 0.0);
+}
+
+TEST_CASE("mdf merger rejects an invalid window key", "[mdf][merger]") {
+  // Weekly: a negative key is not a date this codebase can produce, and
+  // DayStringFromKey would format it as a plausible pre-epoch date rather than
+  // reject it. The empty string is the contract MergeWindow checks.
+  CHECK(mokuren::mdf::WindowLabelFromKey(
+            -1, mokuren::mdf::WindowKind::Weekly)
+            .empty());
+
+  // Monthly: out-of-range year/month must not produce a clamped or negative
+  // label -- a wrong-but-plausible month names an output file after data it
+  // does not contain.
+  CHECK(mokuren::mdf::WindowLabelFromKey(
+            202413, mokuren::mdf::WindowKind::Monthly)
+            .empty());
+  CHECK(mokuren::mdf::WindowLabelFromKey(
+            196912, mokuren::mdf::WindowKind::Monthly)
+            .empty());
+
+  // A valid key still formats, so the guard above is not rejecting everything.
+  CHECK(mokuren::mdf::WindowLabelFromKey(
+            202401, mokuren::mdf::WindowKind::Monthly) == "2024-01");
 }

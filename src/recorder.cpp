@@ -25,7 +25,10 @@ std::string DayStringFromKey(int64_t day_key) {
   gmtime_r(&secs, &tm_utc);
 #endif
   char buf[16];
-  std::strftime(buf, sizeof buf, "%Y-%m-%d", &tm_utc);
+  // strftime leaves the buffer indeterminate when it returns 0, so testing
+  // buf[0] would read uninitialised memory. An empty string flows to
+  // WindowKeyFromNs, which now handles it.
+  if (std::strftime(buf, sizeof buf, "%Y-%m-%d", &tm_utc) == 0) return "";
   return buf;
 }
 
@@ -194,6 +197,10 @@ bool MarketDataRecorder::CloseCurrentFile() {
     error_ = "flush " + current_part_path_ + ": " + writer_.last_error();
     current_path_.clear();
     current_part_path_.clear();
+    // Force EnsureOpenFor to call OpenDayFor again on the next frame. Leaving
+    // current_day_ set made RotateIfNeeded answer "same day" and route every
+    // later frame into a writer that is no longer open.
+    current_day_ = -1;
     return false;
   }
 

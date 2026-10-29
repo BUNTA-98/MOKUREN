@@ -88,6 +88,8 @@ class Merger {
 // Window key for a timestamp: day_key/7 for weekly, YYYY-MM for monthly.
 // Exposed so tests and callers can predict which file a record lands in.
 int64_t     WindowKeyFromNs(int64_t ts_ns, WindowKind kind);
+// Empty string if window_key is outside [197001, 999912] (monthly) or if the
+// weekly date could not be formatted. Callers must treat "" as a hard error.
 std::string WindowLabelFromKey(int64_t window_key, WindowKind kind);
 
 }  // namespace mokuren::mdf

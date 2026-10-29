@@ -19,21 +19,34 @@ int64_t WindowKeyFromNs(int64_t ts_ns, WindowKind kind) {
   // Monthly: derive from the same day string the recorder uses for filenames,
   // so a window can never disagree with the file it came from.
   const std::string date = DayStringFromKey(day);  // "YYYY-MM-DD"
-  return std::stoll(date.substr(0, 4)) * 100 +
-         std::stoll(date.substr(5, 2));
+  // "" here means gmtime/strftime failed, which needs a day key this codebase
+  // cannot produce -- but std::stoll would throw and Run() has no catch.
+  // -1 is rejected by WindowLabelFromKey -> MergeWindow, same path as any
+  // other invalid key.
+  if (date.size() != 10) return -1;
+  return std::stoll(date.substr(0, 4)) * 100 + std::stoll(date.substr(5, 2));
 }
 
 std::string WindowLabelFromKey(int64_t window_key, WindowKind kind) {
   if (kind == WindowKind::Weekly) {
+    // A negative key is not a date this codebase can produce; DayStringFromKey
+    // would format it as a plausible pre-epoch date rather than reject it.
+    // Match the monthly branch's lower bound.
+    if (window_key < 0) return "";
     // First day of the week window, as a date.
     return DayStringFromKey(window_key * 7);
   }
   const int64_t year  = window_key / 100;
   const int64_t month = window_key % 100;
-  char buf[8];
-  std::snprintf(buf, sizeof buf, "%04lld-%02lld",
-                static_cast<long long>(year),
-                static_cast<long long>(month));
+  // Out of range means the key did not come from WindowKeyFromNs. Return ""
+  // rather than a clamped or negative label: a wrong-but-plausible month
+  // names an output file after data it does not contain.
+  if (year < 1970 || year > 9999 || month < 1 || month > 12) return "";
+  // 4 + 1 + 2 + NUL is 8 exactly; 16 leaves headroom. int, not int64_t, so
+  // GCC cannot assume an 18-digit field and warn about a buffer it can see fits.
+  char buf[16];
+  std::snprintf(buf, sizeof buf, "%04d-%02d",
+                static_cast<int>(year), static_cast<int>(month));
   return buf;
 }
 
@@ -46,11 +59,16 @@ bool Merger::ScanInputs(std::vector<InputFile>& out) {
     return false;
   }
 
-  for (const auto& entry : fs::directory_iterator(cfg_.input_dir, ec)) {
-    if (ec) {
-      error_ = "iterate " + cfg_.input_dir + ": " + ec.message();
-      return false;
-    }
+  // Hoist the iterator: if construction fails (permission, deleted between
+  // is_directory and here), ec is set and the iterator equals end(), so a
+  // range-for would silently iterate zero entries and report a clean no-op
+  // run. Test ec before the loop instead.
+  fs::directory_iterator it(cfg_.input_dir, ec);
+  if (ec) {
+    error_ = "open input_dir " + cfg_.input_dir + ": " + ec.message();
+    return false;
+  }
+  for (const auto& entry : it) {
     if (!entry.is_regular_file()) continue;
     const std::string path = entry.path().string();
 
@@ -100,6 +118,10 @@ bool Merger::ScanInputs(std::vector<InputFile>& out) {
 bool Merger::MergeWindow(const std::vector<InputFile>& files,
                          int64_t window_key) {
   const std::string label = WindowLabelFromKey(window_key, cfg_.kind);
+  if (label.empty()) {
+    error_ = "invalid window key: " + std::to_string(window_key);
+    return false;
+  }
   const std::string sub   = cfg_.venue + "-" + cfg_.symbol;
   const std::string dir   = (fs::path(cfg_.output_root) / sub).string();
 
@@ -115,7 +137,11 @@ bool Merger::MergeWindow(const std::vector<InputFile>& files,
   const std::string final_path = dir + "/" + base;
   const std::string part_path  = final_path + ".part";
 
-  if (!cfg_.overwrite_existing && fs::exists(final_path, ec)) {
+  // Check the *.part name too: Writer::Open truncates unconditionally, and a
+  // crashed previous run leaves exactly that file. Same rule the recorder uses
+  // in OpenDayFor.
+  if (!cfg_.overwrite_existing &&
+      (fs::exists(final_path, ec) || fs::exists(part_path, ec))) {
     error_ = "output exists (set overwrite_existing): " + final_path;
     return false;
   }

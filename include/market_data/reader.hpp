@@ -108,9 +108,11 @@ class Reader {
     int64_t  last_ts_ns   = 0;
     uint64_t record_count = 0;
 
-    // True when the file carries a writer trailer. An unfinalised file has
-    // readable blocks in front of the crash but no index, so a merger cannot
-    // safely concatenate it: the merged file would silently lose the tail.
+    // True when the file carries a writer trailer (metadata + index present).
+    // NOT a guarantee that every byte was written: Writer::Close() patches the
+    // trailer even after a failed flush, on purpose, so a recording stays
+    // readable up to the damage. Data integrity comes from the per-block crc
+    // and bounds checks in CopyPayloadTo, not from this flag.
     bool finalised = false;
   };
 
@@ -134,6 +136,7 @@ class Reader {
  private:
   std::ifstream in_;
   FileHeader header_{};
+  uint64_t file_size_ = 0;
   Meta meta_{};
   std::vector<IndexEntry> index_;
   std::string error_;

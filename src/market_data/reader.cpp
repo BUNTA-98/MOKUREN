@@ -496,6 +496,7 @@ bool Reader::Open(const std::string& path) {
   // Reset a previous Open: callers reuse the object to walk a directory.
   in_ = std::ifstream{};
   header_ = FileHeader{};
+  file_size_ = 0;
   meta_ = Meta{};
   index_.clear();
   error_.clear();
@@ -511,6 +512,7 @@ bool Reader::Open(const std::string& path) {
     return false;
   }
   const uint64_t file_size = static_cast<uint64_t>(size);
+  file_size_ = file_size;
 
   FileLayout layout;
   if (!ReadFileHeader(in_, file_size, layout, error_)) return false;
@@ -592,6 +594,15 @@ bool Reader::CopyPayloadTo(Writer& out) {
                std::to_string(entry.block_offset);
       return false;
     }
+    // payload_size comes from the file, not from the validated index, so a
+    // corrupt size field must not decide the allocation or the read extent.
+    // Same two conditions DecodeBlocks applies.
+    if (bh.payload_size > kMaxPayloadBytes ||
+        entry.block_offset + kBlockHeaderSize + bh.payload_size > file_size_) {
+      error_ = "block at offset " + std::to_string(entry.block_offset) +
+               " claims a payload outside the file";
+      return false;
+    }
     if (bh.codec != static_cast<uint16_t>(BlockCodec::None)) {
       error_ = "block at offset " + std::to_string(entry.block_offset) +
                " uses block codec " + std::to_string(bh.codec) +
@@ -609,6 +620,42 @@ bool Reader::CopyPayloadTo(Writer& out) {
     if (Crc32c(payload.data(), payload.size()) != bh.payload_crc32c) {
       error_ = "block at offset " + std::to_string(entry.block_offset) +
                " failed its checksum; refusing to merge damaged data";
+      return false;
+    }
+    // The destination metadata describes record_sizes from the writer's own
+    // Options, but block layouts are copied verbatim from the source. A file
+    // written with a different stride would be described wrongly, so fail
+    // rather than emit a file that misreports itself. TradeRec is fixed-size
+    // and needs no check.
+    //
+    // Bound to Writer::Options{} defaults on purpose: MergeWindow opens the
+    // writer with the default Options, so these are the strides the merged
+    // file will describe. If the merger ever accepts Writer::Options, pass
+    // them here instead of constructing a default.
+    const RecordKind kind = static_cast<RecordKind>(bh.kind);
+
+    // The merger's seam argument (see merger.hpp) requires that no book state
+    // crosses a block boundary: a reader rebuilding the merged book from the
+    // first snapshot it sees must end up in the same state it would have in
+    // the daily source. That holds only because the recorder writes full
+    // snapshots and never deltas. A source that does carry deltas would merge
+    // into a file whose delta stream has no guaranteed preceding snapshot, so
+    // reject the kind rather than emit a file that violates the precondition.
+    if (kind == RecordKind::BookDelta) {
+      error_ = "block at offset " + std::to_string(entry.block_offset) +
+               " is a book delta; the merger only concatenates snapshot-only "
+               "recordings";
+      return false;
+    }
+    const unsigned expected_snapshot = static_cast<unsigned>(
+        sizeof(BookSnapshotRec) +
+        static_cast<size_t>(Writer::Options{}.max_levels_per_side) * 2 *
+            sizeof(BookLevel));
+    if (kind == RecordKind::BookSnapshot &&
+        bh.record_size != expected_snapshot) {
+      error_ = "block at offset " + std::to_string(entry.block_offset) +
+               " has record stride " + std::to_string(bh.record_size) +
+               ", which does not match this merger's layout; refusing to merge";
       return false;
     }
     if (!out.AppendBlock(bh, payload.data(), payload.size())) {
