@@ -53,6 +53,13 @@ struct Args {
   int64_t l2_min_interval_ms = 0;
   bool validate = true;
   bool debug = false;
+
+  // Daily mode: `out` names a root directory, the recorder writes one file per
+  // UTC day beneath <root>/<venue>-<symbol>/.
+  bool daily = false;
+  // Daily mode only: overwrite a same-day restart's file instead of writing a
+  // T<HHMMSS> sibling.
+  bool overwrite_existing = false;
 };
 
 void PrintUsage() {
@@ -61,8 +68,10 @@ void PrintUsage() {
       "\n"
       "  --symbol NAME        venue symbol\n"
       "                       (default: BTCUSDT on bybit, BTC on hyperliquid)\n"
-      "  --out PATH           output .mkn file\n"
-      "                       (default recordings/<venue>_<symbol>_<utc>.mkn)\n"
+      "  --out PATH           output .mkn file; with --daily, the root\n"
+      "                       directory to write day files under\n"
+      "                       (default recordings/<venue>_<symbol>_<utc>.mkn,\n"
+      "                        or recordings/ with --daily)\n"
       "  --venue NAME         which streamer to record (default bybit)\n"
       "                       supported: bybit, hyperliquid\n"
       "  --env NAME           session metadata only (default mainnet)\n"
@@ -70,6 +79,10 @@ void PrintUsage() {
       "                       one of: linear, spot, inverse\n"
       "  --duration SECONDS   stop after N seconds (0 = until ctrl-c)\n"
       "  --l2-interval MS     at most one book frame per MS (0 = every frame)\n"
+      "  --daily              --out is a root directory: one file per UTC day,\n"
+      "                       rotated at midnight, never mid-record\n"
+      "  --overwrite-existing with --daily: replace a same-day restart's file\n"
+      "                       instead of writing a T<HHMMSS> sibling\n"
       "  --no-validate        write frames the live gate would reject\n"
       "  --debug              log every frame the parser sees, and why it was\n"
       "                       dropped; the only way to tell a slow venue from a\n"
@@ -144,6 +157,10 @@ bool ParseArgs(int argc, char** argv, Args& a, bool& wants_help,
       }
     } else if (arg == "--debug") {
       a.debug = true;
+    } else if (arg == "--daily") {
+      a.daily = true;
+    } else if (arg == "--overwrite-existing") {
+      a.overwrite_existing = true;
     } else if (arg == "--no-validate") {
       a.validate = false;
     } else {
@@ -172,6 +189,12 @@ std::unique_ptr<IMarketStreamer> MakeStreamer(const Args& a, std::string& err) {
 }
 
 std::string DefaultPath(const Args& a) {
+  // Daily mode needs a root directory, not a file: the recorder appends
+  // <venue>-<symbol>/ and the per-day filename itself. Handing it the
+  // single-file default would create a directory literally named
+  // "recordings/bybit_BTCUSDT_<stamp>.mkn".
+  if (a.daily) return "recordings";
+
   std::time_t t = std::time(nullptr);
   std::tm tm{};
 #if defined(_WIN32)
@@ -188,10 +211,11 @@ std::string DefaultPath(const Args& a) {
 }
 
 void PrintStats(const mokuren::MarketDataRecorder& rec, const std::string& path,
-                int64_t elapsed_s) {
+                int64_t elapsed_s, bool daily) {
   const auto& s = rec.stats();
   std::cout << "\n--- recording summary ---\n"
-            << "file:              " << path << "\n"
+            << (daily ? "root:              " : "file:              ") << path
+            << "\n"
             << "elapsed:           " << elapsed_s << "s\n"
             << "trades  seen:      " << s.trades_seen << "\n"
             << "trades  written:   " << s.trades_written << "\n"
@@ -201,6 +225,10 @@ void PrintStats(const mokuren::MarketDataRecorder& rec, const std::string& path,
             << "l2      rejected:  " << s.l2_rejected << "\n"
             << "l2      throttled: " << s.l2_throttled << "\n"
             << "l2      gaps:      " << s.l2_gaps << "\n";
+  // Only meaningful with --daily; a silent zero everywhere else is noise.
+  if (daily) {
+    std::cout << "rotations:         " << s.rotations << "\n";
+  }
 
   // Per minute, because that is the unit StartupGate states its criteria in: a
   // session and a probe then compare without conversion. Without this line a
@@ -293,18 +321,47 @@ int main(int argc, char** argv) {
 
   const std::string path = args.out.empty() ? DefaultPath(args) : args.out;
 
+  // --daily reinterprets --out, so a typo'd single-file path (or a stale
+  // recording from an earlier run) must fail loudly instead of being adopted as
+  // a root directory and writing the day files beside it.
+  if (args.daily) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec)) {
+      std::cerr << "error: --daily treats --out as a root directory, but '"
+                << path << "' is a file\n";
+      mokuren::ShutdownLogger();
+      return EXIT_FAILURE;
+    }
+  }
+
   if (args.debug) {
     // The frame trace is its own logger with its own sink, not the async audit
     // logger: it is written per frame and would drown the events that matter.
     // Putting it under the recording's stem is what makes the two files a pair
     // -- the default is a fixed name in the working directory, truncated on
     // first use, so a second run would destroy the first run's trace.
-    std::string trace = path;
-    constexpr const char* kExt = ".mkn";
-    const std::string ext(kExt);
-    if (trace.size() >= ext.size() &&
-        trace.compare(trace.size() - ext.size(), ext.size(), ext) == 0) {
-      trace.resize(trace.size() - ext.size());
+    std::string trace;
+    if (args.daily) {
+      // `path` is a directory here. Naming the trace after it would make every
+      // daily session under that root truncate one shared file, so give each
+      // instrument its own trace next to the day files it describes.
+      trace = (std::filesystem::path(path) / (args.venue + "-" + args.symbol))
+                  .string();
+    } else {
+      trace = path;
+      constexpr const char* kExt = ".mkn";
+      const std::string ext(kExt);
+      if (trace.size() >= ext.size() &&
+          trace.compare(trace.size() - ext.size(), ext.size(), ext) == 0) {
+        trace.resize(trace.size() - ext.size());
+      }
+    }
+    // spdlog creates the file, not the directories above it.
+    const std::filesystem::path trace_parent =
+        std::filesystem::path(trace).parent_path();
+    if (!trace_parent.empty()) {
+      std::error_code ec;
+      std::filesystem::create_directories(trace_parent, ec);
     }
     mokuren::debug::LiveDebugLogPath() = trace + ".debug.log";
   }
@@ -331,6 +388,9 @@ int main(int argc, char** argv) {
   cfg.symbol = args.symbol;
   cfg.l2_min_interval_ms = args.l2_min_interval_ms;
   cfg.validate = args.validate;
+  cfg.daily = args.daily;
+  // Only consulted by daily mode; harmless otherwise.
+  cfg.overwrite_existing = args.overwrite_existing;
   // The recorder has no strategy config, so it enforces structure only: one
   // level per side is the minimum a frame must carry to be a book at all. What
   // the triggers need on top of that is a strategy decision, and the live gate
@@ -355,8 +415,8 @@ int main(int argc, char** argv) {
   recorder.Attach(*streamer);
 
   if (!recorder.Open()) {
-    std::cerr << "error: cannot open '" << path
-              << "': " << recorder.last_error() << "\n";
+    std::cerr << "error: cannot " << (args.daily ? "prepare" : "open") << " '"
+              << path << "': " << recorder.last_error() << "\n";
     mokuren::ShutdownLogger();
     return EXIT_FAILURE;
   }
@@ -365,7 +425,10 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, MokurenRecordOnSignal);
 
   std::cout << "recording " << args.venue << " " << args.symbol << " -> "
-            << path << "\n"
+            << path
+            << (args.daily ? "/<venue>-<symbol>/<venue>-<symbol>-<UTC date>.mkn"
+                           : "")
+            << "\n"
             << "l2_interval_ms=" << args.l2_min_interval_ms
             << " validate=" << (args.validate ? "on" : "off")
             << "\npress ctrl-c to stop\n";
@@ -405,7 +468,7 @@ int main(int argc, char** argv) {
   const int64_t elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
                                 std::chrono::steady_clock::now() - started)
                                 .count();
-  PrintStats(recorder, path, elapsed_s);
+  PrintStats(recorder, path, elapsed_s, args.daily);
 
   // flush the async pool before the process exits, or the last lines -- which
   // are exactly the ones describing why a run was short -- are lost.
