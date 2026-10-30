@@ -102,7 +102,9 @@ int RunProbe(const std::string& config_path) {
                              cfg.exchange + "'");
   }
 
-  const std::string venue = cfg.exchange;
+  // the gate judges the FEED, not the account: on a cross-venue run the frames
+  // it inspects are the feed's, so the profile must be the feed's too.
+  const std::string venue = cfg.DataExchange();
   // resolved once: the router needs it and the log line below reports the
   // effective l2 requirement, which is a function of it.
   const mokuren::integrity::VenueProfile profile =
@@ -243,7 +245,7 @@ int RunLive(const std::string& config_path, bool use_paper_broker) {
                                 /*redis_host=*/"127.0.0.1", /*redis_port=*/6379,
                                 cfg.symbol,
                                 /*prop_rules=*/cfg.prop,
-                                /*venue=*/cfg.exchange,
+                                /*venue=*/cfg.DataExchange(),
                                 /*account_baseline=*/cfg.initial_balance);
 
   // --- startup data-integrity gate -----------------------------------------
@@ -279,8 +281,9 @@ int RunLive(const std::string& config_path, bool use_paper_broker) {
     std::cout << orchestrator.PreflightReport().ToString();
   }
 
-  LOG_INFO("live mode: streaming via '{}' in {} execution (press ctrl-c to stop)",
-           cfg.exchange, use_paper_broker ? "paper (shadow)" : "venue");
+  LOG_INFO("live mode: streaming {} data into {} execution (press ctrl-c to stop)",
+           cfg.DataExchange(),
+           use_paper_broker ? "paper (shadow)" : cfg.exchange.c_str());
   LIVE_DBG("main: live loop entered, orchestrator started");
 
   // a stream that aborted is a failure, not a clean end. the exit code is what

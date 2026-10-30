@@ -114,6 +114,17 @@ struct AppConfig {
   std::string category = "linear";
   std::string symbol = "BTCUSDT";
   std::string position_mode = "one_way"; // "one_way" | "hedge"
+
+  // the venue the FEED is read from, when it is not the venue orders go to.
+  // empty (the default) means "the same venue as `exchange`", so every config
+  // written before the split keeps its exact meaning. only the venue NAME may
+  // differ: the instrument is shared, because the engine prices one market.
+  //
+  // `exchange` is the EXECUTION venue -- where credentials and orders live --
+  // and this is the market-data venue. a bybit mainnet feed into a blofin demo
+  // account is the shape this exists for.
+  std::string data_exchange = "";
+
   // mainnet spends real money. requiring an explicit opt-in turns a config
   // typo into a startup abort instead of a funded order. it gates the
   // EXECUTION world only: reading mainnet's public book costs nothing and
@@ -124,6 +135,12 @@ struct AppConfig {
   // the world the public market-data feed is read from. equal to env unless
   // the config set venue.data_environment (or a data_venue block).
   mokuren::venue::Env DataEnv() const { return data_env.value_or(env); }
+
+  // the venue the public market-data feed is read from. equal to exchange
+  // unless the config set venue.data_exchange (or a data_venue block).
+  std::string DataExchange() const {
+    return data_exchange.empty() ? exchange : data_exchange;
+  }
 
   // funded-account survival limits (hyrotrader: 4% daily, 6% total). enforced
   // by one guard on every path, independent of sl_pct/tp_r -- a strategy's
@@ -214,9 +231,10 @@ struct AppConfig {
   // reproduces the numbers it produced before.
   double initial_balance = 10000.0;
 
-  // the venue spec of the market-data feed: DataEnv() plus the shared
-  // instrument. resolved in the config layer, not in the factory, so an
-  // unreadable environment aborts at load instead of at the first tick.
+  // the venue spec of the market-data feed: DataExchange() plus DataEnv()
+  // plus the shared instrument. resolved in the config layer, not in the
+  // factory, so an unreadable environment aborts at load instead of at the
+  // first tick.
   // throws std::invalid_argument (via venue::Resolve) on an unknown category
   // or an empty symbol.
   mokuren::venue::Spec DataSpec() const;

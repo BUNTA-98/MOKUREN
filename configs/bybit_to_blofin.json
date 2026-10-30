@@ -1,0 +1,159 @@
+{
+  "exchange": "blofin",
+  "api_key": "",
+  "api_secret": "",
+  "api_passphrase": "",
+  "initial_balance": 25000.0,
+  "environment": {
+    "interval_ms": 60000.0,
+    "macro_interval_ms": 300000.0,
+    "max_cores": 6.0,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
+  },
+  "execution": {
+    "slippage_pct": 0.0002,
+    "taker_fee_pct": 0.0004
+  },
+  "venue": {
+    "category": "linear",
+    "symbol": "BTCUSDT",
+    "position_mode": "one_way",
+    "lot_step": 0.001,
+    "environment": "demo",
+    "data_exchange": "bybit",
+    "data_environment": "mainnet",
+    "allow_mainnet": false
+  },
+  "startup_probe": {
+    "min_l2_depth": 20,
+    "on_failure": "abort",
+    "preset": "development"
+  },
+  "prop": {
+    "enabled": false,
+    "daily_reset_hour_utc": 0,
+    "flatten_on_breach": true,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8
+  },
+  "risk": {
+    "min_distance_dollars": 0.0,
+    "risk_per_trade_pct": 0.005,
+    "sl_pct": 0.003,
+    "tp_r": 2.0,
+    "modules": [
+      {
+        "active": false,
+        "name": "SinglePositionLock"
+      },
+      {
+        "active": true,
+        "max_leverage": 40.0,
+        "name": "MaxLeverageLock"
+      },
+      {
+        "active": false,
+        "max_stop_pct": 0.02,
+        "name": "MaxStopDistanceLock"
+      },
+      {
+        "active": false,
+        "cooldown_ms": 1800000,
+        "name": "AntiRevengeLock"
+      }
+    ]
+  },
+  "trade_management": {
+    "break_even": {
+      "enabled": true,
+      "target_r": 0.1,
+      "trigger_r": 2.0
+    },
+    "scale_out": {
+      "enabled": false,
+      "fraction": 0.5,
+      "trigger_r": 2.0
+    },
+    "trailing": {
+      "distance_r": 0.5,
+      "enabled": false,
+      "trigger_r": 1.0
+    }
+  },
+  "filters": [
+    {
+      "active": true,
+      "lookback": 1.0,
+      "name": "MacroTrend"
+    },
+    {
+      "active": false,
+      "min_volume": 100.0,
+      "name": "MinVolume"
+    },
+    {
+      "active": false,
+      "lookback": 20,
+      "name": "RVOL",
+      "threshold": 2.0
+    },
+    {
+      "active": false,
+      "lookback": 25.0,
+      "min_atr": 40.0,
+      "name": "ATRChop"
+    },
+    {
+      "active": false,
+      "name": "VwapTrend",
+      "require_trend_alignment": true
+    },
+    {
+      "active": false,
+      "lookback": 5,
+      "name": "CVDDivergence"
+    },
+    {
+      "active": false,
+      "lookback": 5,
+      "min_dollar": 150.0,
+      "name": "Volatility"
+    },
+    {
+      "active": false,
+      "end_h": 17,
+      "end_m": 0,
+      "name": "TimeOfDay",
+      "start_h": 8,
+      "start_m": 0
+    },
+    {
+      "active": false,
+      "name": "POCTrend"
+    }
+  ],
+  "triggers": [
+    {
+      "active": false,
+      "drop_threshold": 0.1,
+      "lookback_ms": 500.0,
+      "min_wall_qty": 0.5,
+      "name": "SpoofHunter"
+    },
+    {
+      "active": true,
+      "min_level_qty": 0.001,
+      "min_stacked_count": 5.0,
+      "name": "StackedImbalance",
+      "ratio_threshold": 3.0,
+      "require_candle_agreement": false
+    },
+    {
+      "active": false,
+      "min_delta_threshold": 10.0,
+      "name": "DeltaAbsorption"
+    }
+  ]
+}

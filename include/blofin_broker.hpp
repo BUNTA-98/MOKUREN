@@ -130,6 +130,12 @@ public:
 private:
     void EstablishStartupTruth();
     void SyncClock();
+    // replaces the ticker-based offset estimate with the `ts` of a SIGNED
+    // reply, which the venue generates per request. the ticker's `ts` is the
+    // timestamp of the data it describes, so on a cached or quiet feed it lags
+    // by seconds and biases every signature by that amount -- invisible while
+    // the venue's window is 60 s, fatal the moment it is not.
+    void RefineClockFromReply(const nlohmann::json& reply, const char* source);
     bool FetchInstrumentRules();
     void ReconcileAccount();
     // refuses to start unless the account is net_mode (one-way) / cross. the

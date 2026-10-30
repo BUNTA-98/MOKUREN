@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <sstream>
 
@@ -256,6 +257,21 @@ void AppConfig::Validate(bool require_venue_credentials) const {
     fail("exchange must be one of 'bybit', 'hyperliquid', 'blofin' (got '" +
          exchange + "')");
   }
+  // the feed's venue is whitelisted too: a typo there resolves to a bogus spec
+  // in the streamer, which is an empty host at the first tick rather than a
+  // startup error.
+  if (!data_exchange.empty() && data_exchange != "bybit" &&
+      data_exchange != "hyperliquid" && data_exchange != "blofin") {
+    fail("venue.data_exchange must be one of 'bybit', 'hyperliquid', 'blofin' "
+         "(got '" + data_exchange + "')");
+  }
+  // blofin has no testnet, and venue::Resolve throws on it. catching it here
+  // names the config key instead of the factory call.
+  if (DataExchange() == "blofin" &&
+      DataEnv() == mokuren::venue::Env::Testnet) {
+    fail("blofin has no testnet: set venue.data_environment to 'mainnet' or "
+         "'demo'");
+  }
   if (category != "linear" && category != "spot" && category != "inverse") {
     fail("venue.category must be one of 'linear', 'spot', 'inverse' (got '" +
          category + "')");
@@ -465,9 +481,10 @@ void AppConfig::Validate(bool require_venue_credentials) const {
 // ============================================================================
 
 mokuren::venue::Spec AppConfig::DataSpec() const {
-  // the instrument is shared; only the world differs. DataEnv() falls back to
-  // env, so a config that names one environment resolves both specs to it.
-  return mokuren::venue::Resolve(exchange, DataEnv(), category, symbol);
+  // the instrument is shared; the venue and the world may differ. DataExchange
+  // and DataEnv both fall back to the account's values, so a config that names
+  // neither resolves both specs to the same place.
+  return mokuren::venue::Resolve(DataExchange(), DataEnv(), category, symbol);
 }
 
 mokuren::venue::Spec AppConfig::ExecSpec() const {
@@ -760,6 +777,28 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     }
   });
 
+  // --- credentials from the environment -----------------------------------
+  // a config that names a live account is meant to be committed and shared; a
+  // key is not. explicit values in the file win, and the variables are named
+  // after the EXECUTION venue, so a config cannot pick up another venue's key
+  // by accident: BLOFIN_API_KEY / BLOFIN_API_SECRET / BLOFIN_API_PASSPHRASE,
+  // BYBIT_API_KEY / BYBIT_API_SECRET.
+  if (!cfg.exchange.empty()) {
+    std::string prefix = cfg.exchange;
+    for (char& c : prefix) {
+      c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    auto from_env = [&prefix](const char* suffix) -> std::string {
+      const char* v = std::getenv((prefix + suffix).c_str());
+      return v != nullptr ? std::string(v) : std::string();
+    };
+    if (cfg.api_key.empty()) cfg.api_key = from_env("_API_KEY");
+    if (cfg.api_secret.empty()) cfg.api_secret = from_env("_API_SECRET");
+    if (cfg.api_passphrase.empty()) {
+      cfg.api_passphrase = from_env("_API_PASSPHRASE");
+    }
+  }
+
   // --- venue identity ---
   // environment + category + symbol + position mode form ONE identity. the
   // broker and the streamer are both built from it, and neither may derive a
@@ -793,34 +832,52 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
                                : mokuren::venue::Env::Mainnet;
     }
 
-    // --- market-data world ------------------------------------------------
+    // --- market-data feed -------------------------------------------------
     // optional, and the only part of the venue identity that may differ from
-    // the account: a key is bound to one world, the public book is free. the
-    // instrument stays shared -- a feed for a different symbol would size a
-    // contract the engine never priced.
+    // the account: a key is bound to one venue in one world, the public book
+    // is free. the instrument stays shared -- a feed for a different symbol
+    // would size a contract the engine never priced.
     //
     // accepted spellings, most specific first:
-    //   "venue":      {"data_environment": "mainnet"}
-    //   "venue":      {"data_venue": {"environment": "mainnet"}}
-    //   "data_venue": {"environment": "mainnet"}                 (root)
+    //   "venue": {"data_exchange": "bybit", "data_environment": "mainnet"}
+    //   "venue": {"data_venue": {"exchange": "bybit", "environment": "mainnet"}}
+    //   "data_venue": {"exchange": "bybit", "environment": "mainnet"}   (root)
+    //   "data_exchange": "bybit"                                        (root)
     //
     // absent is the default and means "the feed and the account are the same
-    // world", so a config written before the split keeps its exact meaning.
+    // venue in the same world", so a config written before the split keeps its
+    // exact meaning.
     {
-      std::string data_env_name;
-      auto read_block = [](const json& block) -> std::string {
+      auto read_env = [](const json& block) -> std::string {
         if (!block.is_object()) return std::string();
         return SafeString(block, "environment", SafeString(block, "env", ""));
       };
+      auto read_venue = [](const json& block) -> std::string {
+        if (!block.is_object()) return std::string();
+        return SafeString(block, "exchange", "");
+      };
+
+      std::string data_env_name;
+      std::string data_exchange_name;
       if (src.contains("venue") && src["venue"].is_object()) {
         const auto& v = src["venue"];
         data_env_name = SafeString(v, "data_environment", "");
-        if (data_env_name.empty() && v.contains("data_venue")) {
-          data_env_name = read_block(v["data_venue"]);
+        data_exchange_name = SafeString(v, "data_exchange", "");
+        if (v.contains("data_venue")) {
+          if (data_env_name.empty()) data_env_name = read_env(v["data_venue"]);
+          if (data_exchange_name.empty()) {
+            data_exchange_name = read_venue(v["data_venue"]);
+          }
         }
       }
-      if (data_env_name.empty() && src.contains("data_venue")) {
-        data_env_name = read_block(src["data_venue"]);
+      if (src.contains("data_venue")) {
+        if (data_env_name.empty()) data_env_name = read_env(src["data_venue"]);
+        if (data_exchange_name.empty()) {
+          data_exchange_name = read_venue(src["data_venue"]);
+        }
+      }
+      if (data_exchange_name.empty()) {
+        data_exchange_name = SafeString(src, "data_exchange", "");
       }
       if (!data_env_name.empty()) {
         try {
@@ -829,6 +886,9 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
           throw std::runtime_error(
               std::string("config error: venue.data_environment: ") + e.what());
         }
+      }
+      if (!data_exchange_name.empty()) {
+        cfg.data_exchange = data_exchange_name;
       }
     }
 

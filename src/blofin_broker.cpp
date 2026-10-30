@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <exception>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,40 @@ double JsonNum(const nlohmann::json& j, const char* key, double fallback = 0.0) 
         try { return std::stod(v.get<std::string>()); } catch (...) { return fallback; }
     }
     return fallback;
+}
+
+// the account-level equity of a balance reply, or nullopt when the frame
+// carries no data object at all. accepts the object shape and the
+// single-element array shape, and both spelling sets seen on this venue:
+// totalEquity/equity are the documented ones, totalEq/eq are okx-lineage.
+//
+// split out of ReconcileAccount so the COIN-FUTURES diagnostic below reports
+// a number by the same rules the USDT-FUTURES path just used -- two readers
+// that disagree about where equity lives would make the diagnostic lie.
+std::optional<double> BalanceEquity(const nlohmann::json& bal) {
+    const nlohmann::json* data = nullptr;
+    if (bal.is_object() && bal.contains("data")) {
+        const nlohmann::json& d = bal["data"];
+        if (d.is_object()) {
+            data = &d;
+        } else if (d.is_array() && !d.empty() && d[0].is_object()) {
+            data = &d[0];
+        }
+    }
+    if (data == nullptr) return std::nullopt;
+
+    double equity = JsonNum(*data, "totalEquity");
+    if (!(equity > 0.0)) equity = JsonNum(*data, "totalEq");
+    if (!(equity > 0.0) && data->contains("details") &&
+        (*data)["details"].is_array()) {
+        for (const auto& row : (*data)["details"]) {
+            if (!row.is_object()) continue;
+            double e = JsonNum(row, "equity");
+            if (!(e > 0.0)) e = JsonNum(row, "eq");
+            if (e > 0.0) { equity = e; break; }
+        }
+    }
+    return equity;
 }
 
 std::string ToHex(const unsigned char* data, size_t len) {
@@ -239,12 +274,46 @@ void BloFinBroker::SyncClock() {
     if (server_ms <= 0) {
         throw std::runtime_error("BloFinBroker: ticker reply carried no ts");
     }
+    // this is an ESTIMATE, not the answer: the ticker's `ts` is the timestamp
+    // of the data it describes, so a cached or quiet feed reports something
+    // seconds old. measured -10 s and -14 s here on a host whose NTP was in
+    // sync, and the balance reply's own `ts` agreed with the local clock to the
+    // second -- i.e. the local clock was never the problem. RefineClockFromReply
+    // replaces this once a signed reply arrives. keep it anyway: it is what lets
+    // the FIRST signed request pass when the local clock really is hours off.
     clock_offset_ms_ = server_ms - NowMillis();
-    LOG_INFO("BloFinBroker: clock offset {} ms", clock_offset_ms_);
+    LOG_INFO("BloFinBroker: clock offset estimate {} ms (from ticker data ts)",
+             clock_offset_ms_);
     if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000) {
-        LOG_WARN("BloFinBroker: local clock off by {} ms; signatures corrected",
-                 clock_offset_ms_);
+        LOG_WARN("BloFinBroker: ticker data is {} ms behind the local clock; "
+                 "refining from a signed reply before trusting that as drift",
+                 clock_offset_ms_ > 0 ? clock_offset_ms_ : -clock_offset_ms_);
     }
+}
+
+void BloFinBroker::RefineClockFromReply(const nlohmann::json& reply,
+                                        const char* source) {
+    int64_t server_ms = 0;
+    try {
+        if (reply.is_object() && reply.contains("data") &&
+            reply["data"].is_object() && reply["data"].contains("ts")) {
+            const auto& v = reply["data"]["ts"];
+            server_ms = std::stoll(v.is_string() ? v.get<std::string>()
+                                                 : std::to_string(v.get<int64_t>()));
+        }
+    } catch (...) {}
+    // no `ts` on this reply: nothing to refine with, keep the estimate.
+    if (server_ms <= 0) return;
+
+    const int64_t measured = server_ms - NowMillis();
+    const int64_t delta = measured - clock_offset_ms_;
+    const int64_t abs_delta = delta < 0 ? -delta : delta;
+    if (abs_delta >= 1000) {
+        LOG_WARN("BloFinBroker: {} puts the venue {} ms away, not {}; the "
+                 "ticker ts was stale data, not clock drift -- using {}",
+                 source, measured, clock_offset_ms_, measured);
+    }
+    clock_offset_ms_ = measured;
 }
 
 bool BloFinBroker::FetchInstrumentRules() {
@@ -313,32 +382,67 @@ void BloFinBroker::ReconcileAccount() {
     // Hard-fail like FetchInstrumentRules: trading blind on equity is worse
     // than refusing to start.
     {
+        // the "0 or unreadable" verdict cannot tell an unfunded demo account
+        // from a renamed field, and the two need opposite fixes: one is funded
+        // on the venue, the other is a parser change here. carry the raw reply
+        // into the failure so the run itself answers that question.
         nlohmann::json bal;
         if (!SendRestGet("/api/v1/account/balance",
                          "productType=USDT-FUTURES", bal)) {
             throw std::runtime_error(
                 "BloFinBroker: could not read account balance at startup");
         }
-        if (!bal.contains("data") || !bal["data"].is_object()) {
+        LIVE_DBG("blofin: balance reply {}", bal.dump());
+        // refine BEFORE the equity check: a zero-balance reply is still a valid
+        // server timestamp, and it is the one that corrects the estimate even
+        // on the run that aborts.
+        RefineClockFromReply(bal, "balance reply");
+        // some builds wrap `data` in an array even for the account-level
+        // reply. a strict is_object() turned a valid frame into "carried no
+        // data object".
+        const std::optional<double> parsed = BalanceEquity(bal);
+        if (!parsed.has_value()) {
             throw std::runtime_error(
-                "BloFinBroker: balance reply carried no data object");
+                "BloFinBroker: balance reply carried no data object (raw "
+                "reply: " + bal.dump() + ")");
         }
-        const auto& d = bal["data"];
-        // totalEquity is the account-level number the ws `account` channel
-        // also reports; details[].equity is per-currency and is only a
-        // fallback for a reply that omits the aggregate.
-        double equity = JsonNum(d, "totalEquity");
-        if (!(equity > 0.0) && d.contains("details") && d["details"].is_array()) {
-            for (const auto& row : d["details"]) {
-                if (!row.is_object()) continue;
-                const double e = JsonNum(row, "equity");
-                if (e > 0.0) { equity = e; break; }
-            }
-        }
+        const double equity = *parsed;
         if (!(equity > 0.0)) {
+            // a successful `code: "0"` reply with all-zero numbers is a
+            // different situation from a failed GET, and the two are one
+            // doc-lookup apart. say which one this is: the signature and the
+            // credentials are proven by the fact that we got here at all.
+            //
+            // the query above is scoped to USDT-FUTURES. virtual demo funds
+            // frequently sit in the coin-margin wallet instead, and an
+            // all-zero USDT-FUTURES reply is indistinguishable from an account
+            // holding nothing. one extra call on a path that is already
+            // aborting decides which of the two this is, instead of sending
+            // the operator to fund a wallet that is not the problem.
+            std::string coin_line = "the COIN-FUTURES wallet could not be read";
+            {
+                nlohmann::json alt;
+                if (SendRestGet("/api/v1/account/balance",
+                                "productType=COIN-FUTURES", alt)) {
+                    const std::optional<double> alt_eq = BalanceEquity(alt);
+                    if (alt_eq.has_value() && *alt_eq > 0.0) {
+                        coin_line =
+                            "the COIN-FUTURES wallet holds " +
+                            std::to_string(*alt_eq) +
+                            ", so the funds are in a product line this config "
+                            "does not trade";
+                    } else {
+                        coin_line = "the COIN-FUTURES wallet is empty too";
+                    }
+                }
+            }
             throw std::runtime_error(
                 "BloFinBroker: account balance is 0 or unreadable at startup "
-                "-- refusing to trade without margin");
+                "-- refusing to trade without margin. the signed GET succeeded "
+                "with code 0, so the key, secret, passphrase and host are "
+                "valid; this is an unfunded account, not a credential problem. "
+                "fund it on the venue. (" + coin_line +
+                ") (raw reply: " + bal.dump() + ")");
         }
         std::lock_guard<std::mutex> lock(state_mutex_);
         current_balance_ = equity;
@@ -368,8 +472,10 @@ void BloFinBroker::ReconcileAccount() {
         current_position_.direction   = position_dir_;
         current_position_.volume      = position_size_;
         current_position_.entry_price = entry_price_;
-        LOG_WARN("BloFinBroker: adopted existing {} {} size={} entry={}; no "
-                 "SL/TP cached -- re-place before trading",
+        // informational, not a defect. the TPSL recovery below is what looks
+        // for a live stop, so claiming "no SL/TP cached" here fired before that
+        // lookup had a chance to find one.
+        LOG_INFO("BloFinBroker: adopted existing {} {} size={} entry={}",
                  (position_dir_ == SignalDirection::BUY ? "long" : "short"),
                  wire_symbol_, position_size_, entry_price_);
     }
@@ -403,6 +509,22 @@ void BloFinBroker::ReconcileAccount() {
             LOG_INFO("BloFinBroker: recovered TPSL {} sl={} tp={}",
                      id, sl, tp);
             break;
+        }
+    }
+
+    // an adopted position with no stop is the one state this adapter will not
+    // repair for you: it has no 1R to measure, so PositionManager's ladder bails
+    // on every tick and the position sits with venue-only protection -- none.
+    // say it as an error at startup, where it can still change what you do.
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (position_size_ > 0.0 && !(current_sl_ > 0.0)) {
+            LOG_ERROR("BloFinBroker: adopted a {} position size={} with NO "
+                      "stop; trade management cannot arm without a 1R and the "
+                      "position is unprotected. close it on the venue (or place "
+                      "a stop there) before treating this run as a test",
+                      position_dir_ == SignalDirection::BUY ? "long" : "short",
+                      position_size_);
         }
     }
 }
@@ -1108,26 +1230,44 @@ void BloFinBroker::UpdateStopLoss(double new_sl) {
 
     bool have_tpsl = false;
     std::string tpsl_id;
+    // the direction is written by the private websocket thread, so it must be
+    // read under the same lock as the tpsl id. read unsynchronised it can land
+    // between the position_size_ write and the position_dir_ write in the
+    // positions handler, still hold NONE, and place a fresh stop on the WRONG
+    // side -- which the venue rejects, or worse accepts as a reduceOnly order
+    // pointing the other way.
+    SignalDirection dir = SignalDirection::NONE;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         have_tpsl = !current_tpsl_id_.empty();
         tpsl_id   = current_tpsl_id_;
+        dir       = position_dir_;
     }
     if (!have_tpsl) {
         RefreshTpslId();
         std::lock_guard<std::mutex> lock(state_mutex_);
         have_tpsl = !current_tpsl_id_.empty();
         tpsl_id   = current_tpsl_id_;
+        dir       = position_dir_;
     }
 
     if (!have_tpsl) {
         // no TPSL exists yet: place one with only the SL leg.
+        //
+        // `side` is the EXIT side, so an unknown direction is not something to
+        // guess at: refuse rather than send protection that points the wrong
+        // way. the next tick retries with a direction the ws handler has
+        // committed.
+        if (dir == SignalDirection::NONE) {
+            LOG_ERROR("BloFinBroker: cannot place a fresh TPSL for {}: "
+                      "position direction is unknown", wire_symbol_);
+            return;
+        }
         nlohmann::json tpsl = {
             {"instId",            wire_symbol_},
             {"marginMode",        "cross"},
             {"positionSide",      "net"},
-            {"side",              position_dir_ == SignalDirection::BUY
-                                      ? "sell" : "buy"},
+            {"side",              dir == SignalDirection::BUY ? "sell" : "buy"},
             {"size",              "-1"},
             {"reduceOnly",        "true"},
             {"slTriggerPrice",     sl_str},

@@ -290,14 +290,26 @@ bool LiveOrchestrator::Start(
   }
 
   if (engine_.broker) {
-    // a venue adapter sizes from exchange equity, which only arrives on the
-    // private wallet stream. until that frame lands GetBalance() is 0.0, the
-    // sizer produces no volume, and the first signals are dropped. say it once
-    // at start instead of leaving it to be inferred from silence.
-    LOG_WARN("LiveOrchestrator: routing orders to the live venue adapter "
-             "(equity={}) -- signals are suppressed until the wallet stream "
-             "reports a balance",
-             engine_.broker->GetBalance());
+    // the balance is primed by ReconcileAccount() from REST during the
+    // broker's construction, before this orchestrator exists, so on a healthy
+    // startup GetBalance() is already the account's equity and the sizer has a
+    // number from the first signal. the private wallet stream only refreshes
+    // it -- waiting for that frame would have blocked trading on an account
+    // whose equity is static.
+    //
+    // keep the zero case loud: a broker that skipped startup (directly
+    // constructed in tests/tooling) leaves GetBalance() at 0 until the
+    // `account` channel pushes, and every sizing path divides by it.
+    const double venue_equity = engine_.broker->GetBalance();
+    if (venue_equity > 0.0) {
+      LOG_INFO("LiveOrchestrator: routing orders to the live venue adapter "
+               "(equity={}, primed at startup); the wallet stream refreshes it",
+               venue_equity);
+    } else {
+      LOG_WARN("LiveOrchestrator: routing orders to the live venue adapter "
+               "(equity=0) -- no balance was primed at startup, so signals are "
+               "suppressed until the wallet stream reports one");
+    }
   } else if (engine_.ptrader) {
     // shadow / dry-run (--paper): real market data from the streamer, local
     // execution. say it once at start so a shadow run is never mistaken for a
@@ -458,9 +470,14 @@ void LiveOrchestrator::Stop() {
                                                 live_bar_.timestamp_start);
       } else {
         // venue path: IBroker has no end-of-run hook, so flatten the whole
-        // position with a reduce-only close instead.
-        LOG_INFO("LiveOrchestrator: flattening venue position at {}",
-                 final_price);
+        // position with a reduce-only close instead. ClosePartial is a no-op
+        // when flat, so only announce a flatten when there is something to
+        // flatten -- a no-trade run dropping the message read as if a
+        // position had been closed on the way out.
+        if (was_open) {
+          LOG_INFO("LiveOrchestrator: flattening venue position at {}",
+                   final_price);
+        }
         broker->ClosePartial(1.0, final_price, live_bar_.timestamp_start,
                              "shutdown");
       }
