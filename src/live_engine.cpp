@@ -164,6 +164,7 @@ LiveOrchestrator::LiveOrchestrator(EngineInstance engine,
 
 void LiveOrchestrator::PublishOpenEvent(const TradeSignal& signal,
                                         int64_t timestamp) {
+  last_published_dir_ = signal.direction;
   if (!redis_publisher_) return;
 
   nlohmann::json ev;
@@ -182,6 +183,7 @@ void LiveOrchestrator::PublishOpenEvent(const TradeSignal& signal,
 }
 
 void LiveOrchestrator::PublishCloseEvent(double price, int64_t timestamp) {
+  last_published_dir_ = SignalDirection::NONE;
   IBroker* broker = ActiveBroker();
   if (!broker || !redis_publisher_) return;
 
@@ -207,6 +209,31 @@ void LiveOrchestrator::PublishCloseEvent(double price, int64_t timestamp) {
   }
 
   PublishJson(redis_publisher_.get(), ev);
+}
+
+// `direction` rather than HasOpenPosition() as the primary signal: on the
+// venue path HasOpenPosition() is also true while an entry is still pending,
+// and flips back if that entry times out unfilled -- which would manufacture
+// a POSITION_CLOSED for a position that never existed. The combined predicate
+// keeps the paper path working, where a close is booked by CheckRisk and the
+// broker's HasOpenPosition() is the authority.
+void LiveOrchestrator::ObservePositionTransition(int64_t now_ms, double price) {
+  IBroker* broker = ActiveBroker();
+  if (!broker) return;
+
+  const TradeSignal pos = broker->GetCurrentPosition();
+  const bool flat =
+      !broker->HasOpenPosition() || pos.direction == SignalDirection::NONE;
+
+  if (flat) {
+    if (last_published_dir_ != SignalDirection::NONE) {
+      PublishCloseEvent(price, now_ms);
+    }
+    return;
+  }
+  if (pos.direction != last_published_dir_) {
+    PublishOpenEvent(pos, now_ms);
+  }
 }
 
 LiveOrchestrator::~LiveOrchestrator() {
@@ -750,6 +777,22 @@ void LiveOrchestrator::WorkerLoop() {
 
     const bool is_long = raw_sig.direction == SignalDirection::BUY;
 
+    // the venue adapter's private stream is the ONLY way fills and closes are
+    // observed: ProcessSignal submits over REST, but position_size_,
+    // trade_history_ and the close-fill bookkeeping all arrive on the
+    // authenticated websocket. submitting an entry while that stream is down
+    // opens a position the engine cannot see, so the next signal stacks a
+    // second one on top of it. refuse instead. self-healing: ws_authed_ flips
+    // true on the login ack, so the next tick after a successful reconnect
+    // trades again without a restart.
+    if (engine_.broker && !engine_.broker->IsConnected()) {
+      LOG_ERROR("live: refusing a {} signal: the execution venue's private "
+                "stream is not authenticated, so fills and closes cannot be "
+                "observed (see the venue adapter's handshake errors above)",
+                is_long ? "long" : "short");
+      return;
+    }
+
     // the account's survival limits outrank the strategy. this sits after the
     // stale-book gate because a stale book is the more immediate reason to
     // stand down, and before sizing because there is no point sizing a trade
@@ -813,6 +856,13 @@ void LiveOrchestrator::WorkerLoop() {
           LOG_INFO("LiveOrchestrator: book recovered; entries re-enabled");
         }
 
+        // after the gap guard: a zeroed book must not publish a close at
+        // price 0. before the prop guard, so a transition caused by the venue
+        // (not by a local flatten) is seen on the frame that revealed it.
+        ObservePositionTransition(
+            ev.l2.timestamp,
+            ev.l2.best_bid_price > 0.0 ? ev.l2.best_bid_price : live_bar_.close);
+
         // account guard on the book path too. this used to run only in the
         // TRADE branch, so on a quiet book a floating loss could cross the
         // daily limit without the guard noticing -- and, now that the
@@ -872,17 +922,13 @@ void LiveOrchestrator::WorkerLoop() {
         }
 
         // 2. active-broker risk check (sl/tp/trail/scale-out triggers).
+        //    the position-closed broadcast no longer hangs off a return value
+        //    here: on the venue path CheckRisk does nothing and the close
+        //    arrives on the websocket thread. ObservePositionTransition below
+        //    sees the transition on the next event instead.
         IBroker* broker = ActiveBroker();
         if (broker) {
-          bool was_open = broker->HasOpenPosition();
           broker->CheckRisk(ev.trade.price, ev.trade.timestamp);
-          bool is_open = broker->HasOpenPosition();
-
-          // broadcast a position-closed event when the risk check
-          // (sl/tp/trail/scale-out) fully closes the position.
-          if (was_open && !is_open) {
-            PublishCloseEvent(ev.trade.price, ev.trade.timestamp);
-          }
         }
 
         // 3. build the live bar (and htf bar) from the trade.
@@ -926,6 +972,8 @@ void LiveOrchestrator::WorkerLoop() {
             execute_signal(candle_sig, ev.trade.price, ev.trade.timestamp);
           }
         }
+
+        ObservePositionTransition(ev.trade.timestamp, ev.trade.price);
         break;
       }
     }

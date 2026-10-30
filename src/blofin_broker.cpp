@@ -1,5 +1,6 @@
 #include "blofin_broker.hpp"
 
+#include "blofin_client_order_id.hpp"
 #include "live_debug.hpp"
 #include "logger.hpp"
 
@@ -218,6 +219,11 @@ BloFinBroker::BloFinBroker(const std::string& api_key,
     wire_symbol_      = WireSymbolFor(spec_.symbol);
 
     LOG_INFO("BloFinBroker: venue {}", mokuren::venue::Manifest(spec_));
+    // print the exact private-ws URL at INFO, not just under --debug. the
+    // 403 investigation turned on "which host is /ws/private on", and the
+    // answer has to be in the log of the run that failed, not in a doc
+    // lookup done afterwards. this line is the one to grep for.
+    LOG_INFO("BloFinBroker: private ws url {}", private_ws_url_);
     if (wire_symbol_ != spec_.symbol) {
         LOG_INFO("BloFinBroker: wire symbol {} (config symbol {})",
                  wire_symbol_, spec_.symbol);
@@ -572,6 +578,7 @@ void BloFinBroker::Stop() {
     if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
     private_ws_.stop();
     ws_connected_ = false;
+    ws_authed_.store(false, std::memory_order_release);
 }
 
 void BloFinBroker::ConnectPrivateStream() {
@@ -579,18 +586,110 @@ void BloFinBroker::ConnectPrivateStream() {
     private_ws_.enableAutomaticReconnection();
     private_ws_.setPingInterval(20);
 
+    // ix::WebSocket's default handshake sends only the RFC 6455 minimum
+    // (Connection/Upgrade/Sec-WebSocket-Version/Key/Host). BloFin's edge
+    // refuses that shape on /ws/private with a 403 while the REST host on the
+    // same name answers normally -- the upgrade is being filtered on the
+    // absence of a browser-shaped Origin/User-Agent, not on the credentials
+    // (which are not in the handshake at all; they arrive in the login frame
+    // after the socket is open). Set both so the upgrade looks like the one
+    // the venue's own web client sends.
+    //
+    // Origin must match the host being dialed, not a fixed string: the demo
+    // and mainnet hosts are different names, and an Origin naming the other
+    // world is a fresh reason to reject. Derive it from private_ws_url_ so a
+    // host-table change in venue_spec.cpp cannot leave a stale Origin here.
+    std::string origin = private_ws_url_;
+    if (origin.compare(0, 6, "wss://") == 0) {
+        origin = "https://" + origin.substr(6);
+    } else if (origin.compare(0, 5, "ws://") == 0) {
+        origin = "http://" + origin.substr(5);
+    }
+    // strip the path: Origin is scheme://host[:port], never a path.
+    const std::string::size_type slash = origin.find('/', origin.find("://") + 3);
+    if (slash != std::string::npos) origin.resize(slash);
+
+    private_ws_.setExtraHeaders({
+        {"Origin", origin},
+        {"User-Agent",
+         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+    });
+    LIVE_DBG("blofin: dialing private ws {} (Origin: {})",
+             private_ws_url_, origin);
+
     private_ws_.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
         switch (msg->type) {
             case ix::WebSocketMessageType::Open:
+                // a (re)connect invalidates any previous login: the socket is
+                // up but fills cannot arrive until the login frame is acked.
+                ws_authed_.store(false, std::memory_order_release);
+                // reset the retry-log latch so a reconnect that succeeds and
+                // later fails again logs a fresh ERROR, not a suppressed WARN.
+                last_logged_retries_.store(-1, std::memory_order_relaxed);
+                LOG_INFO("BloFinBroker: private stream connected -- "
+                         "authenticating");
                 AuthenticatePrivateStream();
                 ws_connected_ = true;
                 break;
             case ix::WebSocketMessageType::Message:
                 HandlePrivateMessage(msg->str);
                 break;
-            case ix::WebSocketMessageType::Error:
-            case ix::WebSocketMessageType::Close:
+            case ix::WebSocketMessageType::Error: {
+                // one line per DISTINCT cause, not per retry. a WAF refusing
+                // the upgrade returns an identical 403 every ~2 s forever;
+                // logging all of them buries the first occurrence, which is
+                // the only informative one.
+                //
+                // gated on keep_alive_ for the same reason as Close below: an
+                // Error frame can arrive from ix's receive thread after Stop()
+                // has already torn the socket down, and "still failing after N
+                // retries" on a run that is exiting is a lie that costs a grep
+                // to disprove.
+                if (keep_alive_.load(std::memory_order_acquire)) {
+                    const int r = msg->errorInfo.retries;
+                    const int last =
+                        last_logged_retries_.load(std::memory_order_relaxed);
+                    if (r == 0 || r != last) {
+                        last_logged_retries_.store(r, std::memory_order_relaxed);
+                        if (r == 0) {
+                            LOG_ERROR("BloFinBroker: private stream error "
+                                      "(http={}): {}",
+                                      msg->errorInfo.http_status,
+                                      msg->errorInfo.reason);
+                        } else {
+                            LOG_WARN("BloFinBroker: private stream error "
+                                     "(http={}) still failing after {} retries: "
+                                     "{}",
+                                     msg->errorInfo.http_status, r,
+                                     msg->errorInfo.reason);
+                        }
+                    }
+                } else {
+                    LIVE_DBG("BloFinBroker: private stream error on shutdown "
+                             "(http={}): {}",
+                             msg->errorInfo.http_status,
+                             msg->errorInfo.reason);
+                }
                 ws_connected_ = false;
+                ws_authed_.store(false, std::memory_order_release);
+                break;
+            }
+            case ix::WebSocketMessageType::Close:
+                // ix delivers Close from its own receive thread even when the
+                // close was requested by Stop(). "reconnecting" on a run that
+                // is exiting is misleading: keep_alive_ is false and the
+                // socket will not try again. say which case this is.
+                if (keep_alive_.load(std::memory_order_acquire)) {
+                    LOG_WARN("BloFinBroker: private stream closed (code={} "
+                             "reason='{}'); reconnecting",
+                             msg->closeInfo.code, msg->closeInfo.reason);
+                } else {
+                    LIVE_DBG("BloFinBroker: private stream closed on shutdown "
+                             "(code={})", msg->closeInfo.code);
+                }
+                ws_connected_ = false;
+                ws_authed_.store(false, std::memory_order_release);
                 break;
             default:
                 break;
@@ -624,6 +723,7 @@ void BloFinBroker::AuthenticatePrivateStream() {
     const std::string nonce = ts_ms;   // docs: nonce MAY equal timestamp
     const std::string sign = GenerateSignature("/users/self/verify", "GET",
                                                ts_ms, nonce, "");
+    LOG_INFO("BloFinBroker: sending ws login (ts={})", ts_ms);
     nlohmann::json login;
     login["op"] = "login";
     login["args"] = nlohmann::json::array();
@@ -649,6 +749,12 @@ void BloFinBroker::SubscribePrivateTopics() {
 
 void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
     if (payload == "pong") { LIVE_DBG("blofin: pong"); return; }
+    // raw frame under --debug only: the subscribe-ack shape is inferred from
+    // OKX-lineage convention, and if the venue answers with a different
+    // envelope (e.g. {"op":"subscribe","success":true,...}) the branch below
+    // will not match and the ack falls through silently again. one line here
+    // turns the next iteration into a literal fix instead of a guess.
+    LIVE_DBG("blofin: private raw frame {}", payload.substr(0, 200));
     const nlohmann::json j = nlohmann::json::parse(payload, nullptr, false);
     if (j.is_discarded() || !j.is_object()) return;
 
@@ -657,14 +763,40 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
         if (event == "login") {
             const std::string code = j.value("code", std::string("-1"));
             if (code == "0") {
+                LOG_INFO("BloFinBroker: private stream authenticated -- "
+                         "subscribing");
+                ws_authed_.store(true, std::memory_order_release);
                 SubscribePrivateTopics();
             } else {
                 LOG_ERROR("BloFinBroker: login failed (code {}): {}",
                           code, j.value("msg", "no reason"));
+                ws_authed_.store(false, std::memory_order_release);
             }
+        } else if (event == "subscribe") {
+            // the ack is the direct proof that the venue accepted the
+            // subscription for that channel + instId. `account` is
+            // account-level and carries no instId, so it can flow while
+            // `positions`/`orders` (subscribed per-instrument) are silently
+            // rejected on a wrong wire symbol. logging the channel name is
+            // what makes that visible: three acks = all accepted, a missing
+            // one names the channel that was not.
+            const std::string channel =
+                j.contains("arg") && j["arg"].is_object()
+                    ? j["arg"].value("channel", std::string{})
+                    : std::string{};
+            LOG_INFO("BloFinBroker: private stream subscribe ack channel='{}'",
+                     channel);
         } else if (event == "error") {
-            LOG_ERROR("BloFinBroker: private stream error (code {}): {}",
-                      j.value("code", std::string("?")),
+            // name the channel too: a failed subscribe is otherwise
+            // indistinguishable from a session-level error, and the fix
+            // (usually the instId format) is per-channel.
+            const std::string channel =
+                j.contains("arg") && j["arg"].is_object()
+                    ? j["arg"].value("channel", std::string{})
+                    : std::string{};
+            LOG_ERROR("BloFinBroker: private stream error (code {}) on "
+                      "channel='{}': {}",
+                      j.value("code", std::string("?")), channel,
                       j.value("msg", "no reason"));
         }
         return;
@@ -723,6 +855,9 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                                       : JsonNum(entry, "pos");
                 if (sz != 0.0) {
                     pending_entry_ = false;   // fill confirmed; entry resolved
+                    // pending_entry_ms_ is deliberately NOT cleared here: the
+                    // close-fill branch reads it to stamp TradeRecord::
+                    // entry_time, and the close arrives after this frame.
                     position_size_ = std::abs(sz);
                     position_dir_  = (sz > 0.0) ? SignalDirection::BUY
                                                 : SignalDirection::SELL;
@@ -749,6 +884,11 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                     entry_price_     = 0.0;
                     current_sl_      = 0.0;
                     current_tp_      = 0.0;
+                    // the position is gone; the next entry stamps its own
+                    // pending_entry_ms_. Clearing here keeps a stale entry
+                    // time from leaking into a later record if the close
+                    // fill never arrives (e.g. liquidation handled elsewhere).
+                    pending_entry_ms_ = 0;
                 }
             }
         } else if (channel == "account") {
@@ -822,7 +962,11 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                 if (is_close_order) {
                     last_closed_size_ = filled * contract_value_;
                     TradeRecord rec{};
-                    rec.entry_time   = 0;
+                    // entry_time is the entry fill's updateTime, captured when
+                    // the entry was sent. It used to be hardcoded 0, so every
+                    // round-trip record carried a zero entry time and any
+                    // consumer drawing a trade duration saw a 1970 start.
+                    rec.entry_time   = pending_entry_ms_;
                     rec.exit_time    = static_cast<int64_t>(JsonNum(entry, "updateTime"));
                     // `side` on a close fill is the EXIT side. TradeRecord
                     // .direction means "which side was I on", so a sell that
@@ -852,8 +996,7 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
     // "500" in data[0]; that is expected and not a failure worth escalating.
     if (!tpsl_to_cancel.empty()) {
         nlohmann::json cx = nlohmann::json::array(
-            {{{"instId", wire_symbol_}, {"tpslId", tpsl_to_cancel},
-              {"clientOrderId", ""}}});
+            {{{"instId", wire_symbol_}, {"tpslId", tpsl_to_cancel}}});
         nlohmann::json cresp;
         const int cc = SendRestRequest("POST", "/api/v1/trade/cancel-tpsl",
                                        cx.dump(), &cresp);
@@ -1068,6 +1211,10 @@ size_t BloFinBroker::GetTradeCount() const {
     return trade_history_.size();
 }
 
+bool BloFinBroker::IsConnected() const {
+    return ws_authed_.load(std::memory_order_acquire);
+}
+
 double BloFinBroker::GetLastClosedSize() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return last_closed_size_;
@@ -1105,10 +1252,11 @@ void BloFinBroker::ProcessSignal(TradeSignal signal, double fill_price,
         {"side",          is_buy ? "buy" : "sell"},
         {"orderType",     "market"},
         {"size",          FormatStep(contracts, rules_.qty_step)},
-        {"clientOrderId", "mok-" + std::to_string(NowSignedMillis()) + "-" +
-                          std::to_string(++order_seq_)},
+        {"clientOrderId", mokuren::blofin::MakeClientOrderId(
+                              "mok", NowSignedMillis(), ++order_seq_)},
     };
 
+    LIVE_DBG("blofin: order {}", order.dump());
     nlohmann::json entry_resp;
     const int ret = SendRestRequest("POST", "/api/v1/trade/order",
                                     order.dump(), &entry_resp);
@@ -1122,6 +1270,10 @@ void BloFinBroker::ProcessSignal(TradeSignal signal, double fill_price,
         std::lock_guard<std::mutex> lock(state_mutex_);
         pending_entry_       = true;
         pending_since_ms_    = NowMillis();
+        // the entry fill's updateTime is not carried on the positions frame,
+        // so stamp it here, at the moment the entry was accepted. The close
+        // fill branch reads this to fill TradeRecord::entry_time.
+        pending_entry_ms_    = pending_since_ms_;
         if (signal.stop_loss   > 0.0) current_sl_ = signal.stop_loss;
         if (signal.take_profit > 0.0) current_tp_ = signal.take_profit;
     }
@@ -1165,6 +1317,7 @@ void BloFinBroker::ProcessSignal(TradeSignal signal, double fill_price,
         tpsl["slOrderPrice"]       = "-1";
         tpsl["slTriggerPriceType"] = "last";
     }
+    LIVE_DBG("blofin: order {}", tpsl.dump());
     nlohmann::json resp;
     const int tcode = SendRestRequest("POST", "/api/v1/trade/order-tpsl",
                                       tpsl.dump(), &resp);
@@ -1189,9 +1342,10 @@ void BloFinBroker::ProcessSignal(TradeSignal signal, double fill_price,
             {"orderType",     "market"},
             {"size",          FormatStep(contracts, rules_.qty_step)},
             {"reduceOnly",    "true"},
-            {"clientOrderId", "emg-" + std::to_string(NowSignedMillis()) +
-                              "-" + std::to_string(++order_seq_)},
+            {"clientOrderId", mokuren::blofin::MakeClientOrderId(
+                                  "emg", NowSignedMillis(), ++order_seq_)},
         };
+        LIVE_DBG("blofin: order {}", emergency.dump());
         nlohmann::json eresp;
         const int ecode = SendRestRequest("POST", "/api/v1/trade/order",
                                           emergency.dump(), &eresp);
@@ -1365,11 +1519,12 @@ void BloFinBroker::ClosePartial(double fraction, double, int64_t,
         {"orderType",     "market"},
         {"size",          FormatStep(close_contracts, rules_.qty_step)},
         {"reduceOnly",    "true"},
-        {"clientOrderId", "close-" + std::to_string(NowSignedMillis()) + "-" +
-                          std::to_string(++order_seq_)},
+        {"clientOrderId", mokuren::blofin::MakeClientOrderId(
+                              "close", NowSignedMillis(), ++order_seq_)},
     };
 
     LOG_INFO("BloFinBroker: closing {} contracts ({})", close_contracts, reason);
+    LIVE_DBG("blofin: order {}", payload.dump());
     nlohmann::json close_resp;
     const int ret = SendRestRequest("POST", "/api/v1/trade/order",
                                     payload.dump(), &close_resp);
@@ -1397,7 +1552,7 @@ void BloFinBroker::ClosePartial(double fraction, double, int64_t,
         if (!tid.empty()) {
             // cancel-tpsl takes an array per the docs.
             nlohmann::json cx = nlohmann::json::array(
-                {{{"instId", wire_symbol_}, {"tpslId", tid}, {"clientOrderId", ""}}});
+                {{{"instId", wire_symbol_}, {"tpslId", tid}}});
             nlohmann::json cresp;
             const int cc = SendRestRequest("POST", "/api/v1/trade/cancel-tpsl",
                                            cx.dump(), &cresp);

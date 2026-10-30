@@ -28,34 +28,30 @@ BybitHosts BybitHostsFor(Env env) {
 // demo-trading-openapi host. there is no testnet -- a key is either live or
 // demo, and asking for testnet is a config error, not a fallback.
 //
-// the ws paths are /ws/public and /ws/private on the same host as rest, which
-// is why the ws root is derived from the rest host rather than kept as a
-// separate table.
+// ws_root is a SEPARATE field, not derived from rest. the previous version
+// assumed /ws/private lived on the same host as REST and translated the
+// scheme; that assumption is what a 403 on the demo private socket looks
+// like when it is wrong. keeping it explicit means a doc lookup that says
+// "demo ws is on a different host" is a one-line table edit, not a rewrite
+// of the derivation. when the two hosts really are the same, the field
+// simply repeats the rest host -- the cost of the field is one string.
 struct BloFinHosts {
   const char* rest;
+  const char* ws_root;
 };
 
 BloFinHosts BloFinHostsFor(Env env) {
   switch (env) {
     case Env::Mainnet:
-      return {"https://openapi.blofin.com"};
+      return {"https://openapi.blofin.com", "wss://openapi.blofin.com"};
     case Env::Demo:
-      return {"https://demo-trading-openapi.blofin.com"};
+      return {"https://demo-trading-openapi.blofin.com",
+              "wss://demo-trading-openapi.blofin.com"};
     case Env::Testnet:
       throw std::invalid_argument(
           "venue: blofin has no testnet (expected mainnet or demo)");
   }
   throw std::invalid_argument("venue: unknown environment");
-}
-
-// "https://host" -> "wss://host". the ws endpoints live on the same host as
-// rest for blofin, so this is the only translation needed.
-std::string WsRootFromRest(const std::string& rest) {
-  const std::string https = "https://";
-  if (rest.compare(0, https.size(), https) == 0) {
-    return "wss://" + rest.substr(https.size());
-  }
-  return rest;
 }
 
 } // namespace
@@ -107,10 +103,9 @@ Spec Resolve(const std::string& venue, Env env, const std::string& category,
 
   if (venue == "blofin") {
     const BloFinHosts hosts = BloFinHostsFor(env);
-    const std::string ws_root = WsRootFromRest(hosts.rest);
     spec.rest_base = hosts.rest;
-    spec.public_ws = ws_root + "/ws/public";
-    spec.private_ws = ws_root + "/ws/private";
+    spec.public_ws = std::string(hosts.ws_root) + "/ws/public";
+    spec.private_ws = std::string(hosts.ws_root) + "/ws/private";
     return spec;
   }
 

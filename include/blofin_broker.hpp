@@ -77,6 +77,7 @@ public:
     bool HasOpenPosition() const override;
     TradeSignal GetCurrentPosition() const override;
     void UpdateStopLoss(double new_sl) override;
+    bool IsConnected() const override;
 
     // ---- IBroker: orchestration hooks ----
     void ProcessSignal(TradeSignal signal, double fill_price, int64_t current_time) override;
@@ -256,6 +257,17 @@ private:
 
     ix::WebSocket private_ws_;
     std::atomic<bool> ws_connected_{false};
+    // last retry count whose Error frame was logged. a WAF refusing the
+    // upgrade returns an identical 403 every ~2 s forever; without this latch
+    // the log fills with identical lines and buries the first one. reset to
+    // -1 on Open so a reconnect that succeeds and later fails again logs a
+    // fresh ERROR.
+    std::atomic<int> last_logged_retries_{-1};
+    // distinct from ws_connected_, which means "the TCP socket is up". this
+    // means "the login frame was acked with code 0", i.e. fills can actually
+    // arrive. a socket that opens and then fails auth would otherwise report
+    // connected forever while delivering nothing.
+    std::atomic<bool> ws_authed_{false};
 
     std::thread heartbeat_thread_;
     std::atomic<bool> keep_alive_{false};
@@ -276,6 +288,15 @@ private:
 
     mutable bool pending_entry_ = false;
     mutable int64_t pending_since_ms_ = 0;
+
+    // the entry fill's updateTime, stamped when the entry is ACCEPTED.
+    // the positions frame does not carry it, so a closed TradeRecord would
+    // otherwise report entry_time 0 and any consumer drawing a trade duration
+    // would see a 1970 start. written under state_mutex_ in ProcessSignal
+    // (accepted entry) and cleared in the positions handler once the close
+    // has been booked; read only by the close-fill branch that builds the
+    // record. not mutable: no const getter touches it.
+    int64_t pending_entry_ms_ = 0;
 
     double current_sl_ = 0.0;
     double current_tp_ = 0.0;

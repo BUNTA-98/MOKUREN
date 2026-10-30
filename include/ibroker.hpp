@@ -87,4 +87,11 @@ public:
     // size of the most recently closed position (0.0 if none yet).
     // used by the live event broadcaster to report closed volume.
     virtual double GetLastClosedSize() const = 0;
+
+    // liveness of the execution path. a venue adapter reports whether its
+    // private stream is authenticated and delivering -- the one component that
+    // can fail without the process exiting. the default is true because a
+    // paper account has no socket to drop; defaulting false would make every
+    // backtest, scan and WFA run report itself disconnected.
+    virtual bool IsConnected() const { return true; }
 };

@@ -165,6 +165,12 @@ private:
   // entry_time -- the whole trade, not just its final piece.
   void PublishCloseEvent(double price, int64_t timestamp);
 
+  // publishes OPEN/CLOSED on an OBSERVED position transition rather than on
+  // the return value of CheckRisk. On the venue path a TP/SL fire closes the
+  // position on the broker's websocket thread; CheckRisk is a no-op there, so
+  // the previous before/after comparison around it could never see a close.
+  void ObservePositionTransition(int64_t now_ms, double price);
+
   // worker thread entry point: drains the queue and feeds the engine.
   void WorkerLoop();
 
@@ -241,6 +247,11 @@ private:
 
   // non-blocking redis pub/sub broadcaster for live events.
   std::unique_ptr<RedisPublisher> redis_publisher_;
+
+  // last confirmed position, by direction; NONE means flat. written inside
+  // PublishOpenEvent / PublishCloseEvent so an explicit close (prop halt,
+  // shutdown) cannot be published a second time by the observer.
+  SignalDirection last_published_dir_ = SignalDirection::NONE;
 
   // bounded event queue guarded by mutex_/cv_.
   std::deque<Event> queue_;

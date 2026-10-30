@@ -217,15 +217,19 @@ TEST_CASE("Factory: disable spellings and wiring", "[factory]") {
       j["triggers"] = json::array({json::object(
           {{"name", "StackedImbalance"}, {"active", off}})});
       INFO("disabled with: " << off.dump());
-      REQUIRE_THROWS_AS(BuildFrom(j), std::runtime_error);
+      // Validate() rejects an all-disabled trigger list at Load() time and
+      // throws std::invalid_argument (per config_parser.hpp's contract), not
+      // the std::runtime_error Build() uses for unknown names.
+      REQUIRE_THROWS_AS(BuildFrom(j), std::invalid_argument);
     }
   }
 
-  SECTION("disabling every trigger is a build error") {
+  SECTION("disabling every trigger fails the config") {
     json j = BaseConfig();
     j["triggers"] = json::array({json::object(
         {{"name", "StackedImbalance"}, {"enabled", false}})});
-    REQUIRE_THROWS_AS(BuildFrom(j), std::runtime_error);
+    // rejected by Validate() inside Load(), before Build() is reached.
+    REQUIRE_THROWS_AS(BuildFrom(j), std::invalid_argument);
   }
 
   SECTION("one trigger is used directly, several become an OR") {

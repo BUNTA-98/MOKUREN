@@ -1,7 +1,13 @@
 [Unit]
 Description=Mokuren Trading Engine (%i)
-After=network-online.target
-Wants=network-online.target
+# docker.service brings the redis container back (docker-compose.yml already
+# sets restart: unless-stopped) before the engine dials 127.0.0.1:6379.
+# mokuren-telegram.service must already be subscribed when Start() publishes
+# SYSTEM_STARTUP: pub/sub has no replay, so an event emitted before the
+# listener connects is gone. Wants=, not Requires= -- a broken bot must not
+# stop the engine from trading.
+After=network-online.target docker.service mokuren-telegram.service
+Wants=network-online.target docker.service mokuren-telegram.service
 # bound the restart loop. Restart=always with no limit turned a config typo
 # into an infinite respawn: the unit never reached "failed", so nothing
 # surfaced the reason and the journal filled with the same error.
@@ -10,10 +16,17 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# the only lines a different machine must change: everything below uses %h, the
+# home directory of this user, so the repo is expected at ~/src/kaito.
 User=bunta
 Group=bunta
-WorkingDirectory=/home/bunta/src/kaito
-ExecStart=/home/bunta/src/kaito/build/mokuren --live --config=/home/bunta/src/kaito/configs/%i.json
+WorkingDirectory=%h/src/kaito
+# %i is the instance name, so `mokuren@bybit_to_blofin` reads
+# ~/.config/mokuren/bybit_to_blofin.env. the leading "-" means a profile that
+# needs no credentials is not a unit failure; an empty key still fails loudly
+# in AppConfig::Load, which is the behaviour we want.
+EnvironmentFile=-%h/.config/mokuren/%i.env
+ExecStart=%h/src/kaito/build/mokuren --live --config=%h/src/kaito/configs/%i.json
 # on-failure, not always: a clean exit (ctrl-c, a stream that ended normally)
 # must not be restarted. this is only correct because RunLive now returns
 # non-zero on a stream abort -- before that, every abort exited 0 and the

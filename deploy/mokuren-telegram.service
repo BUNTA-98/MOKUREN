@@ -1,0 +1,50 @@
+[Unit]
+Description=Mokuren Telegram bridge (Redis -> Telegram)
+# Redis is expected at 127.0.0.1:6379 (the redis service in docker-compose.yml,
+# or a native install). This unit does not need redis to be up first: the
+# script retries the connection itself, so a late redis costs a few seconds
+# instead of failing the unit.
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+# Same bound as mokuren@.service. A missing bot token makes TELEGRAM.py exit
+# non-zero; without a limit that becomes an infinite respawn that never reaches
+# "failed", so nothing ever surfaces the reason. After five attempts the unit
+# lands in failed with the cause in the journal.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bunta
+Group=bunta
+# python-dotenv walks up from tools/TELEGRAM.py, so kaito/.env and tools/.env
+# both resolve without depending on the working directory. An explicit env
+# file is optional and wins over .env (systemd env is real env, and dotenv does
+# not override it) -- useful when the token should live only with the service.
+# %h is the home directory of the User= above, so a machine whose account is
+# not "bunta" only has to change User=/Group= -- every path here follows. the
+# repo is expected at ~/src/kaito.
+EnvironmentFile=-%h/.config/mokuren/telegram.env
+WorkingDirectory=%h/src/kaito
+# unbuffered: stdout to journal is block-buffered otherwise, so "[redis]
+# subscribed" could sit in a buffer while you wonder why nothing arrived.
+Environment=PYTHONUNBUFFERED=1
+# /usr/bin/python3 is the SYSTEM interpreter, not the shell's: anything
+# installed with `pip --user` or into an activated venv is invisible here. The
+# script needs redis, requests and python-dotenv importable by THIS
+# interpreter. Missing one is an ImportError at line 21 plus a crash loop,
+# which is exactly what the first run of this unit produced.
+#   Arch:  sudo pacman -S python-redis python-requests python-dotenv
+#   venv:  point ExecStart at tools/.venv/bin/python instead.
+ExecStart=/usr/bin/python3 %h/src/kaito/tools/TELEGRAM.py
+# on-failure, not always: a dropped redis or a bot API hiccup restarts, a
+# deliberate stop stays down.
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
