@@ -11,6 +11,10 @@ namespace mokuren::venue {
 enum class Env { Mainnet, Testnet, Demo };
 
 struct Spec {
+  // the venue this spec was resolved for ("bybit", "blofin"). carried on the
+  // spec so a consumer can dispatch on it without re-reading the config, and
+  // so Manifest() names the venue it describes.
+  std::string venue;
   Env env = Env::Testnet;
   std::string category = "linear"; // linear | spot | inverse
   std::string symbol = "BTCUSDT";
@@ -19,11 +23,17 @@ struct Spec {
   std::string private_ws;
 };
 
-// throws std::invalid_argument on an unknown environment or category, or an
-// empty symbol. this is the ONLY place a venue hostname may appear.
-Spec Resolve(const std::string& env, const std::string& category,
+// throws std::invalid_argument on an unknown venue, environment or category,
+// or an empty symbol. this is the ONLY place a venue hostname may appear.
+//
+// the venue name selects the host table: bybit has three worlds, blofin has
+// two (mainnet and demo) and no testnet. an unknown venue is a hard error, not
+// a fallback to bybit -- a typo must never route orders to a venue the config
+// did not name.
+Spec Resolve(const std::string& venue, const std::string& env,
+             const std::string& category, const std::string& symbol);
+Spec Resolve(const std::string& venue, Env env, const std::string& category,
              const std::string& symbol);
-Spec Resolve(Env env, const std::string& category, const std::string& symbol);
 
 // string <-> enum. a typo must fail, never fall back to mainnet.
 Env ParseEnv(const std::string& name);

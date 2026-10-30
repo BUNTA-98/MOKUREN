@@ -1,0 +1,200 @@
+{
+  "api_key": "",
+  "api_secret": "",
+  "backtest": {
+    "config_profile": "configs/default.json",
+    "wfa_in_sample_days": 14,
+    "wfa_mode": false,
+    "wfa_out_of_sample_days": 7,
+    "wfa_step_days": 7
+  },
+  "environment": {
+    "dataset": "data/2026/bybit2.mkn",
+    "interval_ms": 60000.0,
+    "macro_interval_ms": 300000.0,
+    "max_cores": 6.0,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
+  },
+  "exchange": "bybit",
+  "execution": {
+    "slippage_pct": 0.0002,
+    "taker_fee_pct": 0.0004
+  },
+  "filters": [
+    {
+      "active": true,
+      "lookback": 1.0,
+      "name": "MacroTrend"
+    },
+    {
+      "active": false,
+      "min_volume": 100.0,
+      "name": "MinVolume"
+    },
+    {
+      "active": false,
+      "lookback": 20,
+      "name": "RVOL",
+      "threshold": 2.0
+    },
+    {
+      "active": false,
+      "lookback": 25.0,
+      "min_atr": 40.0,
+      "name": "ATRChop"
+    },
+    {
+      "active": false,
+      "name": "VwapTrend",
+      "require_trend_alignment": true
+    },
+    {
+      "active": false,
+      "lookback": 5,
+      "name": "CVDDivergence"
+    },
+    {
+      "active": false,
+      "lookback": 5,
+      "min_dollar": 150.0,
+      "name": "Volatility"
+    },
+    {
+      "active": false,
+      "end_h": 17,
+      "end_m": 0,
+      "name": "TimeOfDay",
+      "start_h": 8,
+      "start_m": 0
+    },
+    {
+      "active": false,
+      "name": "POCTrend"
+    }
+  ],
+  "initial_balance": 25000.0,
+  "prop": {
+    "daily_reset_hour_utc": 0,
+    "enabled": true,
+    "flatten_on_breach": true,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8
+  },
+  "risk": {
+    "min_distance_dollars": 0.0,
+    "modules": [
+      {
+        "active": false,
+        "name": "SinglePositionLock"
+      },
+      {
+        "active": true,
+        "max_leverage": 40.0,
+        "name": "MaxLeverageLock"
+      },
+      {
+        "active": false,
+        "max_stop_pct": 0.02,
+        "name": "MaxStopDistanceLock"
+      },
+      {
+        "active": false,
+        "cooldown_ms": 1800000,
+        "name": "AntiRevengeLock"
+      }
+    ],
+    "risk_per_trade_pct": 0.005,
+    "sl_pct": {
+      "max": 0.006,
+      "min": 0.003,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.003
+    },
+    "tp_r": {
+      "max": 5.0,
+      "min": 2.0,
+      "mode": "range",
+      "step": 1.0,
+      "val": 2.0
+    }
+  },
+  "startup_probe": {
+    "min_l2_depth": 20,
+    "on_failure": "abort",
+    "preset": "development"
+  },
+  "trade_management": {
+    "break_even": {
+      "enabled": true,
+      "target_r": 0.1,
+      "trigger_r": 2.0
+    },
+    "scale_out": {
+      "enabled": false,
+      "fraction": 0.5,
+      "trigger_r": 2.0
+    },
+    "trailing": {
+      "distance_r": 0.5,
+      "enabled": false,
+      "trigger_r": 1.0
+    }
+  },
+  "triggers": [
+    {
+      "active": false,
+      "drop_threshold": {
+        "max": 1.0,
+        "min": 0.1,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.1
+      },
+      "lookback_ms": {
+        "max": 2000.0,
+        "min": 500.0,
+        "mode": "range",
+        "step": 500.0,
+        "val": 500.0
+      },
+      "min_wall_qty": {
+        "max": 1.0,
+        "min": 0.5,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.5
+      },
+      "name": "SpoofHunter"
+    },
+    {
+      "active": true,
+      "min_level_qty": 0.001,
+      "min_stacked_count": 5.0,
+      "name": "StackedImbalance",
+      "ratio_threshold": 3.0,
+      "require_candle_agreement": false
+    },
+    {
+      "active": false,
+      "min_delta_threshold": {
+        "max": 100.0,
+        "min": 1.0,
+        "mode": "range",
+        "step": 1.0,
+        "val": 10.0
+      },
+      "name": "DeltaAbsorption"
+    }
+  ],
+  "venue": {
+    "allow_mainnet": false,
+    "category": "linear",
+    "environment": "testnet",
+    "lot_step": 0.001,
+    "position_mode": "one_way",
+    "symbol": "BTCUSDT"
+  }
+}

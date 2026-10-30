@@ -83,6 +83,9 @@ struct AppConfig {
   std::string exchange = "";
   std::string api_key = "";
   std::string api_secret = "";
+  // blofin's third credential. empty on every other venue; Validate() only
+  // requires it when exchange == "blofin".
+  std::string api_passphrase = "";
   // fail safe: default to testnet so a missing or misspelled key in the
   // config can never silently route live orders to api.bybit.com.
   //

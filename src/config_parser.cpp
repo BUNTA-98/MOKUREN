@@ -223,6 +223,20 @@ void AppConfig::Validate(bool require_venue_credentials) const {
       fail("api_secret must not be empty when exchange is \"bybit\"");
     }
   }
+  // blofin signs with three credentials: key, secret and passphrase. a blank
+  // passphrase surfaces as a signature failure at the first signed call, long
+  // after startup, so it is checked here with the other two.
+  if (require_venue_credentials && exchange == "blofin") {
+    if (api_key.empty()) {
+      fail("api_key must not be empty when exchange is \"blofin\"");
+    }
+    if (api_secret.empty()) {
+      fail("api_secret must not be empty when exchange is \"blofin\"");
+    }
+    if (api_passphrase.empty()) {
+      fail("api_passphrase must not be empty when exchange is \"blofin\"");
+    }
+  }
 
   // --- venue ---
   // whitelist the venue name. a typo used to skip the credential check above
@@ -237,8 +251,9 @@ void AppConfig::Validate(bool require_venue_credentials) const {
   // StackedImbalance/SpoofHunter read zeroed level-2 slots. listing a venue
   // whose feed can pass the checks but cannot feed the alpha is worse than not
   // listing it at all.
-  if (exchange != "bybit" && exchange != "hyperliquid") {
-    fail("exchange must be one of 'bybit', 'hyperliquid' (got '" +
+  if (exchange != "bybit" && exchange != "hyperliquid" &&
+      exchange != "blofin") {
+    fail("exchange must be one of 'bybit', 'hyperliquid', 'blofin' (got '" +
          exchange + "')");
   }
   if (category != "linear" && category != "spot" && category != "inverse") {
@@ -452,11 +467,11 @@ void AppConfig::Validate(bool require_venue_credentials) const {
 mokuren::venue::Spec AppConfig::DataSpec() const {
   // the instrument is shared; only the world differs. DataEnv() falls back to
   // env, so a config that names one environment resolves both specs to it.
-  return mokuren::venue::Resolve(DataEnv(), category, symbol);
+  return mokuren::venue::Resolve(exchange, DataEnv(), category, symbol);
 }
 
 mokuren::venue::Spec AppConfig::ExecSpec() const {
-  return mokuren::venue::Resolve(env, category, symbol);
+  return mokuren::venue::Resolve(exchange, env, category, symbol);
 }
 
 // ============================================================================
@@ -664,6 +679,10 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
 
     cfg.api_key = SafeString(src, "api_key", SafeString(*creds, "api_key", ""));
     cfg.api_secret = SafeString(src, "api_secret", SafeString(*creds, "api_secret", ""));
+    // blofin's third credential. optional on every other venue, so absence is
+    // not an error here -- Validate() enforces it only when exchange=="blofin".
+    cfg.api_passphrase =
+        SafeString(src, "api_passphrase", SafeString(*creds, "api_passphrase", ""));
     // cfg.is_testnet already defaults to true, so it doubles as the fallback.
     cfg.is_testnet = SafeBool(src, "is_testnet", SafeBool(*creds, "is_testnet", cfg.is_testnet));
   });

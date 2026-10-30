@@ -1,0 +1,75 @@
+{
+  "exchange": "blofin",
+  "api_key": "",
+  "api_secret": "",
+  "api_passphrase": "",
+  "initial_balance": 10000.0,
+
+  "venue": {
+    "environment": "demo",
+    "category": "linear",
+    "symbol": "BTC-USDT",
+    "position_mode": "one_way",
+    "lot_step": 0.001
+  },
+
+  "environment": {
+    "dataset": "",
+    "interval_ms": 60000,
+    "macro_interval_ms": 900000,
+    "tick_size": 0.1,
+    "vwap_reset_hour": 0
+  },
+
+  "execution": {
+    "taker_fee_pct": 0.0004,
+    "slippage_pct": 0.0002
+  },
+
+  "risk": {
+    "sl_pct": 0.002,
+    "tp_r": 2.0,
+    "risk_per_trade_pct": 0.01,
+    "min_distance_dollars": 0.0,
+    "modules": [
+      { "name": "SinglePositionLock", "active": true },
+      { "name": "MaxStopDistanceLock", "active": true, "max_stop_pct": 0.015 },
+      { "name": "MaxLeverageLock", "active": true, "max_leverage": 10.0 },
+      { "name": "AntiRevengeLock", "active": true, "cooldown_ms": 1800000 }
+    ]
+  },
+
+  "trade_management": {
+    "break_even": {
+      "enabled": true,
+      "trigger_r": 1.0,
+      "target_r": 0.0
+    },
+    "trailing": {
+      "enabled": true,
+      "trigger_r": 1.5,
+      "distance_r": 0.5
+    },
+    "scale_out": {
+      "enabled": false,
+      "trigger_r": 2.0,
+      "fraction": 0.5
+    }
+  },
+
+  "triggers": [
+    {
+      "name": "StackedImbalance",
+      "active": true,
+      "ratio_threshold": 1.5,
+      "min_stacked_count": 3,
+      "min_level_qty": 0.0001,
+      "require_candle_agreement": false
+    }
+  ],
+
+  "filters": [
+    { "name": "MinVolume", "active": true, "min_volume": 1.0 },
+    { "name": "VwapTrend", "active": true, "require_trend_alignment": true }
+  ]
+}

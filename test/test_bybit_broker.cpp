@@ -11,7 +11,8 @@ TEST_CASE("Bybit Broker Logic", "[bybit][broker]") {
     SECTION("GenerateSignature produces correct HMAC SHA256") {
         // OfflineForTests: signing is pure logic, it must not need the venue.
         BybitBroker broker("test_key", "test_secret",
-                           mokuren::venue::Resolve(mokuren::venue::Env::Testnet,
+                           mokuren::venue::Resolve("bybit",
+                                                   mokuren::venue::Env::Testnet,
                                                    "linear", "BTCUSDT"),
                            BybitBroker::OfflineForTests{});
 
@@ -41,7 +42,8 @@ TEST_CASE("Bybit Broker Logic", "[bybit][broker]") {
 
     SECTION("HandlePrivateMessage parses position updates correctly") {
         BybitBroker broker("dummy", "dummy",
-                           mokuren::venue::Resolve(mokuren::venue::Env::Testnet,
+                           mokuren::venue::Resolve("bybit",
+                                                   mokuren::venue::Env::Testnet,
                                                    "linear", "BTCUSDT"),
                            BybitBroker::OfflineForTests{});
 
@@ -61,7 +63,8 @@ TEST_CASE("Bybit Broker Logic", "[bybit][broker]") {
 
     SECTION("HandlePrivateMessage parses execution/fills correctly") {
         BybitBroker broker("dummy", "dummy",
-                           mokuren::venue::Resolve(mokuren::venue::Env::Testnet,
+                           mokuren::venue::Resolve("bybit",
+                                                   mokuren::venue::Env::Testnet,
                                                    "linear", "BTCUSDT"),
                            BybitBroker::OfflineForTests{});
 

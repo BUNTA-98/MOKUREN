@@ -24,6 +24,24 @@ VenueProfile ProfileForVenue(const std::string& venue_name) {
     return profile;
   }
 
+  if (venue_name == "blofin") {
+    // blofin's public ws pushes books as snapshot+delta with a seq field, so
+    // gap detection is meaningful. the depth is declared post-truncation for
+    // the same reason as bybit: the gate checks min_l2_depth against this
+    // number, so it has to be what the engine can actually receive.
+    profile.has_sequence_numbers = true;
+    // the `books` channel delivers up to 200 levels per side; the streamer
+    // truncates at MAX_L2_DEPTH. declare the post-truncation number so the
+    // gate's min_l2_depth pre-check matches what the engine can actually
+    // receive.
+    profile.l2_depth = std::min<size_t>(200, static_cast<size_t>(MAX_L2_DEPTH));
+    // blofin's book cadence is delta-driven, not snapshot-driven: a quiet
+    // instrument still pushes a delta on every change, so the frame rate is
+    // comparable to bybit's, not to hyperliquid's snapshot-only feed. the
+    // default 120/min floor is the right reading here.
+    return profile;
+  }
+
   if (venue_name == "hyperliquid") {
     // l2Book is a whole-book snapshot on every push and carries no seq.
     profile.has_sequence_numbers = false;

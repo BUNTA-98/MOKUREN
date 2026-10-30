@@ -32,6 +32,13 @@ public:
   // for BTC and a 6%+ stop for SOL: a caller that did not pass one silently
   // widened every stop. 0 -- the AppConfig default -- means "never widen the
   // trigger's own stop", so this must not drift from that struct again.
+  //
+  // NOTE ON TRAILING: this sizer is shared by every path, but only the live
+  // venue path models venue trailing (trail_pct > 0). PaperTrader ignores
+  // trail_pct entirely and uses the fixed SL from trade_management, so a
+  // backtest with trail_r > 0 does NOT measure what live will do. sweep
+  // trail_r on demo only; do not trust the backtest to tell you trailing
+  // helps.
   // the last argument is a margin SANITY ceiling, not a strategy limit: callers
   // pass kVenueMaxLeverage. the policy number is MaxLeverageLock's, and the
   // factory refuses any policy above this ceiling, so the two can never

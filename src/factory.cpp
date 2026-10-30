@@ -1,5 +1,7 @@
 #include "factory.hpp"
 
+#include "blofin_broker.hpp"
+#include "blofin_streamer.hpp"
 #include "bybit_broker.hpp"
 #include "bybit_streamer.hpp"
 #include "hyperliquid_broker.hpp"
@@ -239,6 +241,98 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
     } else {
       LOG_INFO("factory: bybit data-only {}; using the PaperTrader",
                mokuren::venue::Manifest(data_spec));
+    }
+  } else if (cfg.exchange == "blofin") {
+    // blofin subscribes and signs by WIRE symbol ("BTC-USDT"), while the
+    // config carries the bybit-style pair ("BTCUSDT"). translate once, here,
+    // so the streamer and the broker cannot disagree about which instrument
+    // they are talking to -- the broker does the same translation internally,
+    // and a mismatch between the two would subscribe one symbol and trade
+    // another.
+    auto to_wire_symbol = [](const std::string& s) {
+      if (s.find('-') != std::string::npos) return s;
+      // split on the quote currency. only the two quote assets blofin lists
+      // are handled; anything else is passed through and the venue will
+      // reject it, which is the right outcome for an unknown pair.
+      for (const char* quote : {"USDT", "USDC"}) {
+        const std::string q = quote;
+        if (s.size() > q.size() &&
+            s.compare(s.size() - q.size(), q.size(), q) == 0) {
+          return s.substr(0, s.size() - q.size()) + "-" + q;
+        }
+      }
+      return s;
+    };
+    const std::string bf_wire_symbol = to_wire_symbol(cfg.symbol);
+
+    // environment selects the endpoint, exactly as it does for bybit through
+    // venue::Resolve. blofin has no testnet, so a config that asks for one is
+    // a hard error rather than a silent fallback to demo.
+    const mokuren::venue::Env bf_data_env = cfg.DataEnv();
+    if (bf_data_env == mokuren::venue::Env::Testnet) {
+      throw std::runtime_error(
+          "factory: blofin has no testnet; set venue.environment to "
+          "'mainnet' or 'demo'");
+    }
+    const mokuren::venue::Spec bf_data_spec =
+        mokuren::venue::Resolve("blofin", bf_data_env, cfg.category,
+                                bf_wire_symbol);
+
+    if (live_mode && !use_paper_broker) {
+      // the broker follows the EXEC world: its hosts, its symbol, its keys.
+      // the data spec is handed over as well, but ONLY as the fallback host
+      // for the two public market-data calls startup needs (server time,
+      // instruments-info). a demo venue is not required to serve those, and
+      // without the fallback SyncClock throws before the socket opens.
+      const mokuren::venue::Env bf_exec_env = cfg.env;
+      if (bf_exec_env == mokuren::venue::Env::Testnet) {
+        throw std::runtime_error(
+            "factory: blofin has no testnet; set venue.environment to "
+            "'mainnet' or 'demo'");
+      }
+      const mokuren::venue::Spec bf_exec_spec =
+          mokuren::venue::Resolve("blofin", bf_exec_env, cfg.category,
+                                  bf_wire_symbol);
+
+      inst.streamer = std::make_unique<BloFinDataStreamer>(
+          bf_data_spec.symbol, bf_data_spec.public_ws);
+      LOG_INFO("factory: blofin data {}",
+               mokuren::venue::Manifest(bf_data_spec));
+
+      inst.broker = std::make_unique<BloFinBroker>(
+          cfg.api_key, cfg.api_secret, cfg.api_passphrase, bf_exec_spec,
+          bf_data_spec.rest_base);
+      LOG_INFO("factory: blofin live exec {}",
+               mokuren::venue::Manifest(bf_exec_spec));
+      if (bf_data_spec.env != bf_exec_spec.env) {
+        // same caveat as bybit: the strategy sees one book and fills on
+        // another. stops, targets and pnl are measured against the execution
+        // venue's book, which on demo is simulated.
+        LOG_WARN("factory: market data is {} but orders and fills are priced "
+                 "on {}; the strategy sees one book and fills on another",
+                 mokuren::venue::EnvName(bf_data_spec.env),
+                 mokuren::venue::EnvName(bf_exec_spec.env));
+      }
+      if (cfg.position_mode != "one_way") {
+        LOG_WARN("factory: venue.position_mode='{}' is not implemented; the "
+                 "adapter sends one-way orders",
+                 cfg.position_mode);
+      }
+    } else if (live_mode) {
+      // shadow mode: the public streamer is real, but no execution adapter is
+      // built. inst.broker stays null, so ActiveBroker() and every IBroker
+      // consumer below bind to the PaperTrader.
+      inst.streamer = std::make_unique<BloFinDataStreamer>(
+          bf_data_spec.symbol, bf_data_spec.public_ws);
+      LOG_INFO("factory: blofin shadow (paper execution) {}; no orders will "
+               "be sent",
+               mokuren::venue::Manifest(bf_data_spec));
+    } else {
+      // a backtest must never dial out to an exchange. the adapter also trades
+      // nothing until its websocket state feed is populated, so constructing it
+      // here turned a blofin-named backtest into a silent no-op.
+      LOG_INFO("factory: exchange is 'blofin' but this run is not live; "
+               "using the PaperTrader");
     }
   } else if (cfg.exchange == "hyperliquid") {
     if (live_mode && !use_paper_broker) {

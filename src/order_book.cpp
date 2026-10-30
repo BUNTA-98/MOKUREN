@@ -1,7 +1,5 @@
 #include "order_book.hpp"
 
-#include <cstring>
-
 namespace mokuren {
 namespace {
 
@@ -67,8 +65,10 @@ void OrderBook::Clear() {
 }
 
 L2Snapshot OrderBook::ToSnapshot(int64_t timestamp_ms) const {
+  // value-initialised: every field is zero before the loops below fill the
+  // populated prefix. no memset, so a future non-trivial member of L2Snapshot
+  // does not turn this into UB.
   L2Snapshot snap{};
-  std::memset(&snap, 0, sizeof(L2Snapshot));
   snap.timestamp = timestamp_ms;
 
   size_t n = 0;

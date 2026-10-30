@@ -9,10 +9,10 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/bybit1.mkn",
-    "interval_ms": 60000,
-    "macro_interval_ms": 900000,
-    "max_cores": 0,
+    "dataset": "data/2026/bybit2.mkn",
+    "interval_ms": 60000.0,
+    "macro_interval_ms": 300000.0,
+    "max_cores": 6.0,
     "tick_size": 0.1,
     "vwap_reset_hour": 0
   },
@@ -24,12 +24,12 @@
   "filters": [
     {
       "active": true,
-      "lookback": 4.0,
+      "lookback": 1.0,
       "name": "MacroTrend"
     },
     {
       "active": false,
-      "min_volume": 2.0,
+      "min_volume": 100.0,
       "name": "MinVolume"
     },
     {
@@ -47,7 +47,7 @@
     {
       "active": false,
       "name": "VwapTrend",
-      "require_trend_alignment": false
+      "require_trend_alignment": true
     },
     {
       "active": false,
@@ -86,12 +86,12 @@
     "min_distance_dollars": 0.0,
     "modules": [
       {
-        "active": true,
+        "active": false,
         "name": "SinglePositionLock"
       },
       {
         "active": true,
-        "max_leverage": 5.0,
+        "max_leverage": 40.0,
         "name": "MaxLeverageLock"
       },
       {
@@ -105,10 +105,16 @@
         "name": "AntiRevengeLock"
       }
     ],
-    "risk_per_trade_pct": 0.01,
-    "sl_pct": 0.005,
+    "risk_per_trade_pct": 0.005,
+    "sl_pct": {
+      "max": 0.006,
+      "min": 0.003,
+      "mode": "range",
+      "step": 0.001,
+      "val": 0.003
+    },
     "tp_r": {
-      "max": 10.0,
+      "max": 5.0,
       "min": 2.0,
       "mode": "range",
       "step": 1.0,
@@ -122,9 +128,9 @@
   },
   "trade_management": {
     "break_even": {
-      "enabled": false,
-      "target_r": 0.0,
-      "trigger_r": 1.0
+      "enabled": true,
+      "target_r": 0.1,
+      "trigger_r": 2.0
     },
     "scale_out": {
       "enabled": false,
@@ -142,10 +148,10 @@
       "active": false,
       "drop_threshold": {
         "max": 1.0,
-        "min": 0.5,
+        "min": 0.1,
         "mode": "range",
         "step": 0.1,
-        "val": 0.5
+        "val": 0.1
       },
       "lookback_ms": {
         "max": 2000.0,
@@ -166,7 +172,7 @@
     {
       "active": true,
       "min_level_qty": 0.001,
-      "min_stacked_count": 3.0,
+      "min_stacked_count": 5.0,
       "name": "StackedImbalance",
       "ratio_threshold": 3.0,
       "require_candle_agreement": false

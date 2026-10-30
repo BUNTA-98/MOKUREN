@@ -5,12 +5,14 @@
 namespace mokuren::venue {
 namespace {
 
-struct Hosts {
+// bybit: three worlds, each with its own rest host and ws root. the public
+// path is /v5/public/<category>; the private path is /v5/private.
+struct BybitHosts {
   const char* rest;
   const char* ws_root;
 };
 
-Hosts HostsFor(Env env) {
+BybitHosts BybitHostsFor(Env env) {
   switch (env) {
     case Env::Mainnet:
       return {"https://api.bybit.com", "wss://stream.bybit.com"};
@@ -20,6 +22,40 @@ Hosts HostsFor(Env env) {
       return {"https://api-demo.bybit.com", "wss://stream-demo.bybit.com"};
   }
   throw std::invalid_argument("venue: unknown environment");
+}
+
+// blofin: two worlds. mainnet is openapi.blofin.com; demo is the
+// demo-trading-openapi host. there is no testnet -- a key is either live or
+// demo, and asking for testnet is a config error, not a fallback.
+//
+// the ws paths are /ws/public and /ws/private on the same host as rest, which
+// is why the ws root is derived from the rest host rather than kept as a
+// separate table.
+struct BloFinHosts {
+  const char* rest;
+};
+
+BloFinHosts BloFinHostsFor(Env env) {
+  switch (env) {
+    case Env::Mainnet:
+      return {"https://openapi.blofin.com"};
+    case Env::Demo:
+      return {"https://demo-trading-openapi.blofin.com"};
+    case Env::Testnet:
+      throw std::invalid_argument(
+          "venue: blofin has no testnet (expected mainnet or demo)");
+  }
+  throw std::invalid_argument("venue: unknown environment");
+}
+
+// "https://host" -> "wss://host". the ws endpoints live on the same host as
+// rest for blofin, so this is the only translation needed.
+std::string WsRootFromRest(const std::string& rest) {
+  const std::string https = "https://";
+  if (rest.compare(0, https.size(), https) == 0) {
+    return "wss://" + rest.substr(https.size());
+  }
+  return rest;
 }
 
 } // namespace
@@ -45,7 +81,8 @@ const char* EnvName(Env env) {
   return "unknown";
 }
 
-Spec Resolve(Env env, const std::string& category, const std::string& symbol) {
+Spec Resolve(const std::string& venue, Env env, const std::string& category,
+             const std::string& symbol) {
   if (!IsKnownCategory(category)) {
     throw std::invalid_argument("venue: unknown category '" + category +
                                 "' (expected linear, spot or inverse)");
@@ -54,25 +91,43 @@ Spec Resolve(Env env, const std::string& category, const std::string& symbol) {
     throw std::invalid_argument("venue: symbol must not be empty");
   }
 
-  const Hosts hosts = HostsFor(env);
-
   Spec spec;
+  spec.venue = venue;
   spec.env = env;
   spec.category = category;
   spec.symbol = symbol;
-  spec.rest_base = hosts.rest;
-  spec.public_ws = std::string(hosts.ws_root) + "/v5/public/" + category;
-  spec.private_ws = std::string(hosts.ws_root) + "/v5/private";
-  return spec;
+
+  if (venue == "bybit") {
+    const BybitHosts hosts = BybitHostsFor(env);
+    spec.rest_base = hosts.rest;
+    spec.public_ws = std::string(hosts.ws_root) + "/v5/public/" + category;
+    spec.private_ws = std::string(hosts.ws_root) + "/v5/private";
+    return spec;
+  }
+
+  if (venue == "blofin") {
+    const BloFinHosts hosts = BloFinHostsFor(env);
+    const std::string ws_root = WsRootFromRest(hosts.rest);
+    spec.rest_base = hosts.rest;
+    spec.public_ws = ws_root + "/ws/public";
+    spec.private_ws = ws_root + "/ws/private";
+    return spec;
+  }
+
+  // an unknown venue is a hard error, not a fallback to bybit: a typo must
+  // never route orders to a venue the config did not name.
+  throw std::invalid_argument("venue: unknown venue '" + venue +
+                              "' (expected bybit or blofin)");
 }
 
-Spec Resolve(const std::string& env, const std::string& category,
-             const std::string& symbol) {
-  return Resolve(ParseEnv(env), category, symbol);
+Spec Resolve(const std::string& venue, const std::string& env,
+             const std::string& category, const std::string& symbol) {
+  return Resolve(venue, ParseEnv(env), category, symbol);
 }
 
 std::string Manifest(const Spec& spec) {
-  return "env=" + std::string(EnvName(spec.env)) +
+  return "venue=" + spec.venue +
+         " env=" + std::string(EnvName(spec.env)) +
          " category=" + spec.category + " symbol=" + spec.symbol +
          " rest=" + spec.rest_base + " ws_public=" + spec.public_ws +
          " ws_private=" + spec.private_ws;
