@@ -2,14 +2,14 @@
   "api_key": "",
   "api_secret": "",
   "backtest": {
-    "config_profile": "configs/default.json",
+    "config_profile": "configs/bybit_to_blofin.json",
     "wfa_in_sample_days": 14,
     "wfa_mode": false,
     "wfa_out_of_sample_days": 7,
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/bybit2.mkn",
+    "dataset": "data/2026/bybit1.mkn",
     "interval_ms": 60000.0,
     "macro_interval_ms": 300000.0,
     "max_cores": 6.0,

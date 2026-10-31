@@ -35,6 +35,49 @@ void Aggregator::AttachLatestL2(Bar &bar) {
   bar_l2_generation_ = l2_generation_;
 }
 
+// Insert-or-replace one level in the live footprint, price-ordered.
+//
+// The footprint used to exist only between PackFootprint and the history push,
+// i.e. bar.footprint was empty for the whole candle and a tick-level trigger
+// had nothing to read. It is now maintained as prints arrive.
+//
+// Order is part of the contract: the stacked-imbalance scan compares ADJACENT
+// prices and treats a price gap as the end of a ladder, so appending would put
+// a level next to a price it does not neighbour and silently split runs.
+// Replacing is the common case -- most prints hit a price that already traded
+// in this candle -- and lower_bound finds it without shifting anything.
+void Bar::UpsertFootprintLevel(const PriceLevel &level) {
+  auto it = std::lower_bound(
+      footprint.begin(), footprint.end(), level.price,
+      [](const PriceLevel &lvl, double price) { return lvl.price < price; });
+  if (it != footprint.end() && it->price == level.price) {
+    *it = level;  // a mirror of the grid level, never an accumulated total
+  } else {
+    footprint.insert(it, level);
+  }
+}
+
+// Drop mirrored levels the grid no longer holds.
+//
+// GetOrAddLevel slides the fixed window when a print lands outside it, and
+// re-anchors (wiping the grid) when the jump is wider than the whole window.
+// Both drop volume from the candle; a mirrored level left behind would report
+// volume the candle deliberately discarded, and it would sit next to prices it
+// no longer neighbours. Cross-checking the grid handles the re-anchor too,
+// where every level is gone -- a price-bound prune would keep them.
+void Aggregator::PruneStaleFootprint(Bar &bar) {
+  auto &fp = bar.footprint;
+  fp.erase(std::remove_if(fp.begin(), fp.end(),
+                          [this](const PriceLevel &lvl) {
+                            const int idx = static_cast<int>(std::llround(
+                                (lvl.price - base_price) / tick_size));
+                            return idx < 0 || idx >= MAX_GRID_LEVELS ||
+                                   live_workspace[idx].price != lvl.price;
+                          }),
+           fp.end());
+  mirror_stale_ = false;
+}
+
 // gets price level from grid or creates new one.
 // the grid is a fixed 5000-level window; when a print falls outside it the
 // window slides instead of dropping the print (returning nullptr here silently
@@ -59,6 +102,11 @@ PriceLevel *Aggregator::GetOrAddLevel(double price) {
 
   // slide the window if the print lands outside [0, MAX_GRID_LEVELS)
   if (index < 0 || index >= MAX_GRID_LEVELS) {
+    // whatever this slide drops also has to leave the bar's live footprint.
+    // flagged rather than pruned here: this function has no Bar, and the caller
+    // (UpdateBarData) prunes before mirroring the next print.
+    mirror_stale_ = true;
+
     // delta is added to every existing index; positive delta = move up
     const int delta = (index < 0) ? -index : -(index - (MAX_GRID_LEVELS - 1));
     const int shift = (delta < 0) ? -delta : delta;
@@ -159,6 +207,11 @@ void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
 
   // update footprint and delta
   PriceLevel *level_ptr = GetOrAddLevel(trade.price);
+
+  // a slide may have just dropped levels; clear them out of the mirror before
+  // the next level is written into it.
+  if (mirror_stale_) PruneStaleFootprint(bar);
+
   if (level_ptr) { 
     if (trade.is_buyer_maker) {
       level_ptr->bid_volume += trade.quantity;
@@ -167,6 +220,12 @@ void Aggregator::UpdateBarData(Bar &bar, const TradeEvent &trade) {
       level_ptr->ask_volume += trade.quantity;
       bar.cumulative_delta += trade.quantity;
     }
+
+    // mirror the level into the bar's live footprint so a tick-level trigger
+    // can read the footprint before the candle closes. PackFootprint still
+    // re-packs from the grid at close, so this is a read view for open
+    // candles, not a second source of truth.
+    bar.UpsertFootprintLevel(*level_ptr);
   }
 }
 

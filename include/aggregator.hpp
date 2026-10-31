@@ -82,6 +82,12 @@ struct Bar {
     timestamp_start = new_timestamp;
     footprint.clear();
   }
+
+  // Insert-or-replace one level in the live footprint, keeping the vector
+  // price-ordered. A tick-level trigger reads this while the candle is still
+  // open, and the imbalance scan compares ADJACENT prices, so order is part of
+  // the contract, not a nicety. Defined in aggregator.cpp.
+  void UpsertFootprintLevel(const PriceLevel &level);
 };
 
 // session metrics
@@ -151,6 +157,11 @@ private:
   int min_touched_idx_ = MAX_GRID_LEVELS;
   int max_touched_idx_ = -1;
 
+  // set by GetOrAddLevel when it slides (or re-anchors) the grid: the bar's
+  // live footprint then still mirrors prices the grid no longer holds, and
+  // UpdateBarData prunes them before mirroring again.
+  bool mirror_stale_ = false;
+
   // vwap state
   int64_t current_session_day_ = -1; 
   double session_vol_ = 0.0;
@@ -197,13 +208,19 @@ private:
   // generation counter, and it is not worth inlining into the header.
   void AttachLatestL2(Bar &bar);
 
+  // drop mirrored footprint levels the grid no longer holds after a window
+  // slide or re-anchor. defined in aggregator.cpp.
+  void PruneStaleFootprint(Bar &bar);
+
   // widen the tracked touched-index range
   void TrackTouched(int idx) {
     if (idx < min_touched_idx_) min_touched_idx_ = idx;
     if (idx > max_touched_idx_) max_touched_idx_ = idx;
   }
 
-  // pack footprint for history. only the touched range is scanned.
+  // pack footprint for history. only the touched range is scanned. still the
+  // authoritative pack for a closed bar: it rebuilds from the grid, so a live
+  // mirror that drifted on a window slide cannot reach history.
   void PackFootprint(Bar &bar) {
     bar.footprint.clear();
     bar.footprint.reserve(active_levels);
