@@ -832,6 +832,9 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
     // ClosePartial, so the TPSL is left armed against the next position.
     // cancel-tpsl is a REST call and must not run while state_mutex_ is held.
     std::string tpsl_to_cancel;
+    // basis correction captured under the lock, applied after it releases:
+    // amend-tpsl is a REST call and must not run with state_mutex_ held.
+    double reanchor_shift = 0.0;
     {
     std::lock_guard<std::mutex> lock(state_mutex_);
     try {
@@ -864,6 +867,35 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                     entry_price_ = entry.contains("averagePrice")
                                        ? JsonNum(entry, "averagePrice")
                                        : JsonNum(entry, "avgPrice");
+                    // the price/time a close fill must be booked against. kept
+                    // past the flat branch on purpose: the close order's fill
+                    // can arrive after positions:"0".
+                    booked_entry_price_ = entry_price_;
+                    if (pending_entry_ms_ > 0) booked_entry_ms_ = pending_entry_ms_;
+
+                    // once per entry: the gap between the price the signal
+                    // was generated against and the price this venue actually
+                    // filled at. the stop and target were computed from the
+                    // FORMER, so on a cross-venue run this delta is baked into
+                    // the position's geometry.
+                    //
+                    // guarded on pending_signal_entry_, not on pending_entry_:
+                    // it is cleared here, so a re-pushed positions frame for
+                    // the same fill logs nothing.
+                    if (entry_price_ > 0.0 && pending_signal_entry_ > 0.0) {
+                        const double shift = entry_price_ - pending_signal_entry_;
+                        LOG_INFO("blofin: basis ref={} fill={} delta={} bps",
+                                 pending_signal_entry_, entry_price_,
+                                 shift / pending_signal_entry_ * 10000.0);
+                        // below one tick there is nothing to correct: that is
+                        // rounding, and amending on it would spend a request per
+                        // trade to move a level the venue already rounded to.
+                        if (rules_.tick_size > 0.0 &&
+                            std::abs(shift) >= rules_.tick_size) {
+                            reanchor_shift = shift;
+                        }
+                        pending_signal_entry_ = 0.0;
+                    }
                     current_position_.direction   = position_dir_;
                     current_position_.volume      = position_size_;
                     current_position_.entry_price = entry_price_;
@@ -881,9 +913,16 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                     if (!current_tpsl_id_.empty())
                         tpsl_to_cancel = current_tpsl_id_;
                     current_tpsl_id_.clear();
+                    // an owed basis correction belongs to the position that is
+                    // now gone. carrying it forward would shift the NEXT trade's
+                    // stop by this one's basis.
+                    pending_reanchor_shift_ = 0.0;
                     entry_price_     = 0.0;
                     current_sl_      = 0.0;
                     current_tp_      = 0.0;
+                    // an entry that never filled leaves no reference price
+                    // behind for the next one to log against.
+                    pending_signal_entry_ = 0.0;
                     // the position is gone; the next entry stamps its own
                     // pending_entry_ms_. Clearing here keeps a stale entry
                     // time from leaking into a later record if the close
@@ -960,13 +999,28 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                     category == "partial_liquidation" ||
                     pnl != 0.0;
                 if (is_close_order) {
+                    // the venue re-pushes `state == "filled"` for the same
+                    // order; without this guard every re-push appended another
+                    // TradeRecord and added its pnl to net_profit_ again.
+                    // `orderId` is the identity the venue gives us,
+                    // clientOrderId the fallback on captures that omit it.
+                    std::string fill_id = entry.value("orderId", std::string{});
+                    if (fill_id.empty())
+                        fill_id = entry.value("clientOrderId", std::string{});
+                    if (!fill_id.empty() && fill_id == last_booked_close_id_) {
+                        LIVE_DBG("blofin: duplicate close fill {} ignored",
+                                 fill_id);
+                        continue;
+                    }
+                    if (!fill_id.empty()) last_booked_close_id_ = fill_id;
+
                     last_closed_size_ = filled * contract_value_;
                     TradeRecord rec{};
                     // entry_time is the entry fill's updateTime, captured when
                     // the entry was sent. It used to be hardcoded 0, so every
                     // round-trip record carried a zero entry time and any
                     // consumer drawing a trade duration saw a 1970 start.
-                    rec.entry_time   = pending_entry_ms_;
+                    rec.entry_time   = booked_entry_ms_;
                     rec.exit_time    = static_cast<int64_t>(JsonNum(entry, "updateTime"));
                     // `side` on a close fill is the EXIT side. TradeRecord
                     // .direction means "which side was I on", so a sell that
@@ -976,7 +1030,7 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
                     rec.direction    = (entry.value("side", "") == "sell")
                                            ? SignalDirection::BUY
                                            : SignalDirection::SELL;
-                    rec.entry_price  = entry_price_;
+                    rec.entry_price  = booked_entry_price_;
                     rec.exit_price   = JsonNum(entry, "averagePrice");
                     rec.net_profit   = pnl;
                     rec.exit_reason  = "venue_fill";
@@ -1008,6 +1062,10 @@ void BloFinBroker::HandlePrivateMessage(const std::string& payload) {
             LOG_INFO("BloFinBroker: cancelled orphan TPSL {} after position "
                      "closed", tpsl_to_cancel);
         }
+    }
+
+    if (reanchor_shift != 0.0) {
+        ApplyBasisReanchor(reanchor_shift);
     }
 }
 
@@ -1274,6 +1332,10 @@ void BloFinBroker::ProcessSignal(TradeSignal signal, double fill_price,
         // so stamp it here, at the moment the entry was accepted. The close
         // fill branch reads this to fill TradeRecord::entry_time.
         pending_entry_ms_    = pending_since_ms_;
+        // the price the signal was generated against. kept until the fill
+        // lands so the positions handler can log the gap between the book we
+        // traded off and the price this venue actually filled at.
+        pending_signal_entry_ = signal.entry_price;
         if (signal.stop_loss   > 0.0) current_sl_ = signal.stop_loss;
         if (signal.take_profit > 0.0) current_tp_ = signal.take_profit;
     }
@@ -1364,6 +1426,42 @@ void BloFinBroker::ProcessSignal(TradeSignal signal, double fill_price,
         std::lock_guard<std::mutex> lock(state_mutex_);
         current_tpsl_id_ = tpsl_id;
     }
+
+    // one line per entry: the trigger levels that actually went to the venue,
+    // and how far they sit from the price the signal was generated against.
+    // on a same-venue run these bps ARE the requested sl_pct / tp_r. on a
+    // cross-venue run they differ from it by the basis, which is the gap
+    // between the reference book and the venue that filled the order -- the
+    // number the realised R is measured against here, not on the signal venue.
+    if (signal.entry_price > 0.0) {
+        const double sl_px =
+            tpsl.contains("slTriggerPrice")
+                ? std::stod(tpsl["slTriggerPrice"].get<std::string>())
+                : 0.0;
+        const double tp_px =
+            tpsl.contains("tpTriggerPrice")
+                ? std::stod(tpsl["tpTriggerPrice"].get<std::string>())
+                : 0.0;
+        LOG_INFO("blofin: tpsl placed sl={} ({} bps) tp={} ({} bps) ref={}",
+                 sl_px > 0.0 ? std::to_string(sl_px) : std::string("none"),
+                 sl_px > 0.0
+                     ? (sl_px - signal.entry_price) / signal.entry_price * 10000.0
+                     : 0.0,
+                 tp_px > 0.0 ? std::to_string(tp_px) : std::string("none"),
+                 tp_px > 0.0
+                     ? (tp_px - signal.entry_price) / signal.entry_price * 10000.0
+                     : 0.0,
+                 signal.entry_price);
+    }
+
+    // the fill landed before the tpsl ack: the handler deferred the correction
+    // because the id was not known yet. this is the point where it is.
+    double owed = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        owed = pending_reanchor_shift_;
+    }
+    if (owed != 0.0) ApplyBasisReanchor(owed);
 }
 
 void BloFinBroker::CheckRisk(double, int64_t) {
@@ -1481,6 +1579,106 @@ bool BloFinBroker::RefreshTpslId() {
         return true;
     }
     return false;
+}
+
+void BloFinBroker::ApplyBasisReanchor(double shift) {
+    if (shift == 0.0 || !(rules_.tick_size > 0.0)) return;
+
+    double sl = 0.0;
+    double tp = 0.0;
+    double fill = 0.0;
+    SignalDirection dir = SignalDirection::NONE;
+    std::string tpsl_id;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        sl   = current_sl_;
+        tp   = current_tp_;
+        fill = entry_price_ > 0.0 ? entry_price_ : booked_entry_price_;
+        dir  = position_dir_;
+        tpsl_id = current_tpsl_id_;
+    }
+    if (tpsl_id.empty()) {
+        RefreshTpslId();
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        tpsl_id = current_tpsl_id_;
+    }
+    if (tpsl_id.empty()) {
+        // the tpsl has not landed yet. ProcessSignal retries this from its tail,
+        // where the id is known. dropping the correction is the safe failure:
+        // the position keeps the levels it was actually sized with.
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pending_reanchor_shift_ = shift;
+        LOG_WARN("BloFinBroker: basis correction of {} ticks deferred -- no "
+                 "tpsl id yet", shift / rules_.tick_size);
+        return;
+    }
+    if (dir == SignalDirection::NONE || !(fill > 0.0)) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pending_reanchor_shift_ = 0.0;
+        return;
+    }
+
+    const double new_sl =
+        sl > 0.0 ? RoundToStep(sl + shift, rules_.tick_size) : 0.0;
+    const double new_tp =
+        tp > 0.0 ? RoundToStep(tp + shift, rules_.tick_size) : 0.0;
+
+    // a correction that lands a leg on the wrong side of the fill is a bad
+    // correction, not a level to send. refuse it and leave the venue's existing
+    // protection exactly as it is -- a position with the geometry it was sized
+    // with is strictly better than one with a stop above its entry.
+    const bool long_side = dir == SignalDirection::BUY;
+    if ((new_sl > 0.0 && long_side && !(new_sl < fill)) ||
+        (new_sl > 0.0 && !long_side && !(new_sl > fill)) ||
+        (new_tp > 0.0 && long_side && !(new_tp > fill)) ||
+        (new_tp > 0.0 && !long_side && !(new_tp < fill))) {
+        LOG_ERROR("BloFinBroker: basis correction of {} ticks would put a leg "
+                  "on the wrong side of the fill {} (sl -> {} tp -> {}); "
+                  "refusing, venue levels unchanged",
+                  shift / rules_.tick_size, fill, new_sl, new_tp);
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pending_reanchor_shift_ = 0.0;
+        return;
+    }
+
+    nlohmann::json amend = {
+        {"instId", wire_symbol_},
+        {"tpslId", tpsl_id},
+    };
+    if (new_sl > 0.0) {
+        amend["newSlTriggerPrice"]     = FormatStep(new_sl, rules_.tick_size);
+        amend["newSlTriggerPriceType"] = "last";
+    }
+    if (new_tp > 0.0) {
+        amend["newTpTriggerPrice"]     = FormatStep(new_tp, rules_.tick_size);
+        amend["newTpTriggerPriceType"] = "last";
+    }
+
+    nlohmann::json resp;
+    const int c = SendRestRequest("POST", "/api/v1/trade/amend-tpsl",
+                                  amend.dump(), &resp);
+    if (c != 0 || AckCode(resp) != 0) {
+        LOG_ERROR("BloFinBroker: basis amend rejected ({} / {}); the stop and "
+                  "target keep the geometry they were placed with",
+                  c, AckMessage(resp));
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pending_reanchor_shift_ = 0.0;
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (new_sl > 0.0) {
+        current_sl_ = new_sl;
+        current_position_.stop_loss = new_sl;
+    }
+    if (new_tp > 0.0) {
+        current_tp_ = new_tp;
+        current_position_.take_profit = new_tp;
+    }
+    pending_reanchor_shift_ = 0.0;
+    LOG_INFO("BloFinBroker: basis re-anchored tpsl {} by {} ticks "
+             "(sl={} tp={} fill={})",
+             tpsl_id, shift / rules_.tick_size, new_sl, new_tp, fill);
 }
 
 void BloFinBroker::ClosePartial(double fraction, double, int64_t,

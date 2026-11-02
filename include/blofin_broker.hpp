@@ -175,6 +175,15 @@ private:
     // it.
     bool RefreshTpslId();
 
+    // re-sends the venue's stop and target shifted by the cross-venue basis, so
+    // the R the position carries is the R it was sized for. the shift is applied
+    // to BOTH legs, which preserves their distances exactly: it corrects the
+    // anchor, not the geometry. below one tick there is nothing to correct, and
+    // a shift that would put a leg on the wrong side of the fill is refused
+    // outright rather than sent. safe to call before the tpsl lands -- it defers
+    // to ProcessSignal's tail in that case.
+    void ApplyBasisReanchor(double shift);
+
     void ConnectPrivateStream();
     void AuthenticatePrivateStream();
     void SubscribePrivateTopics();
@@ -300,5 +309,35 @@ private:
 
     double current_sl_ = 0.0;
     double current_tp_ = 0.0;
+
+    // the entry price the signal was generated against (the DATA venue's
+    // book), not the fill this venue gave us. held only between the entry ack
+    // and the first positions frame that carries a size, then compared and
+    // cleared. the gap between the two is the cross-venue basis, and it is
+    // what the stop/target geometry inherits when data and execution are not
+    // the same venue. zero means "nothing pending to compare".
+    double pending_signal_entry_ = 0.0;
+
+    // entry price and accept time carried PAST the close. the venue can deliver
+    // positions:"0" before the close order's `filled` frame, and the flat branch
+    // clears entry_price_ and pending_entry_ms_ -- so the close bookkeeping used
+    // to stamp a 0 entry price and a 1970 entry time on every trade whose close
+    // frame arrived second. written on every sized frame, deliberately never
+    // cleared by the flat branch.
+    double booked_entry_price_ = 0.0;
+    int64_t booked_entry_ms_ = 0;
+
+    // a basis correction still owed: (fill - signal reference), captured on the
+    // first positions frame that carried the fill. applied once the tpsl id is
+    // known, because the fill push and the order-tpsl ack race each other. zero
+    // means "nothing owed"; cleared when the position closes so a deferred
+    // shift can never be applied to the next trade.
+    double pending_reanchor_shift_ = 0.0;
+
+    // order id of the most recent close fill already booked. the venue re-pushes
+    // `state == "filled"`, and every push used to append another TradeRecord --
+    // inflating trade_history_ and double-counting net_profit_.
+    std::string last_booked_close_id_;
+
     double entry_price_ = 0.0;
 };

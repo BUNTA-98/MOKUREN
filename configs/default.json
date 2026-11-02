@@ -2,14 +2,14 @@
   "api_key": "",
   "api_secret": "",
   "backtest": {
-    "config_profile": "configs/bybit_to_blofin.json",
+    "config_profile": "configs/default.json",
     "wfa_in_sample_days": 14,
     "wfa_mode": false,
     "wfa_out_of_sample_days": 7,
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/bybit1.mkn",
+    "dataset": "data/2026/bybit-BTCUSDT/bybit-BTCUSDT-2026-11-01.mkn",
     "interval_ms": 60000.0,
     "macro_interval_ms": 300000.0,
     "max_cores": 6.0,
@@ -86,7 +86,7 @@
     "min_distance_dollars": 0.0,
     "modules": [
       {
-        "active": false,
+        "active": true,
         "name": "SinglePositionLock"
       },
       {
@@ -106,15 +106,9 @@
       }
     ],
     "risk_per_trade_pct": 0.005,
-    "sl_pct": {
-      "max": 0.006,
-      "min": 0.003,
-      "mode": "range",
-      "step": 0.001,
-      "val": 0.003
-    },
+    "sl_pct": 0.003,
     "tp_r": {
-      "max": 5.0,
+      "max": 8.0,
       "min": 2.0,
       "mode": "range",
       "step": 1.0,
@@ -128,9 +122,9 @@
   },
   "trade_management": {
     "break_even": {
-      "enabled": true,
-      "target_r": 0.1,
-      "trigger_r": 2.0
+      "enabled": false,
+      "target_r": 0.5,
+      "trigger_r": 3.0
     },
     "scale_out": {
       "enabled": false,
@@ -146,27 +140,9 @@
   "triggers": [
     {
       "active": false,
-      "drop_threshold": {
-        "max": 1.0,
-        "min": 0.1,
-        "mode": "range",
-        "step": 0.1,
-        "val": 0.1
-      },
-      "lookback_ms": {
-        "max": 2000.0,
-        "min": 500.0,
-        "mode": "range",
-        "step": 500.0,
-        "val": 500.0
-      },
-      "min_wall_qty": {
-        "max": 1.0,
-        "min": 0.5,
-        "mode": "range",
-        "step": 0.1,
-        "val": 0.5
-      },
+      "drop_threshold": 0.5,
+      "lookback_ms": 1500.0,
+      "min_wall_qty": 1.5,
       "name": "SpoofHunter"
     },
     {
