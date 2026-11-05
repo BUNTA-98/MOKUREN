@@ -39,6 +39,17 @@ public:
         std::vector<L2Snapshot> l2;
     };
     static LoadedDataset LoadAll(const std::string& dataset_path);
+
+    // The same, restricted to [start_ns, end_ns] -- NANOSECONDS, matching the
+    // on-disk blocks; the returned records still carry milliseconds.
+    //
+    // A .mkn recording honours this without decoding the whole file, which is
+    // the only way to read one larger than RAM. A historical DIRECTORY cannot:
+    // trades.csv / L2.csv have no block index to seek, so it loads fully and is
+    // then trimmed to the window -- same answer, none of the memory saving.
+    // See reader.hpp for what a range read does and does not verify.
+    static LoadedDataset LoadAllRange(const std::string& dataset_path,
+                                      int64_t start_ns, int64_t end_ns);
     
     static bool ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status);
     

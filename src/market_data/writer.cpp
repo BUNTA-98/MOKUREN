@@ -33,6 +33,25 @@ bool Writer::Open(const std::string& path, const SessionInfo& info,
     return false;
   }
 
+  // Per-FILE state, and Open() runs once per file. MarketDataRecorder keeps ONE
+  // Writer for the whole session and reopens it at every UTC-midnight rotation,
+  // so anything not reset here rides into the next day's file. That is not
+  // theoretical: index_ was never cleared, so file N's trailer was written with
+  // every index entry from files 1..N while its blocks held only its own
+  // records. A four-day directory therefore produced an index that disagrees
+  // with its blocks on three files, with cumulative entry counts
+  // (127309 / 263867 / 371862 / 478371) against real block counts
+  // (127309 / 136558 / 107995 / 106509). The payload was never affected --
+  // blocks are written as records arrive, not read back from this vector -- so
+  // every CRC check and every decode passed, and only the trailer lied.
+  index_.clear();
+  records_written_ = 0;
+  trades_.Reset();
+  book_.Reset();
+  // Fail() keeps the FIRST error so a cascade cannot bury the cause, which
+  // makes a message from the previous day permanent unless it is cleared here.
+  error_.clear();
+
   // The on-disk layout is little-endian by definition. Storing host-order
   // doubles on a big-endian box would produce a file that silently reads as
   // garbage, so refuse instead.
@@ -98,8 +117,19 @@ uint8_t* Writer::Reserve(PendingBlock& block, RecordKind kind, uint32_t stride,
   }
   const size_t offset = block.payload.size();
   block.payload.resize(offset + stride, 0);
-  if (block.count == 0) block.first_ts = ts;
-  block.last_ts = ts;
+  // min/max, never "first record / last record". RotateIfNeeded keeps a late
+  // print inside the file that is already open, so a record can join this block
+  // carrying an earlier stamp than the one before it; assigning unconditionally
+  // left last_ts < first_ts, which makes the published index entry not a range
+  // at all, drives MaybeFlush's span negative so the block stops splitting on
+  // time, and feeds a wrong min/max into every consumer of the index.
+  if (block.count == 0) {
+    block.first_ts = ts;
+    block.last_ts  = ts;
+  } else {
+    if (ts < block.first_ts) block.first_ts = ts;
+    if (ts > block.last_ts)  block.last_ts  = ts;
+  }
   ++block.count;
   ++records_written_;
   return block.payload.data() + offset;
@@ -192,6 +222,19 @@ bool Writer::AppendBlock(const BlockHeader& header, const uint8_t* payload,
   }
   if (payload_size > 0 && payload == nullptr) {
     Fail("block payload pointer is null");
+    return false;
+  }
+  // stride * count must equal payload_size. This writer guarantees it for its
+  // own blocks, but a block arriving through AppendBlock comes from another
+  // file and both numbers are republished into the merged file's index -- an
+  // inconsistent pair would land in a file that misdescribes its own records.
+  // Checked before FlushAll so a refusal leaves no side effect.
+  if (static_cast<uint64_t>(header.record_size) * header.record_count !=
+      payload_size) {
+    Fail("block record_size (" + std::to_string(header.record_size) +
+         ") * record_count (" + std::to_string(header.record_count) +
+         ") does not equal payload_size (" + std::to_string(payload_size) +
+         ")");
     return false;
   }
   // Flush any typed records in the normal path first: their index entries must
@@ -357,6 +400,11 @@ std::string Writer::BuildMetadata() const {
   };
   j["blocks"] = index_.size();
   j["records"] = records_written_;
+  // Which build wrote this. Nothing reads it for control flow; it exists so a
+  // future forensic pass can ask a file that question instead of inferring the
+  // answer from timestamps and commit history, which is what a disagreement
+  // between this file's index and its blocks otherwise requires.
+  j["writer_version"] = kWriterVersion;
   return j.dump(2);
 }
 

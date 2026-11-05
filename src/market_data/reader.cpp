@@ -8,9 +8,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <utility>
 
 namespace mokuren::mdf {
@@ -29,6 +31,15 @@ int64_t NsToMs(int64_t ns) {
   // plausible date, which is the wrong direction for a corrupt value.
   if (ns >= 0) return ns / 1'000'000;
   return -(((-ns) + 999'999) / 1'000'000);
+}
+
+// "0x%08x" for a 32-bit field a report has to show verbatim. A decimal print is
+// useless when the value is being compared against kBlockMagic or read out of a
+// hex dump, which is the only reason this exists.
+std::string Hex32(uint32_t v) {
+  char buf[11];
+  std::snprintf(buf, sizeof buf, "0x%08x", static_cast<unsigned>(v));
+  return buf;
 }
 
 bool ReadExactAt(std::ifstream& in, uint64_t offset, void* buf, size_t n) {
@@ -143,6 +154,7 @@ void ParseMetadata(std::ifstream& in, const FileLayout& layout,
     out.meta.source = json.value("source", std::string{});
     out.meta.depth_per_side = json.value("depth_per_side", uint32_t{0});
     out.meta.created_unix_ns = json.value("created_unix_ns", int64_t{0});
+    out.meta.writer_version = json.value("writer_version", std::string{});
   } catch (const std::exception& e) {
     // A present-but-wrong-typed field is metadata damage, not a reason to
     // refuse the blocks: the records are what the backtest runs on.
@@ -390,8 +402,13 @@ void DecodeDeltas(const BlockHeader& block,
 }
 
 bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
-                  SessionData& out) {
+                  SessionData& out, int64_t start_ns, int64_t end_ns) {
   std::vector<uint8_t> payload;
+
+  // Set when a delta block before the requested range had to be skipped. It is
+  // reported once at the end rather than per block: the caller needs to know
+  // the reconstructed book may start incomplete, not how many blocks it missed.
+  bool delta_skipped_before_range = false;
 
   // Only materialised when the file actually carries deltas -- see
   // DecodeSnapshots for why the snapshot-only path skips the maps.
@@ -425,6 +442,22 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
       break;
     }
     const uint64_t next = payload_offset + block.payload_size;
+
+    // Range gate. After the bounds check, so a corrupt size field cannot make a
+    // range read skip over a real block; before the payload read, so it costs
+    // only the bytes it actually decodes -- which is the entire point.
+    //
+    // Sound because a block's [first_ts_ns, last_ts_ns] brackets every record
+    // in it: a block entirely outside the range cannot hold a record inside it,
+    // whatever order the blocks themselves are in.
+    if (block.last_ts_ns < start_ns || block.first_ts_ns > end_ns) {
+      if (static_cast<RecordKind>(block.kind) == RecordKind::BookDelta &&
+          block.first_ts_ns < start_ns) {
+        delta_skipped_before_range = true;
+      }
+      offset = next;
+      continue;
+    }
 
     payload.assign(static_cast<size_t>(block.payload_size), 0);
     if (block.payload_size > 0 &&
@@ -487,6 +520,12 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
 
     offset = next;
   }
+
+  if (delta_skipped_before_range) {
+    out.warnings.push_back(
+        "range read skipped book delta blocks before the requested start; the "
+        "reconstructed book at the start of the range may be incomplete");
+  }
   return true;
 }
 
@@ -497,8 +536,12 @@ bool Reader::Open(const std::string& path) {
   in_ = std::ifstream{};
   header_ = FileHeader{};
   file_size_ = 0;
+  data_end_ = 0;
   meta_ = Meta{};
   index_.clear();
+  copied_records_ = 0;
+  index_mismatches_ = 0;
+  blocks_walked_ = 0;
   error_.clear();
 
   in_.open(path, std::ios::binary | std::ios::ate);
@@ -517,6 +560,8 @@ bool Reader::Open(const std::string& path) {
   FileLayout layout;
   if (!ReadFileHeader(in_, file_size, layout, error_)) return false;
   header_ = layout.header;
+  data_end_ = layout.data_end;
+  meta_.first_block_offset = header_.header_size;
 
   // Reuse ParseMetadata instead of duplicating the JSON shape. It fills a
   // SessionData on purpose; a Reader that parsed json differently would drift
@@ -530,6 +575,7 @@ bool Reader::Open(const std::string& path) {
   meta_.source          = sd.meta.source;
   meta_.depth_per_side  = sd.meta.depth_per_side;
   meta_.created_unix_ns = sd.meta.created_unix_ns;
+  meta_.writer_version  = sd.meta.writer_version;
 
   // Finalised == trailer exists. A file whose Close() never ran leaves
   // metadata_size and index_size at zero, which is how the merger tells "a
@@ -559,6 +605,50 @@ bool Reader::Open(const std::string& path) {
       if (e.last_ts_ns  > meta_.last_ts_ns)  meta_.last_ts_ns  = e.last_ts_ns;
       meta_.record_count += e.record_count;
     }
+
+    // CopyPayloadTo copies in block_offset order, so the ordering claim has to
+    // be measured in that same order. Sorting here makes it the member's
+    // invariant; CopyPayloadTo still sorts as a defensive no-op.
+    std::sort(index_.begin(), index_.end(),
+              [](const IndexEntry& a, const IndexEntry& b) {
+                return a.block_offset < b.block_offset;
+              });
+    // PER KIND, never across the whole index. Writer::FlushAll writes trades
+    // before book, and each stream is flushed independently as it fills (see
+    // writer.hpp: "blocks of different kinds therefore appear in flush order,
+    // not arrival order"). A trade block and a snapshot block from the same
+    // second therefore interleave and overlap by construction, so comparing
+    // adjacent entries regardless of kind compares two unrelated clocks and
+    // rejects every real recording.
+    int64_t last_ts[3] = {0, 0, 0};
+    bool    seen[3]    = {false, false, false};
+    for (const auto& e : index_) {
+      int slot = -1;
+      switch (static_cast<RecordKind>(e.kind)) {
+        case RecordKind::Trade:        slot = 0; break;
+        case RecordKind::BookSnapshot: slot = 1; break;
+        case RecordKind::BookDelta:    slot = 2; break;
+        default:                       continue;  // reserved kinds carry no order
+      }
+      // Measure, do not judge: the tolerated size is a policy the merger owns
+      // (MergerConfig::max_skew_ns), because it depends on what the caller is
+      // willing to treat as a late print. This layer only reports the number.
+      if (seen[slot]) {
+        const int64_t back = last_ts[slot] - e.first_ts_ns;
+        if (back > meta_.max_inversion_ns) {
+          meta_.max_inversion_ns      = back;
+          meta_.max_inversion_prev_ns = last_ts[slot];
+          meta_.max_inversion_next_ns = e.first_ts_ns;
+          meta_.max_inversion_kind    = e.kind;
+        }
+      }
+      seen[slot]    = true;
+      last_ts[slot] = e.last_ts_ns;
+    }
+
+    // Lowermost entry offset, after the sort above, for the chain-vs-index
+    // comparison in --stats.
+    meta_.first_index_offset = index_.front().block_offset;
   }
   return true;
 }
@@ -573,52 +663,72 @@ bool Reader::CopyPayloadTo(Writer& out) {
     return false;
   }
 
-  // Well-formed sources store entries ascending in block_offset, but sorting is
-  // cheap and this is the only place the merge's "concatenation of payloads"
-  // ordering guarantee lives. Sort once, trust once.
+  copied_records_ = 0;
+  index_mismatches_ = 0;
+
+  // The block chain between header_size and data_end is the source of truth;
+  // the index is a cache over it. Walking the chain is what DecodeBlocks does,
+  // and trusting the index here was the anomaly: index entries are NOT covered
+  // by any checksum (only payloads are), so one damaged entry was reported as a
+  // corrupt payload -- "block magic mismatch" from a file whose data is intact
+  // -- and an index that had lost entries silently copied fewer blocks than the
+  // file holds. The walk costs nothing extra: the payload is read either way and
+  // the header is 56 bytes.
+  //
+  // Sorted so the cross-check below advances through both in one pass. Open()
+  // already sorted it; repeating that is free and keeps this function from
+  // depending on it.
   std::sort(index_.begin(), index_.end(),
             [](const IndexEntry& a, const IndexEntry& b) {
               return a.block_offset < b.block_offset;
             });
 
   std::vector<uint8_t> payload;
-  for (const auto& entry : index_) {
+  size_t next_index = 0;
+  uint64_t offset = header_.header_size;
+
+  while (offset + kBlockHeaderSize <= data_end_) {
     BlockHeader bh{};
-    if (!ReadExactAt(in_, entry.block_offset, &bh, sizeof(bh))) {
-      error_ = "short read at block header, offset " +
-               std::to_string(entry.block_offset);
+    if (!ReadExactAt(in_, offset, &bh, sizeof(bh))) {
+      error_ = "short read at block header, offset " + std::to_string(offset);
       return false;
     }
     if (bh.magic != kBlockMagic) {
-      error_ = "block magic mismatch at offset " +
-               std::to_string(entry.block_offset);
+      // Print the bytes found. "Magic mismatch" alone cannot separate a torn
+      // write from a pointer in the wrong place, and the four bytes usually can.
+      error_ = "block magic mismatch at offset " + std::to_string(offset) +
+               " (found " + Hex32(bh.magic) + ", expected " +
+               Hex32(kBlockMagic) + ")";
       return false;
     }
-    // payload_size comes from the file, not from the validated index, so a
-    // corrupt size field must not decide the allocation or the read extent.
-    // Same two conditions DecodeBlocks applies.
+    // payload_size comes from the file, not from the index, so a corrupt size
+    // field must not decide the allocation or the read extent. Bounded by
+    // data_end_, not file_size_: the trailer sits past data_end_, so a block
+    // claiming to extend into it is damaged even though those bytes exist.
     if (bh.payload_size > kMaxPayloadBytes ||
-        entry.block_offset + kBlockHeaderSize + bh.payload_size > file_size_) {
-      error_ = "block at offset " + std::to_string(entry.block_offset) +
-               " claims a payload outside the file";
+        offset + kBlockHeaderSize + bh.payload_size > data_end_) {
+      error_ = "block at offset " + std::to_string(offset) + " claims " +
+               std::to_string(bh.payload_size) +
+               " payload bytes past the end of the recording";
       return false;
     }
     if (bh.codec != static_cast<uint16_t>(BlockCodec::None)) {
-      error_ = "block at offset " + std::to_string(entry.block_offset) +
+      error_ = "block at offset " + std::to_string(offset) +
                " uses block codec " + std::to_string(bh.codec) +
                "; this build only merges uncompressed blocks";
       return false;
     }
+
+    const uint64_t payload_offset = offset + kBlockHeaderSize;
     payload.assign(static_cast<size_t>(bh.payload_size), 0);
     if (bh.payload_size > 0 &&
-        !ReadExactAt(in_, entry.block_offset + kBlockHeaderSize,
-                     payload.data(), payload.size())) {
+        !ReadExactAt(in_, payload_offset, payload.data(), payload.size())) {
       error_ = "short read at block payload, offset " +
-               std::to_string(entry.block_offset + kBlockHeaderSize);
+               std::to_string(payload_offset);
       return false;
     }
     if (Crc32c(payload.data(), payload.size()) != bh.payload_crc32c) {
-      error_ = "block at offset " + std::to_string(entry.block_offset) +
+      error_ = "block at offset " + std::to_string(offset) +
                " failed its checksum; refusing to merge damaged data";
       return false;
     }
@@ -642,7 +752,7 @@ bool Reader::CopyPayloadTo(Writer& out) {
     // into a file whose delta stream has no guaranteed preceding snapshot, so
     // reject the kind rather than emit a file that violates the precondition.
     if (kind == RecordKind::BookDelta) {
-      error_ = "block at offset " + std::to_string(entry.block_offset) +
+      error_ = "block at offset " + std::to_string(offset) +
                " is a book delta; the merger only concatenates snapshot-only "
                "recordings";
       return false;
@@ -653,7 +763,7 @@ bool Reader::CopyPayloadTo(Writer& out) {
             sizeof(BookLevel));
     if (kind == RecordKind::BookSnapshot &&
         bh.record_size != expected_snapshot) {
-      error_ = "block at offset " + std::to_string(entry.block_offset) +
+      error_ = "block at offset " + std::to_string(offset) +
                " has record stride " + std::to_string(bh.record_size) +
                ", which does not match this merger's layout; refusing to merge";
       return false;
@@ -662,7 +772,145 @@ bool Reader::CopyPayloadTo(Writer& out) {
       error_ = "append block: " + out.last_error();
       return false;
     }
+
+    // Cross-check the trailer as we go. An entry that points before this block
+    // was found never matched a block start, so the index is damaged or stale --
+    // but the payload came from the bytes, so that is a repair, not a failure.
+    while (next_index < index_.size() &&
+           index_[next_index].block_offset < offset) {
+      ++index_mismatches_;
+      ++next_index;
+    }
+    if (next_index < index_.size() &&
+        index_[next_index].block_offset == offset) {
+      ++next_index;
+    }
+
+    ++blocks_walked_;
+    copied_records_ += bh.record_count;
+    offset = payload_offset + bh.payload_size;
   }
+
+  // Entries left over point past the last block the chain reached.
+  index_mismatches_ += index_.size() - next_index;
+  return true;
+}
+
+bool Reader::ScanChainBounds() {
+  if (!in_.is_open()) {
+    error_ = "reader is not open";
+    return false;
+  }
+
+  index_mismatches_ = 0;
+  blocks_walked_ = 0;
+  size_t next_index = 0;
+
+  int64_t  first_ts = 0;
+  int64_t  last_ts  = 0;
+  bool     any      = false;
+  uint64_t count    = 0;
+
+  // Per stream, exactly as Open() measures it from the index: trades and book
+  // are flushed independently and interleave, so only same-kind blocks can be
+  // compared without comparing two unrelated clocks.
+  int64_t last_kind_ts[3] = {0, 0, 0};
+  bool    seen_kind[3]    = {false, false, false};
+
+  int64_t  max_inv  = 0;
+  int64_t  inv_prev = 0;
+  int64_t  inv_next = 0;
+  uint16_t inv_kind = 0;
+
+  uint64_t offset = header_.header_size;
+  while (offset + kBlockHeaderSize <= data_end_) {
+    BlockHeader bh{};
+    if (!ReadExactAt(in_, offset, &bh, sizeof(bh))) {
+      error_ = "short read at block header, offset " + std::to_string(offset);
+      return false;
+    }
+    if (bh.magic != kBlockMagic) {
+      error_ = "block magic mismatch at offset " + std::to_string(offset) +
+               " (found " + Hex32(bh.magic) + ", expected " +
+               Hex32(kBlockMagic) + ")";
+      return false;
+    }
+    // Same two conditions as CopyPayloadTo. Bounded by data_end_, not
+    // file_size_: the trailer sits past data_end_, so a block claiming to
+    // extend into it is damaged even though those bytes exist.
+    if (bh.payload_size > kMaxPayloadBytes ||
+        offset + kBlockHeaderSize + bh.payload_size > data_end_) {
+      error_ = "block at offset " + std::to_string(offset) + " claims " +
+               std::to_string(bh.payload_size) +
+               " payload bytes past the end of the recording";
+      return false;
+    }
+
+    // The FILE's span, both streams together: that is what orders the inputs
+    // and labels the merged output.
+    if (!any) {
+      first_ts = bh.first_ts_ns;
+      last_ts  = bh.last_ts_ns;
+      any      = true;
+    } else {
+      if (bh.first_ts_ns < first_ts) first_ts = bh.first_ts_ns;
+      if (bh.last_ts_ns  > last_ts)  last_ts  = bh.last_ts_ns;
+    }
+    count += bh.record_count;
+    ++blocks_walked_;
+
+    int slot = -1;
+    switch (static_cast<RecordKind>(bh.kind)) {
+      case RecordKind::Trade:        slot = 0; break;
+      case RecordKind::BookSnapshot: slot = 1; break;
+      case RecordKind::BookDelta:    slot = 2; break;
+      default:                       slot = -1; break;
+    }
+    if (slot >= 0) {
+      if (seen_kind[slot]) {
+        const int64_t back = last_kind_ts[slot] - bh.first_ts_ns;
+        if (back > max_inv) {
+          max_inv  = back;
+          inv_prev = last_kind_ts[slot];
+          inv_next = bh.first_ts_ns;
+          inv_kind = bh.kind;
+        }
+      }
+      seen_kind[slot]    = true;
+      last_kind_ts[slot] = bh.last_ts_ns;
+    }
+
+    // Cross-check the trailer here too, so --stats can report a damaged index
+    // without a merge having to fail first. index_ is sorted by block_offset,
+    // so both advance in one pass; an entry pointing before this block was
+    // found never matched a block start.
+    while (next_index < index_.size() &&
+           index_[next_index].block_offset < offset) {
+      ++index_mismatches_;
+      ++next_index;
+    }
+    if (next_index < index_.size() &&
+        index_[next_index].block_offset == offset) {
+      ++next_index;
+    }
+
+    // Seek past the payload rather than read it: ReadExactAt positions the
+    // stream anyway, so this pass never touches a record byte.
+    offset += kBlockHeaderSize + bh.payload_size;
+  }
+
+  // Entries left over point past the last block the chain reached.
+  index_mismatches_ += index_.size() - next_index;
+
+  if (any) {
+    meta_.first_ts_ns = first_ts;
+    meta_.last_ts_ns  = last_ts;
+  }
+  meta_.record_count          = count;
+  meta_.max_inversion_ns      = max_inv;
+  meta_.max_inversion_prev_ns = inv_prev;
+  meta_.max_inversion_next_ns = inv_next;
+  meta_.max_inversion_kind    = inv_kind;
   return true;
 }
 
@@ -679,6 +927,12 @@ bool IsSessionFile(const std::string& path) {
 }
 
 SessionData ReadSessionFile(const std::string& path) {
+  return ReadSessionFileRange(path, std::numeric_limits<int64_t>::min(),
+                              std::numeric_limits<int64_t>::max());
+}
+
+SessionData ReadSessionFileRange(const std::string& path, int64_t start_ns,
+                                 int64_t end_ns) {
   SessionData out;
 
   std::ifstream in(path, std::ios::binary | std::ios::ate);
@@ -697,7 +951,7 @@ SessionData ReadSessionFile(const std::string& path) {
   if (!ReadFileHeader(in, file_size, layout, out.error)) return out;
 
   ParseMetadata(in, layout, file_size, out);
-  if (!DecodeBlocks(in, layout, out)) {
+  if (!DecodeBlocks(in, layout, out, start_ns, end_ns)) {
     // Keep the partial result: an hour of book in front of a corrupt tail is
     // still an hour the backtest can run on.
   }

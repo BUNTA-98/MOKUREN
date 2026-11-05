@@ -21,6 +21,17 @@ namespace mokuren::mdf {
 inline constexpr char     kFileMagic[8]     = {'M','O','K','U','R','E','N','\0'};
 inline constexpr uint32_t kBlockMagic       = 0x424E4B4Du; // 'M','K','N','B' LE
 inline constexpr uint32_t kEndianTagLe      = 0x01020304u;
+// kFormatVersion is the layout this build WRITES; kMinReaderVersion is the
+// oldest layout it can still READ. The reader refuses a file whose
+// min_reader_version exceeds kFormatVersion -- so bumping kFormatVersion while
+// leaving kMinReaderVersion alone keeps old files readable, and is the correct
+// move for a pure addition. Bump kMinReaderVersion only when an old reader
+// would misread the new bytes; a reader that silently mis-decodes is worse than
+// one that refuses.
+//
+// Note what this pair CANNOT express: a change in the MEANING of an existing
+// field at the same size, which no version number in the header can catch. See
+// kWriterVersion for the instrument that can.
 inline constexpr uint16_t kFormatVersion    = 1;
 inline constexpr uint16_t kMinReaderVersion = 1;
 inline constexpr uint32_t kFileHeaderSize   = 128;
@@ -31,6 +42,20 @@ inline constexpr uint32_t kIndexEntrySize   = 32;
 // may not declare more without recompiling and bumping kFormatVersion.
 // A dataset that only publishes top-of-book uses depth 1.
 inline constexpr uint32_t kMaxBookDepth = 20;
+
+// Which writer produced a file, recorded in the metadata block.
+//
+// Distinct from kFormatVersion on purpose. kFormatVersion describes the BYTE
+// LAYOUT and is compared exactly; this names the CODE, which can change what it
+// writes -- or what it means by an index entry -- without changing any struct's
+// size. Index entries carry no checksum, so a file whose index disagrees with
+// its blocks passes every structural check there is, and without this field
+// there is no way to ask it which build wrote it -- which is exactly the hole
+// that made three damaged trailers take six rounds to characterise.
+//
+// Bump on any change to what is written, not only to the layout. Purely
+// informational: no reader branches on it.
+inline constexpr char kWriterVersion[] = "mokuren-mdf-writer/1";
 
 // --- enums -----------------------------------------------------------------
 
@@ -115,8 +140,18 @@ struct BlockHeader {
 static_assert(sizeof(BlockHeader) == kBlockHeaderSize,
               "BlockHeader must match kBlockHeaderSize");
 
+// A HINT, not a requirement. Every reader that matters (reader.cpp's
+// DecodeBlocks and CopyPayloadTo) walks the block chain from header_size and
+// never consults this table, because the chain is self-describing and the table
+// is not checksummed: one wrong entry reads as a corrupt payload from a file
+// whose bytes are fine, and an entry that went missing silently loses blocks.
+//
+// block_offset is the offset of the BlockHeader -- the byte where kBlockMagic
+// sits -- and NOT of the payload that follows it. That distinction is 56 bytes
+// (kBlockHeaderSize), it is invisible to every bounds check, and getting it
+// wrong produces a table that looks plausible and points a fixed distance off.
 struct IndexEntry {
-  uint64_t block_offset;
+  uint64_t block_offset;   // offset of the BlockHeader, not its payload
   int64_t  first_ts_ns;
   int64_t  last_ts_ns;
   uint32_t record_count;

@@ -9,7 +9,7 @@
     "wfa_step_days": 7
   },
   "environment": {
-    "dataset": "data/2026/bybit-BTCUSDT/bybit-BTCUSDT-2026-11-01.mkn",
+    "dataset": "data/2026/merged/bybit-BTCUSDT/bybit-BTCUSDT-2026-10-29_2026-11-01.mkn",
     "interval_ms": 60000.0,
     "macro_interval_ms": 300000.0,
     "max_cores": 6.0,
@@ -86,7 +86,7 @@
     "min_distance_dollars": 0.0,
     "modules": [
       {
-        "active": true,
+        "active": false,
         "name": "SinglePositionLock"
       },
       {

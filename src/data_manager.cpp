@@ -395,6 +395,30 @@ DataManager::LoadedDataset DataManager::LoadAll(const std::string &dataset_path)
     return loaded;
 }
 
+DataManager::LoadedDataset DataManager::LoadAllRange(const std::string &dataset_path, int64_t start_ns, int64_t end_ns) {
+    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+        mokuren::mdf::SessionData session =
+            mokuren::mdf::ReadSessionFileRange(dataset_path, start_ns, end_ns);
+        ReportSessionIssues(dataset_path, session);
+        RequireCleanSession(dataset_path, session);
+
+        LoadedDataset loaded;
+        loaded.trades = std::move(session.trades);
+        loaded.l2 = std::move(session.l2);
+        return loaded;
+    }
+
+    // Directory layout: no block index, so the trim happens after the load.
+    // SliceTrades/SliceL2 are exactly this operation, and they are only correct
+    // on an ascending vector -- which both loaders guarantee.
+    LoadedDataset loaded = LoadAll(dataset_path);
+    const int64_t start_ms = start_ns / 1'000'000;
+    const int64_t end_ms = end_ns / 1'000'000;
+    loaded.trades = SliceTrades(loaded.trades, start_ms, end_ms);
+    loaded.l2 = SliceL2(loaded.l2, start_ms, end_ms);
+    return loaded;
+}
+
 bool DataManager::ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status) {
     if (trades.empty() || l2.empty()) return true; 
     

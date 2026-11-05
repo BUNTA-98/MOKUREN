@@ -42,6 +42,9 @@ struct SessionMeta {
   std::string source;
   uint32_t depth_per_side = 0;
   int64_t created_unix_ns = 0;
+  // mdf::kWriterVersion as recorded at write time. Empty for a file written
+  // before the field existed, which is itself informative.
+  std::string writer_version;
 
   // false for a recording that was never finalised: the trailer (metadata and
   // index) is written by Close(), so a crash leaves the blocks readable and the
@@ -82,6 +85,31 @@ bool IsSessionFile(const std::string& path);
 
 SessionData ReadSessionFile(const std::string& path);
 
+// Same decode, restricted to the blocks that overlap [start_ns, end_ns] -- both
+// in NANOSECONDS, matching the on-disk blocks and not the milliseconds the
+// returned records carry.
+//
+// Exists because a merged multi-day recording decodes to roughly its own size
+// in heap (a book record is 680 B on disk, 688 B in L2Snapshot), so a file
+// larger than RAM cannot be read at all through the full decode -- the process
+// dies in std::bad_alloc with no diagnosis. Reading one day at a time can.
+//
+// What it gives up, stated plainly because both are easy to misread:
+//   - Block granular, not record granular. A block whose span straddles a bound
+//     is decoded whole, so each channel may extend up to one block span (at
+//     most Writer::Options::max_block_span_ns, 1s by default) outside the
+//     range. Nothing INSIDE the range is missing.
+//   - Only the blocks it decodes are checksum-verified. A block outside the
+//     range is skipped on the strength of its header, so a corrupt payload
+//     there is NOT reported. Use a full read to audit a file; use this to look
+//     at one.
+//   - A BookDelta block before start_ns is not applied, because applying it
+//     would mean decoding from the beginning. The recorder writes snapshots
+//     only and the merger refuses deltas, so this is a warning, not an error --
+//     but on a delta-carrying file the first book state emitted may be wrong.
+SessionData ReadSessionFileRange(const std::string& path, int64_t start_ns,
+                                 int64_t end_ns);
+
 // Block-level reader used by the merger.
 //
 // Unlike ReadSessionFile (which decodes into engine types and applies per-
@@ -102,11 +130,54 @@ class Reader {
     std::string source;
     uint32_t    depth_per_side  = 0;
     int64_t     created_unix_ns = 0;
+    // mdf::kWriterVersion as recorded at write time; empty when unrecorded.
+    std::string writer_version;
 
-    // From the index. Zero when the file is unfinalised.
+    // From the index after Open(), which is what makes scanning a directory
+    // cheap. Overwritten from the block chain by ScanChainBounds() -- and the
+    // index is exactly what cannot be trusted when it disagrees with that
+    // chain, which is the case index_mismatch_count() reports.
     int64_t  first_ts_ns  = 0;
     int64_t  last_ts_ns   = 0;
     uint64_t record_count = 0;
+
+    // Largest amount, in ns, by which any block starts before the previous
+    // block OF THE SAME KIND ends, in physical (block_offset) order. 0 when
+    // every stream is strictly ascending. Per kind, because trades and book are
+    // flushed independently and interleave: comparing across kinds compares two
+    // unrelated clocks.
+    //
+    // A magnitude, not a bool, because a step backwards is not by itself
+    // damage: MarketDataRecorder::RotateIfNeeded keeps a late print rather than
+    // dropping it, so every file this recorder writes has small ones. The
+    // merger compares this against a tolerated skew instead of rejecting the
+    // file outright. The min/max pair above cannot answer it at all, because a
+    // file whose blocks are shuffled still has a well-defined min and max.
+    int64_t max_inversion_ns = 0;
+
+    // The two timestamps behind max_inversion_ns: the previous block's
+    // last_ts_ns and this block's first_ts_ns. Index entries are not covered by
+    // any checksum (only the payload is), so when the magnitude is implausible
+    // the pair is what separates "a late print" from "an index entry that was
+    // never valid": a timestamp in the wrong unit, or one left at zero, is
+    // obvious from its value, while a genuine gap shows two real dates.
+    int64_t max_inversion_prev_ns = 0;
+    int64_t max_inversion_next_ns = 0;
+
+    // Which stream produced it (RecordKind). The magnitude alone cannot be
+    // acted on: a stale TRADE is a feed problem -- a resubscribe replaying old
+    // prints -- while a stale SNAPSHOT is the local book reconstruction
+    // emitting frames out of order. Same number, different fix.
+    uint16_t max_inversion_kind = 0;
+
+    // Where the chain starts, and where the index claims the first block
+    // starts. Equal on a healthy file. The DELTA is the diagnosis for a
+    // disagreement: a constant offset means an older writer stored a different
+    // field there (a semantics change no structural check can see, since index
+    // entries carry no checksum), while a varying or garbage offset means the
+    // file was damaged after it was written. Those have opposite fixes.
+    uint64_t first_block_offset = 0;
+    uint64_t first_index_offset = 0;
 
     // True when the file carries a writer trailer (metadata + index present).
     // NOT a guarantee that every byte was written: Writer::Close() patches the
@@ -126,19 +197,74 @@ class Reader {
   const Meta& metadata() const { return meta_; }
   uint64_t record_count() const { return meta_.record_count; }
 
-  // Walk the index in physical order, verify each block (magic + crc +
-  // codec), and re-emit it verbatim through Writer::AppendBlock. Returns
-  // false on a hard error -- a corrupted source block is a hard error on
-  // purpose: skipping it would leave a hole in the merged file that looks
-  // exactly like a venue gap.
+  // Records actually copied by the last CopyPayloadTo, counted from the block
+  // headers it walked rather than from the index's record_count. The two agree
+  // on a healthy file and disagree on one whose trailer is damaged; the merged
+  // file's own metadata comes from the block headers, so this is the number
+  // that describes what was written.
+  uint64_t copied_records() const { return copied_records_; }
+
+  // Index entries that did not line up with a block found by walking the chain.
+  // 0 on a healthy file. Non-zero means the trailer's index is damaged or
+  // stale; the payload was still copied correctly, because CopyPayloadTo never
+  // trusts the index for what it copies.
+  uint64_t index_mismatch_count() const { return index_mismatches_; }
+
+  // Entries Open() parsed out of the trailer, and blocks the chain walk found.
+  // Equal on a healthy file. The RATIO is the diagnosis: index_size is fixed by
+  // the file, so parsing it at kIndexEntrySize yields |index_size / 32| entries
+  // whatever size the writer used. 32 * entries / blocks therefore recovers the
+  // writer's own entry size -- 32 means this build's layout, anything else means
+  // that build described entries differently and every parsed offset is shifted.
+  uint64_t index_entries() const { return index_.size(); }
+  uint64_t blocks_walked() const { return blocks_walked_; }
+
+  // Overwrite metadata()'s first_ts_ns / last_ts_ns / record_count and the
+  // inversion figures from the BLOCK CHAIN, walking headers and seeking over
+  // payloads. Required before anything treats those values as facts rather
+  // than as a hint: a caller that orders files by them, or labels an output
+  // from them, is relying on values the trailer can get wrong (index entries
+  // are not checksummed; only payloads are), and three of four inputs in one
+  // real directory were wrong that way.
+  //
+  // Header-only: 56 bytes per block, no payload read, so it costs about as
+  // much as the directory scan it accompanies and a small fraction of the copy
+  // that follows.
+  //
+  // Returns false when the chain itself is unreadable at some offset, with
+  // last_error() naming it -- that block would fail CopyPayloadTo too, so
+  // failing here reports it before a partial output exists.
+  bool ScanChainBounds();
+
+  // Walk the BLOCK CHAIN from header_size to the end of the data -- not the
+  // index -- verify each block (magic + bounds + crc + codec), and re-emit it
+  // verbatim through Writer::AppendBlock. Returns false on a hard error -- a
+  // corrupted source block is a hard error on purpose: skipping it would leave
+  // a hole in the merged file that looks exactly like a venue gap.
+  //
+  // The chain, not the index, because index entries carry no checksum: one
+  // damaged entry reads as a corrupt payload ("block magic mismatch" from a
+  // file whose data is fine), and an index that lost entries silently copies
+  // fewer blocks than the file holds. Every block header is self-describing
+  // (magic, kind, stride, count, payload_size, crc), which is exactly what a
+  // linear walk needs -- the same thing DecodeBlocks does. The index is then
+  // compared against what the walk found, and any disagreement is counted in
+  // index_mismatch_count() rather than silently accepted.
   bool CopyPayloadTo(Writer& out);
 
  private:
   std::ifstream in_;
   FileHeader header_{};
   uint64_t file_size_ = 0;
+  // Where the block chain ends: metadata_offset when the trailer is present,
+  // otherwise the real end of the file. An unfinalised recording still has a
+  // readable prefix, which is the whole reason Reader can open one.
+  uint64_t data_end_ = 0;
   Meta meta_{};
   std::vector<IndexEntry> index_;
+  uint64_t copied_records_ = 0;
+  uint64_t index_mismatches_ = 0;
+  uint64_t blocks_walked_ = 0;
   std::string error_;
 };
 

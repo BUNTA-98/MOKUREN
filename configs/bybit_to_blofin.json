@@ -1,91 +1,27 @@
 {
-  "exchange": "blofin",
   "api_key": "",
-  "api_secret": "",
   "api_passphrase": "",
-  "initial_balance": 25000.0,
+  "api_secret": "",
+  "backtest": {
+    "config_profile": "configs/bybit_to_blofin.json"
+  },
   "environment": {
+    "dataset": "data/2026/bybit-BTCUSDT",
     "interval_ms": 60000.0,
     "macro_interval_ms": 300000.0,
     "max_cores": 6.0,
     "tick_size": 0.1,
     "vwap_reset_hour": 0
   },
+  "exchange": "blofin",
   "execution": {
     "slippage_pct": 0.0002,
     "taker_fee_pct": 0.0004
   },
-  "venue": {
-    "category": "linear",
-    "symbol": "BTCUSDT",
-    "position_mode": "one_way",
-    "lot_step": 0.001,
-    "environment": "demo",
-    "data_exchange": "bybit",
-    "data_environment": "mainnet",
-    "allow_mainnet": false
-  },
-  "startup_probe": {
-    "min_l2_depth": 20,
-    "on_failure": "abort",
-    "preset": "development"
-  },
-  "prop": {
-    "enabled": false,
-    "daily_reset_hour_utc": 0,
-    "flatten_on_breach": true,
-    "max_daily_drawdown_pct": 0.04,
-    "max_total_drawdown_pct": 0.06,
-    "warn_fraction": 0.8
-  },
-  "risk": {
-    "min_distance_dollars": 0.0,
-    "risk_per_trade_pct": 0.005,
-    "sl_pct": 0.003,
-    "tp_r": 2.0,
-    "modules": [
-      {
-        "active": true,
-        "name": "SinglePositionLock"
-      },
-      {
-        "active": true,
-        "max_leverage": 40.0,
-        "name": "MaxLeverageLock"
-      },
-      {
-        "active": false,
-        "max_stop_pct": 0.02,
-        "name": "MaxStopDistanceLock"
-      },
-      {
-        "active": false,
-        "cooldown_ms": 1800000,
-        "name": "AntiRevengeLock"
-      }
-    ]
-  },
-  "trade_management": {
-    "break_even": {
-      "enabled": true,
-      "target_r": 0.1,
-      "trigger_r": 1.0
-    },
-    "scale_out": {
-      "enabled": false,
-      "fraction": 0.5,
-      "trigger_r": 2.0
-    },
-    "trailing": {
-      "distance_r": 0.5,
-      "enabled": false,
-      "trigger_r": 1.0
-    }
-  },
   "filters": [
     {
       "active": true,
-      "lookback": 1.0,
+      "lookback": 10.0,
       "name": "MacroTrend"
     },
     {
@@ -134,18 +70,94 @@
       "name": "POCTrend"
     }
   ],
+  "initial_balance": 25000.0,
+  "prop": {
+    "daily_reset_hour_utc": 0,
+    "enabled": true,
+    "flatten_on_breach": true,
+    "max_daily_drawdown_pct": 0.04,
+    "max_total_drawdown_pct": 0.06,
+    "warn_fraction": 0.8
+  },
+  "risk": {
+    "min_distance_dollars": 0.0,
+    "modules": [
+      {
+        "active": false,
+        "name": "SinglePositionLock"
+      },
+      {
+        "active": true,
+        "max_leverage": 40.0,
+        "name": "MaxLeverageLock"
+      },
+      {
+        "active": false,
+        "max_stop_pct": 0.02,
+        "name": "MaxStopDistanceLock"
+      },
+      {
+        "active": false,
+        "cooldown_ms": 1800000,
+        "name": "AntiRevengeLock"
+      }
+    ],
+    "risk_per_trade_pct": 0.01,
+    "sl_pct": 0.004,
+    "tp_r": 3.0
+  },
+  "startup_probe": {
+    "min_l2_depth": 20,
+    "on_failure": "abort",
+    "preset": "development"
+  },
+  "trade_management": {
+    "break_even": {
+      "enabled": true,
+      "target_r": 0.1,
+      "trigger_r": 1.0
+    },
+    "scale_out": {
+      "enabled": false,
+      "fraction": 0.5,
+      "trigger_r": 2.0
+    },
+    "trailing": {
+      "distance_r": 0.5,
+      "enabled": false,
+      "trigger_r": 1.0
+    }
+  },
   "triggers": [
     {
       "active": false,
-      "drop_threshold": 0.1,
-      "lookback_ms": 500.0,
-      "min_wall_qty": 0.5,
+      "drop_threshold": {
+        "max": 1.0,
+        "min": 0.1,
+        "mode": "range",
+        "step": 0.1,
+        "val": 0.1
+      },
+      "lookback_ms": {
+        "max": 3000.0,
+        "min": 500.0,
+        "mode": "range",
+        "step": 250.0,
+        "val": 500.0
+      },
+      "min_wall_qty": {
+        "max": 2.0,
+        "min": 0.5,
+        "mode": "range",
+        "step": 0.5,
+        "val": 0.5
+      },
       "name": "SpoofHunter"
     },
     {
       "active": true,
       "min_level_qty": 0.001,
-      "min_stacked_count": 5.0,
+      "min_stacked_count": 3.0,
       "name": "StackedImbalance",
       "ratio_threshold": 3.0,
       "require_candle_agreement": false
@@ -155,5 +167,15 @@
       "min_delta_threshold": 10.0,
       "name": "DeltaAbsorption"
     }
-  ]
+  ],
+  "venue": {
+    "allow_mainnet": false,
+    "category": "linear",
+    "data_environment": "mainnet",
+    "data_exchange": "bybit",
+    "environment": "demo",
+    "lot_step": 0.001,
+    "position_mode": "one_way",
+    "symbol": "BTCUSDT"
+  }
 }
