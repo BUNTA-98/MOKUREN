@@ -3,12 +3,14 @@
 #include "config_parser.hpp"
 #include "data_manager.hpp"
 #include "factory.hpp"
+#include "l2_feed.hpp"
 #include "logger.hpp"
 #include "market_context.hpp"
 #include "performance_metrics.hpp"
 #include "prop_equity.hpp"
 #include "prop_guard.hpp"
 #include "replay_manager.hpp"
+#include "run_loop.hpp"
 #include "runner_common.hpp"
 #include "signal_executor.hpp"
 #include "trade_event.hpp"
@@ -19,6 +21,7 @@
 #include <exception>
 #include <iterator>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -51,20 +54,33 @@ void WfaRunner::RunWFA(const std::string &config_path,
     // actually selected. the fallback keeps CLI/test callers working.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        active_dataset = base_json.value("environment", nlohmann::json::object()).value("dataset", "data");
+        // No silent "data" fallback: that default is what turned a config
+        // pointing at a .mkn the operator picked into a run over the directory
+        // "data", and the failure read as "no trades found". Matches
+        // grid_runner and ReplayManager::Run, both of which dropped it.
+        const auto env = base_json.value("environment", nlohmann::json::object());
+        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+    }
+    if (active_dataset.empty()) {
+        LOG_ERROR("wfa: no dataset configured");
+        on_status("ERR: NO DATASET CONFIGURED");
+        return;
     }
     on_status("LOADING DATASET FOR WFA: " + active_dataset);
     
     // a damaged recording throws from the loader. surface the reason on the
     // status line instead of running every window on a book-blind file.
+    // see grid_runner: trades are materialised (32 B each, shared by every
+    // worker), the book is not -- a recording streams per worker through its
+    // own cursor, a directory keeps the loaded vector.
     std::vector<TradeEvent> all_trades;
-    std::vector<L2Snapshot> all_l2;
+    const bool book_streams = DataManager::IsSessionRecording(active_dataset);
+    std::vector<L2Snapshot> book_hold;
     try {
-        // see grid_runner: a single pass, so a .mkn is decoded once and both
-        // channels come from the same state of the file.
-        DataManager::LoadedDataset dataset = DataManager::LoadAll(active_dataset);
-        all_trades = std::move(dataset.trades);
-        all_l2 = std::move(dataset.l2);
+        all_trades = DataManager::LoadAllTrades(active_dataset);
+        if (!book_streams) {
+            book_hold = DataManager::LoadAllL2Snapshots(active_dataset);
+        }
     } catch (const std::exception& e) {
         LOG_ERROR("wfa: {}", e.what());
         on_status(std::string("ERR: DATASET: ") + e.what());
@@ -77,7 +93,14 @@ void WfaRunner::RunWFA(const std::string &config_path,
         return;
     }
 
-    if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
+    // The alignment probe needs both endpoints of the book, which a streamed
+    // source does not hand out cheaply. A recording carries both channels in
+    // one file, so it cannot be misaligned; the check stays on the directory
+    // layout, where the two files were produced separately.
+    if (!book_streams &&
+        !DataManager::ValidateDataAlignment(all_trades, book_hold, on_status)) {
+        return;
+    }
 
     LOG_INFO("wfa start: dataset={} trades={}", active_dataset, all_trades.size());
 
@@ -120,11 +143,19 @@ void WfaRunner::RunWFA(const std::string &config_path,
                  win.out_of_sample_start, win.out_of_sample_end);
         on_status("WFA WINDOW " + std::to_string(i + 1) + "/" + std::to_string(windows.size()) + " (PARALLEL)");
 
-        // isolate window data via data mgr
+        // Trades are sliced: cheap, and every in-sample worker reads the same
+        // copy. The book is NOT sliced any more. A window of a week is hundreds
+        // of megabytes of L2Snapshot per window per permutation, and avoiding
+        // that allocation is the whole reason WFA on a week is possible now.
+        // Each worker opens its own cursor over its window instead.
         std::vector<TradeEvent> in_sample_data = DataManager::SliceTrades(all_trades, win.in_sample_start, win.in_sample_end);
         std::vector<TradeEvent> out_of_sample_data = DataManager::SliceTrades(all_trades, win.out_of_sample_start, win.out_of_sample_end);
-        std::vector<L2Snapshot> in_sample_l2 = DataManager::SliceL2(all_l2, win.in_sample_start, win.in_sample_end);
-        std::vector<L2Snapshot> out_of_sample_l2 = DataManager::SliceL2(all_l2, win.out_of_sample_start, win.out_of_sample_end);
+        std::vector<L2Snapshot> in_sample_l2;
+        std::vector<L2Snapshot> out_of_sample_l2;
+        if (!book_streams) {
+            in_sample_l2 = DataManager::SliceL2(book_hold, win.in_sample_start, win.in_sample_end);
+            out_of_sample_l2 = DataManager::SliceL2(book_hold, win.out_of_sample_start, win.out_of_sample_end);
+        }
 
         if (base_json.empty()) continue; 
         std::vector<RunConfig> runs = GridScanner::GenerateGrid(base_json);
@@ -183,80 +214,37 @@ void WfaRunner::RunWFA(const std::string &config_path,
                     const bool prop_on = prop_rules.enabled;
                     bool prop_breached = false;
 
-                    Bar live_bar, htf_bar;
-                    size_t l2_idx = 0;
-
-                    for (const auto &trade : in_sample_data) {
-                        // catch up l2 -- strict `<`, matching ReplayManager::Run.
-                        // A book frame sharing this print's millisecond is
-                        // applied at the top of the next iteration, not before
-                        // this print is evaluated. live_streamer.hpp guarantees
-                        // the print is emitted first at identical timestamps,
-                        // so `<=` handed the strategy a book the live run had
-                        // not seen yet.
-                        while (l2_idx < in_sample_l2.size() && in_sample_l2[l2_idx].timestamp < trade.timestamp) {
-                            eng.aggregator->ProcessL2(in_sample_l2[l2_idx]);
-                            eng.htf_aggregator->ProcessL2(in_sample_l2[l2_idx]);
-                            
-                            MarketContext tick_ctx{
-                                eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                                eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-                            };
-
-                            const L2Snapshot& snap = in_sample_l2[l2_idx];
-                            const mokuren::PropDecision pd = mokuren::ObservePropBook(
-                                prop_guard, eng.ptrader.get(),
-                                snap.best_bid_price, snap.best_ask_price, trade.price,
-                                snap.timestamp, "wfa_is");
-                            if (pd.state == mokuren::PropState::DailyHalted ||
-                                pd.state == mokuren::PropState::TotalHalted) {
-                                prop_breached = true;
-                            }
-
-                            TradeSignal tick_sig = eng.alpha->Evaluate(tick_ctx, false);
-                            if (tick_sig.direction != SignalDirection::NONE &&
-                                (!prop_on || prop_guard.allow_new_entry())) {
-                                double exec_price = (tick_sig.direction == SignalDirection::BUY) 
-                                                  ? in_sample_l2[l2_idx].best_ask_price 
-                                                  : in_sample_l2[l2_idx].best_bid_price;
-                                
-                                if (exec_price <= 0.0) exec_price = live_bar.close > 0.0 ? live_bar.close : trade.price;
-                                executor.Execute(tick_sig, exec_price, in_sample_l2[l2_idx].timestamp);
-                            }
-                            l2_idx++;
+                    // Per-worker book source over this window. A recording
+                    // streams; a directory reuses the per-window vector above.
+                    mokuren::CursorL2Feed book_cursor;
+                    mokuren::VectorL2Feed book_vector(in_sample_l2);
+                    mokuren::L2Feed* book = nullptr;
+                    if (book_streams) {
+                        std::string stream_error;
+                        if (!book_cursor.Open(active_dataset, stream_error,
+                                              win.in_sample_start * 1000000LL,
+                                              win.in_sample_end * 1000000LL)) {
+                            throw std::runtime_error(stream_error);
                         }
+                        book = &book_cursor;
+                    } else {
+                        book = &book_vector;
+                    }
 
-                        // observe the guard before anything can act on this
-                        // print: a breach must refuse the trade, not race it.
-                        const mokuren::PropDecision pd = mokuren::ObserveProp(
-                            prop_guard, eng.ptrader.get(), trade.price,
-                            trade.timestamp, "wfa_is");
-                        if (pd.state == mokuren::PropState::DailyHalted ||
-                            pd.state == mokuren::PropState::TotalHalted) {
-                            prop_breached = true;
-                        }
+                    const mokuren::RunLoopStats loop = mokuren::RunLoop(
+                        eng, executor, prop_guard, prop_on, "wfa_is",
+                        in_sample_data, *book);
 
-                        // update pos risk (passing ts to pos manager)
-                        eng.pos_manager->Update(trade.price, trade.timestamp);
-                        eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-                        
-                        // build ohlcv
-                        bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
-                        eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-                        
-                        MarketContext context{
-                            eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                            eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-                        };
-
-                        TradeSignal candle_sig = eng.alpha->Evaluate(context, candle_finished);
-                        if (!prop_on || prop_guard.allow_new_entry()) {
-                            executor.Execute(candle_sig, trade.price, trade.timestamp);
+                    if (book_streams) {
+                        const std::string problem =
+                            mokuren::L2StreamProblem(book_cursor.status());
+                        if (!problem.empty()) {
+                            throw std::runtime_error("dataset '" +
+                                                     active_dataset + "': " +
+                                                     problem);
                         }
                     }
-                    
-                    eng.aggregator->FlushLastCandle(live_bar);
-                    eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
+                    prop_breached = loop.prop_breached;
 
                     double profit = eng.ptrader->GetNetProfit();
                     
@@ -303,76 +291,46 @@ void WfaRunner::RunWFA(const std::string &config_path,
         const bool oos_prop_on = oos_prop_rules.enabled;
         bool oos_prop_breached = false;
 
-        Bar oos_live, oos_htf;
-        size_t l2_oos_idx = 0;
-
-        for (const auto &trade : out_of_sample_data) {
-            // proc oos l2 -- strict `<`, matching ReplayManager::Run. A book
-            // frame sharing this print's millisecond is applied at the top of
-            // the next iteration, not before this print is evaluated.
-            // live_streamer.hpp guarantees the print is emitted first at
-            // identical timestamps, so `<=` handed the strategy a book the
-            // live run had not seen yet.
-            while (l2_oos_idx < out_of_sample_l2.size() && out_of_sample_l2[l2_oos_idx].timestamp < trade.timestamp) {
-                oos_eng.aggregator->ProcessL2(out_of_sample_l2[l2_oos_idx]);
-                oos_eng.htf_aggregator->ProcessL2(out_of_sample_l2[l2_oos_idx]);
-                
-                MarketContext tick_ctx{
-                    oos_eng.aggregator->GetHistory(), oos_live, oos_htf, 
-                    oos_eng.aggregator->GetSessionMetrics(), oos_eng.aggregator->GetLatestL2(), oos_eng.aggregator->GetL2History()
-                };
-
-                const L2Snapshot& snap = out_of_sample_l2[l2_oos_idx];
-                const mokuren::PropDecision pd = mokuren::ObservePropBook(
-                    oos_prop_guard, oos_eng.ptrader.get(),
-                    snap.best_bid_price, snap.best_ask_price, trade.price,
-                    snap.timestamp, "wfa_oos");
-                if (pd.state == mokuren::PropState::DailyHalted ||
-                    pd.state == mokuren::PropState::TotalHalted) {
-                    oos_prop_breached = true;
-                }
-
-                TradeSignal tick_sig = oos_eng.alpha->Evaluate(tick_ctx, false);
-                if (tick_sig.direction != SignalDirection::NONE &&
-                    (!oos_prop_on || oos_prop_guard.allow_new_entry())) {
-                    double exec_price = (tick_sig.direction == SignalDirection::BUY) 
-                                      ? out_of_sample_l2[l2_oos_idx].best_ask_price 
-                                      : out_of_sample_l2[l2_oos_idx].best_bid_price;
-                    
-                    if (exec_price <= 0.0) exec_price = oos_live.close > 0.0 ? oos_live.close : trade.price;
-                    executor.Execute(tick_sig, exec_price, out_of_sample_l2[l2_oos_idx].timestamp);
-                }
-                l2_oos_idx++;
+        // The OOS run gets its own book source: the winner's in-sample stream
+        // is closed, and the OOS window is a different range.
+        mokuren::CursorL2Feed oos_book_cursor;
+        mokuren::VectorL2Feed oos_book_vector(out_of_sample_l2);
+        mokuren::L2Feed* oos_book = nullptr;
+        if (book_streams) {
+            std::string stream_error;
+            if (!oos_book_cursor.Open(active_dataset, stream_error,
+                                      win.out_of_sample_start * 1000000LL,
+                                      win.out_of_sample_end * 1000000LL)) {
+                // Skip this window, do not abandon the run: the in-sample
+                // sweeps for the windows after this one are still valid data,
+                // and a bare return stranded the progress bar mid-sweep with no
+                // result and no explanation.
+                LOG_ERROR("wfa window {}/{}: {}", i + 1, windows.size(),
+                          stream_error);
+                on_status("WARN: WFA WINDOW " + std::to_string(i + 1) +
+                          " SKIPPED: " + stream_error);
+                on_progress(i + 1, windows.size());
+                continue;
             }
+            oos_book = &oos_book_cursor;
+        } else {
+            oos_book = &oos_book_vector;
+        }
 
-            // observe the guard before anything can act on this print.
-            const mokuren::PropDecision pd = mokuren::ObserveProp(
-                oos_prop_guard, oos_eng.ptrader.get(), trade.price,
-                trade.timestamp, "wfa_oos");
-            if (pd.state == mokuren::PropState::DailyHalted ||
-                pd.state == mokuren::PropState::TotalHalted) {
-                oos_prop_breached = true;
-            }
+        const mokuren::RunLoopStats oos_loop = mokuren::RunLoop(
+            oos_eng, executor, oos_prop_guard, oos_prop_on, "wfa_oos",
+            out_of_sample_data, *oos_book);
 
-            // proc oos trades (passing ts to pos manager)
-            oos_eng.pos_manager->Update(trade.price, trade.timestamp);
-            oos_eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-            bool candle_finished = oos_eng.aggregator->ProcessTrade(oos_live, trade);
-            oos_eng.htf_aggregator->ProcessTrade(oos_htf, trade);
-            
-            MarketContext context{
-                oos_eng.aggregator->GetHistory(), oos_live, oos_htf, 
-                oos_eng.aggregator->GetSessionMetrics(), oos_eng.aggregator->GetLatestL2(), oos_eng.aggregator->GetL2History()
-            };
-
-            TradeSignal candle_sig = oos_eng.alpha->Evaluate(context, candle_finished);
-            if (!oos_prop_on || oos_prop_guard.allow_new_entry()) {
-                executor.Execute(candle_sig, trade.price, trade.timestamp);
+        if (book_streams) {
+            const std::string problem =
+                mokuren::L2StreamProblem(oos_book_cursor.status());
+            if (!problem.empty()) {
+                LOG_ERROR("wfa: dataset '{}': {}", active_dataset, problem);
+                on_status(std::string("ERR: DATASET: ") + problem);
+                return;
             }
         }
-        
-        oos_eng.aggregator->FlushLastCandle(oos_live);
-        oos_eng.ptrader->CloseOpenPositionAtEnd(oos_live.close, oos_live.timestamp_start);
+        oos_prop_breached = oos_loop.prop_breached;
 
         // agg oos trades for global rep
         auto* oos_pt = dynamic_cast<PaperTrader*>(oos_eng.ptrader.get());
@@ -467,18 +425,28 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
     // fall back to the first window's config when it did not.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        active_dataset = wfa_configs[0].config.value("environment", nlohmann::json::object()).value("dataset", "data");
+        // same rule as RunWFA: dataset is canonical, filepath is the legacy
+        // alias, and there is no silent "data" default.
+        const auto env =
+            wfa_configs[0].config.value("environment", nlohmann::json::object());
+        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+    }
+    if (active_dataset.empty()) {
+        LOG_ERROR("replay wfa: no dataset configured");
+        return result;
     }
     LOG_INFO("replay wfa: dataset={} windows={}", active_dataset, wfa_configs.size());
 
     // a replay is a diagnostic: report a damaged recording and return the
     // empty result instead of unwinding through the UI that asked for it.
     std::vector<TradeEvent> all_trades;
-    std::vector<L2Snapshot> all_l2;
+    const bool book_streams = DataManager::IsSessionRecording(active_dataset);
+    std::vector<L2Snapshot> book_hold;
     try {
-        DataManager::LoadedDataset dataset = DataManager::LoadAll(active_dataset);
-        all_trades = std::move(dataset.trades);
-        all_l2 = std::move(dataset.l2);
+        all_trades = DataManager::LoadAllTrades(active_dataset);
+        if (!book_streams) {
+            book_hold = DataManager::LoadAllL2Snapshots(active_dataset);
+        }
     } catch (const std::exception& e) {
         LOG_ERROR("replay wfa: {}", e.what());
         return result;
@@ -514,77 +482,45 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
         bool replay_prop_breached = false;
 
         std::vector<TradeEvent> oos_data = DataManager::SliceTrades(all_trades, wfa_cfg.oos_start, wfa_cfg.oos_end);
-        std::vector<L2Snapshot> oos_l2 = DataManager::SliceL2(all_l2, wfa_cfg.oos_start, wfa_cfg.oos_end);
-        
-        Bar live_bar, htf_bar;
-        size_t l2_idx = 0;
-        
-        for (const auto &trade : oos_data) {
-            // catch up oos l2 -- strict `<`, matching ReplayManager::Run. A
-            // book frame sharing this print's millisecond is applied at the
-            // top of the next iteration, not before this print is evaluated.
-            // live_streamer.hpp guarantees the print is emitted first at
-            // identical timestamps, so `<=` handed the strategy a book the
-            // live run had not seen yet.
-            while (l2_idx < oos_l2.size() && oos_l2[l2_idx].timestamp < trade.timestamp) {
-                eng.aggregator->ProcessL2(oos_l2[l2_idx]);
-                eng.htf_aggregator->ProcessL2(oos_l2[l2_idx]);
-                
-                MarketContext tick_ctx{
-                    eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                    eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-                };
 
-                const L2Snapshot& snap = oos_l2[l2_idx];
-                const mokuren::PropDecision pd = mokuren::ObservePropBook(
-                    replay_prop_guard, eng.ptrader.get(),
-                    snap.best_bid_price, snap.best_ask_price, trade.price,
-                    snap.timestamp, "replay_wfa");
-                if (pd.state == mokuren::PropState::DailyHalted ||
-                    pd.state == mokuren::PropState::TotalHalted) {
-                    replay_prop_breached = true;
-                }
+        // Only a directory dataset materialises its window. A recording streams
+        // through the cursor below, because a window of a week does not fit in
+        // a vector -- which is what froze the replay after the sweep had
+        // already been fixed.
+        std::vector<L2Snapshot> oos_l2;
+        if (!book_streams) {
+            oos_l2 = DataManager::SliceL2(book_hold, wfa_cfg.oos_start, wfa_cfg.oos_end);
+        }
 
-                TradeSignal tick_sig = eng.alpha->Evaluate(tick_ctx, false);
-                if (tick_sig.direction != SignalDirection::NONE &&
-                    (!replay_prop_on || replay_prop_guard.allow_new_entry())) {
-                    double exec_price = (tick_sig.direction == SignalDirection::BUY) 
-                                      ? oos_l2[l2_idx].best_ask_price 
-                                      : oos_l2[l2_idx].best_bid_price;
-                    
-                    if (exec_price <= 0.0) exec_price = live_bar.close > 0.0 ? live_bar.close : trade.price;
-                    executor.Execute(tick_sig, exec_price, oos_l2[l2_idx].timestamp);
-                }
-                l2_idx++;
+        mokuren::CursorL2Feed book_cursor;
+        mokuren::VectorL2Feed book_vector(oos_l2);
+        mokuren::L2Feed* book = nullptr;
+        if (book_streams) {
+            std::string stream_error;
+            if (!book_cursor.Open(active_dataset, stream_error,
+                                  wfa_cfg.oos_start * 1000000LL,
+                                  wfa_cfg.oos_end * 1000000LL)) {
+                LOG_ERROR("replay wfa: {}", stream_error);
+                continue;
             }
+            book = &book_cursor;
+        } else {
+            book = &book_vector;
+        }
 
-            // observe the guard before anything can act on this print.
-            const mokuren::PropDecision pd = mokuren::ObserveProp(
-                replay_prop_guard, eng.ptrader.get(),
-                trade.price, trade.timestamp, "replay_wfa");
-            if (pd.state == mokuren::PropState::DailyHalted ||
-                pd.state == mokuren::PropState::TotalHalted) {
-                replay_prop_breached = true;
-            }
+        const mokuren::RunLoopStats loop = mokuren::RunLoop(
+            eng, executor, replay_prop_guard, replay_prop_on, "replay_wfa",
+            oos_data, *book);
 
-            // proc trade (passing ts to pos manager)
-            eng.pos_manager->Update(trade.price, trade.timestamp);
-            eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-            bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
-            eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-            
-            MarketContext context{
-                eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-            };
-
-            TradeSignal candle_sig = eng.alpha->Evaluate(context, candle_finished);
-            if (!replay_prop_on || replay_prop_guard.allow_new_entry()) {
-                executor.Execute(candle_sig, trade.price, trade.timestamp);
+        if (book_streams) {
+            const std::string problem =
+                mokuren::L2StreamProblem(book_cursor.status());
+            if (!problem.empty()) {
+                LOG_ERROR("replay wfa: dataset '{}': {}", active_dataset, problem);
+                continue;
             }
         }
-        eng.aggregator->FlushLastCandle(live_bar);
-        eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
+        if (loop.prop_breached) replay_prop_breached = true;
 
         // a breach in any window makes the aggregate replay untradeable, the
         // same way oos_any_breached flags the aggregate WFA result.

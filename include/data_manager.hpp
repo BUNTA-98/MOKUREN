@@ -50,6 +50,15 @@ public:
     // See reader.hpp for what a range read does and does not verify.
     static LoadedDataset LoadAllRange(const std::string& dataset_path,
                                       int64_t start_ns, int64_t end_ns);
+
+    // True for a single .mkn recording, false for the CSV / directory layout.
+    //
+    // The backtest runners branch on this to choose a BOOK source: a recording
+    // is streamed per worker (a week of L2Snapshot does not fit in a vector,
+    // which is what made a weekly run freeze), while a directory has no block
+    // index and was going to be loaded whole anyway. Trades never branch --
+    // they are 32 B each and every worker shares one ascending copy.
+    static bool IsSessionRecording(const std::string& dataset_path);
     
     static bool ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status);
     

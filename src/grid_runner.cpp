@@ -3,11 +3,13 @@
 #include "config_parser.hpp"
 #include "data_manager.hpp"
 #include "factory.hpp"
+#include "l2_feed.hpp"
 #include "logger.hpp"
 #include "market_context.hpp"
 #include "performance_metrics.hpp"
 #include "prop_equity.hpp"
 #include "prop_guard.hpp"
+#include "run_loop.hpp"
 #include "runner_common.hpp"
 #include "signal_executor.hpp"
 #include "trade_event.hpp"
@@ -22,6 +24,7 @@
 #include <iomanip>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -137,14 +140,23 @@ void GridRunner::Run(const std::string &config_path,
     // a damaged recording throws instead of returning a short vector; the
     // message goes to the status line so the operator sees the reason, not a
     // scan that quietly evaluated nothing.
+    // Trades are 32 B each -- a week is a few hundred megabytes, every worker
+    // reads the same ascending vector, and nobody pays a decode. They stay
+    // materialised.
+    //
+    // The BOOK does not. A day of L2Snapshot is ~2 GB (688 B per frame) and a
+    // week ten times that, so holding it in a vector is exactly the freeze this
+    // path exists to remove. A recording is streamed per worker through its own
+    // SessionCursor; a directory dataset has no block index and was going to be
+    // read whole anyway, so it keeps the shared vector.
     std::vector<TradeEvent> all_trades;
-    std::vector<L2Snapshot> all_l2;
+    const bool book_streams = DataManager::IsSessionRecording(active_dataset);
+    std::vector<L2Snapshot> book_hold;
     try {
-        // one pass over the dataset. for a .mkn recording this is the
-        // difference between decoding the file once and decoding it twice.
-        DataManager::LoadedDataset dataset = DataManager::LoadAll(active_dataset);
-        all_trades = std::move(dataset.trades);
-        all_l2 = std::move(dataset.l2);
+        all_trades = DataManager::LoadAllTrades(active_dataset);
+        if (!book_streams) {
+            book_hold = DataManager::LoadAllL2Snapshots(active_dataset);
+        }
     } catch (const std::exception& e) {
         LOG_ERROR("grid search: {}", e.what());
         on_status(std::string("ERR: DATASET: ") + e.what());
@@ -157,18 +169,27 @@ void GridRunner::Run(const std::string &config_path,
         return;
     }
 
-    if (all_l2.empty()) {
-        LOG_WARN("grid search: no L2 data found for {}", active_dataset);
-        on_status("WARN: NO L2 DATA FOUND");
-    } else {
-        if (!DataManager::ValidateDataAlignment(all_trades, all_l2, on_status)) return;
+    if (!book_streams) {
+        if (book_hold.empty()) {
+            LOG_WARN("grid search: no L2 data found for {}", active_dataset);
+            on_status("WARN: NO L2 DATA FOUND");
+        } else if (!DataManager::ValidateDataAlignment(all_trades, book_hold, on_status)) {
+            return;
+        }
     }
+    // A recording carries both channels in one file, so they cannot come from
+    // different periods, and the alignment probe wants both ENDPOINTS of the
+    // book -- which a streamed source does not hand out cheaply. Nothing to
+    // check.
 
     // setup threads
     const unsigned int max_cores = ReadMaxCores(base_json);
     
-    LOG_INFO("grid search: {} trades, {} l2 snapshots, {} threads",
-             all_trades.size(), all_l2.size(), max_cores);
+    LOG_INFO("grid search: {} trades, book {}, {} threads",
+             all_trades.size(),
+             book_streams ? std::string("streamed")
+                          : std::to_string(book_hold.size()) + " snapshots",
+             max_cores);
     on_status("GRID SCAN ACTIVE (" + std::to_string(max_cores) + " THREADS)");
 
     int total_iterations = runs.size();
@@ -213,7 +234,6 @@ void GridRunner::Run(const std::string &config_path,
                 // worker: that calls std::terminate and kills the whole scan.
                 try {
                 const auto& run = runs[idx];
-                int sig_seen = 0, sig_exec = 0, sig_open = 0, sig_veto = 0;
                 // same reason as ValidateRunConfig above: no broker is built
                 // on this path, so credentials are irrelevant to the run.
                 AppConfig cfg = AppConfig::Load(run.full_json, false);
@@ -254,106 +274,41 @@ void GridRunner::Run(const std::string &config_path,
                 const bool prop_on = prop_rules.enabled;
                 bool prop_breached = false;
 
-                Bar live_bar;
-                Bar htf_bar;
-                size_t l2_idx = 0;
-
-                for (const auto &trade : all_trades) {
-                    // catch up l2 -- strict `<`, matching ReplayManager::Run.
-                    // A book frame sharing this print's millisecond is applied
-                    // at the top of the next iteration, not before this print
-                    // is evaluated. live_streamer.hpp guarantees the print is
-                    // emitted first at identical timestamps, so `<=` handed
-                    // the strategy a book the live run had not seen yet.
-                    while (l2_idx < all_l2.size() && all_l2[l2_idx].timestamp < trade.timestamp) {
-                        // update l2 state
-                        eng.aggregator->ProcessL2(all_l2[l2_idx]);
-                        eng.htf_aggregator->ProcessL2(all_l2[l2_idx]);
-                        
-                        // inject market state
-                        MarketContext tick_ctx{
-                            eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                            eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-                        };
-
-                        // observe the guard on every L2 tick too: a floating
-                        // loss can cross a limit on a quiet book with no
-                        // prints, and the live path has the same gap.
-                        const L2Snapshot& snap = all_l2[l2_idx];
-                        const mokuren::PropDecision pd = mokuren::ObservePropBook(
-                            prop_guard, eng.ptrader.get(),
-                            snap.best_bid_price, snap.best_ask_price, trade.price,
-                            snap.timestamp, "scan");
-                        if (pd.state == mokuren::PropState::DailyHalted ||
-                            pd.state == mokuren::PropState::TotalHalted) {
-                            prop_breached = true;
-                        }
-
-                        // eval tick sigs
-                        TradeSignal tick_sig = eng.alpha->Evaluate(tick_ctx, false);
-                        
-                        if (tick_sig.direction != SignalDirection::NONE) {
-                            ++sig_seen;
-                            if (!prop_on || prop_guard.allow_new_entry()) {
-                                // cross spread for hft exec
-                                double exec_price = (tick_sig.direction == SignalDirection::BUY) 
-                                                  ? all_l2[l2_idx].best_ask_price 
-                                                  : all_l2[l2_idx].best_bid_price;
-                                
-                                // fallback if no price
-                                if (exec_price <= 0.0) exec_price = live_bar.close > 0.0 ? live_bar.close : trade.price;
-                                
-                                auto r = executor.Execute(tick_sig, exec_price, all_l2[l2_idx].timestamp);
-                                if (r.signal.direction != SignalDirection::NONE) ++sig_exec;
-                                if (r.opened_position) ++sig_open;
-                            } else {
-                                ++sig_veto;
-                            }
-                        }
-                        
-                        l2_idx++;
+                // Per-worker book source. A recording streams through its own
+                // cursor, so peak memory per worker is one block plus the
+                // reorder window instead of a week of L2Snapshot in a vector.
+                // A directory dataset has no block index and was loaded whole
+                // anyway, so it keeps the shared vector.
+                mokuren::CursorL2Feed book_cursor;
+                mokuren::VectorL2Feed book_vector(book_hold);
+                mokuren::L2Feed* book = nullptr;
+                if (book_streams) {
+                    std::string stream_error;
+                    if (!book_cursor.Open(active_dataset, stream_error)) {
+                        throw std::runtime_error(stream_error);
                     }
-
-                    // observe the guard before anything can act on this
-                    // print: a breach must refuse the trade, not race it.
-                    const mokuren::PropDecision pd = mokuren::ObserveProp(
-                        prop_guard, eng.ptrader.get(), trade.price,
-                        trade.timestamp, "scan");
-                    if (pd.state == mokuren::PropState::DailyHalted ||
-                        pd.state == mokuren::PropState::TotalHalted) {
-                        prop_breached = true;
-                    }
-
-                    // process trade event (passing ts to pos manager)
-                    eng.pos_manager->Update(trade.price, trade.timestamp);
-                    eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-
-                    // build ohlcv
-                    bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
-                    eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-                    
-                    MarketContext context{
-                        eng.aggregator->GetHistory(), live_bar, htf_bar, 
-                        eng.aggregator->GetSessionMetrics(), eng.aggregator->GetLatestL2(), eng.aggregator->GetL2History()
-                    };
-
-                    // eval candle sigs
-                    TradeSignal candle_sig = eng.alpha->Evaluate(context, candle_finished);
-                    if (candle_sig.direction != SignalDirection::NONE) {
-                        ++sig_seen;
-                        if (!prop_on || prop_guard.allow_new_entry()) {
-                            auto r = executor.Execute(candle_sig, trade.price, trade.timestamp);
-                            if (r.signal.direction != SignalDirection::NONE) ++sig_exec;
-                            if (r.opened_position) ++sig_open;
-                        } else {
-                            ++sig_veto;
-                        }
-                    }
+                    book = &book_cursor;
+                } else {
+                    book = &book_vector;
                 }
 
-                // force close at end
-                eng.aggregator->FlushLastCandle(live_bar);
-                eng.ptrader->CloseOpenPositionAtEnd(live_bar.close, live_bar.timestamp_start);
+                const mokuren::RunLoopStats loop =
+                    mokuren::RunLoop(eng, executor, prop_guard, prop_on,
+                                     "scan", all_trades, *book);
+
+                // A streamed recording discovers a corrupt tail WHILE it is
+                // being read, where the materialising loader discovered it
+                // before the run started. Fail the permutation rather than
+                // commit a book-blind result.
+                if (book_streams) {
+                    const std::string problem =
+                        mokuren::L2StreamProblem(book_cursor.status());
+                    if (!problem.empty()) {
+                        throw std::runtime_error("dataset '" + active_dataset +
+                                                 "': " + problem);
+                    }
+                }
+                prop_breached = loop.prop_breached;
 
                 // compile metrics. every permutation records a row now,
                 // including the ones that never filled. The old
@@ -420,7 +375,9 @@ void GridRunner::Run(const std::string &config_path,
                     // prop guard refused every entry; executed>0 opened==0
                     // means the broker itself dropped it.
                     LOG_INFO("grid perm {}: signals={} executed={} opened={} vetoed={} trades={}",
-                             idx, sig_seen, sig_exec, sig_open, sig_veto, res.trades);
+                             idx, loop.signals_seen, loop.signals_executed,
+                             loop.signals_opened, loop.signals_vetoed,
+                             res.trades);
                     LOG_INFO("grid result: trades={} net={} dd={} winrate={} sharpe={} prop_breached={}",
                              res.trades, res.net_profit, res.max_drawdown,
                              res.winrate, res.sharpe, res.prop_breached);

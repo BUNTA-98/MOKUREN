@@ -426,6 +426,10 @@ DataManager::LoadedDataset DataManager::LoadAllRange(const std::string &dataset_
     return loaded;
 }
 
+bool DataManager::IsSessionRecording(const std::string &dataset_path) {
+    return mokuren::mdf::IsSessionFile(dataset_path);
+}
+
 bool DataManager::ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status) {
     if (trades.empty() || l2.empty()) return true; 
     

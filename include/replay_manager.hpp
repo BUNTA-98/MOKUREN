@@ -1,10 +1,12 @@
 #pragma once
 #include "data_manager.hpp"
 #include "factory.hpp"
+#include "l2_feed.hpp"
 #include "logger.hpp"
 #include "market_context.hpp"
 #include "prop_equity.hpp"
 #include "prop_guard.hpp"
+#include "run_loop.hpp"
 #include "signal_executor.hpp"
 #include "trade_event.hpp"
 #include "trade_management.hpp"
@@ -12,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -41,13 +44,57 @@ public:
     // This overload loads the book itself. A caller that already has both
     // channels -- which is every caller holding a .mkn, since one file carries
     // both -- must use the overload below, or the recording is decoded twice.
-    static ReplayResult Run(const std::vector<TradeEvent>& all_trades, const nlohmann::json& winning_config,
+    static ReplayResult Run(const std::vector<TradeEvent>& all_trades,
+                            const nlohmann::json& winning_config,
                             const std::string& dataset_path = "") {
+        // No silent "data" fallback. A config pointing at the wrong path used
+        // to read ./data and report a quiet market; an empty path is a bad
+        // config, and the status line is where that belongs.
         const std::string dataset =
             !dataset_path.empty()
                 ? dataset_path
                 : winning_config.value("environment", nlohmann::json::object())
-                      .value("dataset", "data");
+                      .value("dataset", std::string{});
+        if (dataset.empty()) {
+            throw std::runtime_error(
+                "replay: no dataset path and no environment.dataset in the "
+                "config");
+        }
+
+        // Stream a recording, materialise a directory. This overload used to
+        // call LoadAllL2Snapshots unconditionally, so replaying the winning
+        // config over a week allocated ~14 GB of L2Snapshot -- the same freeze
+        // the sweep fix removed from the scan, still present on the path that
+        // runs AFTER the sweep picks a winner.
+        if (DataManager::IsSessionRecording(dataset)) {
+            mokuren::CursorL2Feed book;
+            std::string stream_error;
+            if (!book.Open(dataset, stream_error)) {
+                throw std::runtime_error(stream_error);
+            }
+            ReplayResult result =
+                Run(all_trades, book, winning_config, dataset);
+            // A streamed recording discovers a corrupt tail WHILE it is being
+            // read, where the materialising loader discovered it before the
+            // run started. Fail the replay rather than commit a book-blind
+            // result the UI would draw as a quiet market.
+            const std::string problem =
+                mokuren::L2StreamProblem(book.status());
+            if (!problem.empty()) {
+                throw std::runtime_error("dataset '" + dataset + "': " +
+                                         problem);
+            }
+            // Same warning the vector overload issues, for the same reason: a
+            // run with no book evaluates every tick trigger against nothing
+            // and reports no tick signals. L2StreamProblem cannot catch this
+            // -- it reports records that were skipped, and an empty channel
+            // skipped none -- so it has to be asked of the feed afterwards.
+            if (book.frames_delivered() == 0) {
+                LOG_WARN("replay: no L2 snapshots for dataset '{}'; tick "
+                         "triggers will not fire", dataset);
+            }
+            return result;
+        }
         return Run(all_trades, DataManager::LoadAllL2Snapshots(dataset),
                    winning_config, dataset);
     }
@@ -57,6 +104,25 @@ public:
     // evaluates one recording's prints against another recording's book.
     static ReplayResult Run(const std::vector<TradeEvent>& all_trades,
                             const std::vector<L2Snapshot>& all_l2,
+                            const nlohmann::json& winning_config,
+                            const std::string& dataset) {
+        if (all_l2.empty()) {
+            LOG_WARN("replay: no L2 snapshots for dataset '{}'; tick triggers "
+                     "will not fire", dataset);
+        }
+        mokuren::VectorL2Feed book(all_l2);
+        return Run(all_trades, book, winning_config, dataset);
+    }
+
+    // Book source supplied by the caller. Both overloads above funnel here so
+    // the loop body exists once and the vector / streaming paths cannot drift
+    // about when the book is observed or how the session is closed.
+    //
+    // `dataset` is used for logging only; it must name the file the trades and
+    // the book actually came from, so a replay never evaluates one recording's
+    // prints against another recording's book.
+    static ReplayResult Run(const std::vector<TradeEvent>& all_trades,
+                            mokuren::L2Feed& book,
                             const nlohmann::json& winning_config,
                             const std::string& dataset) {
         ReplayResult result;
@@ -89,11 +155,6 @@ public:
         // the book arrives with the prints, from the same read of the same
         // file. resolving it separately is how a replay ended up evaluating
         // one recording's prints against another recording's book.
-        if (all_l2.empty()) {
-            LOG_WARN("replay: no L2 snapshots for dataset '{}'; tick triggers "
-                     "will not fire", dataset);
-        }
-
         // the shared execution funnel. stop validation, sizing, the risk
         // firewall, stop re-validation and take-profit derivation all live in
         // SignalExecutor, so a replay cannot drift from live or from the
@@ -112,149 +173,18 @@ public:
         // having armed the guard before the first signal.
         const bool prop_on = prop_rules.enabled;
 
-        Bar live_bar;
-        Bar htf_bar;
-
-        size_t l2_idx = 0;
-
-        // end of the session as the data sees it, not as the last bar sees it.
-        // set by every applied book frame; used to timestamp the forced close.
-        int64_t session_end_ts = 0;
-
-        // most recent print, for the one-sided-book fallback mark. kept outside
-        // the loop because the drain below runs with no trade in scope.
-        double last_price = 0.0;
-
-        // Apply one book frame and let the engine react to it.
-        //
-        // Factored out because it now runs from two places: the catch-up before
-        // a print, and the drain after the final print. A second copy of this
-        // block would be a second implementation of "what the engine does when
-        // the book moves", and the two would diverge the first time either one
-        // changed -- with the drain silently doing less than the main loop,
-        // which is the failure mode it exists to prevent.
-        auto process_l2_frame = [&](size_t idx) {
-            eng.aggregator->ProcessL2(all_l2[idx]);
-            eng.htf_aggregator->ProcessL2(all_l2[idx]);
-
-            MarketContext tick_ctx{
-                eng.aggregator->GetHistory(),
-                live_bar,
-                htf_bar,
-                eng.aggregator->GetSessionMetrics(),
-                eng.aggregator->GetLatestL2(),
-                eng.aggregator->GetL2History()
-            };
-
-            // direction-aware mark: bid for a long, ask for a short. the
-            // last print is the fallback for a one-sided frame, so a zero
-            // mark does not make the guard read as Unarmed for a reason that
-            // has nothing to do with the account.
-            const L2Snapshot& snap = all_l2[idx];
-            const mokuren::PropDecision pd = mokuren::ObservePropBook(
-                prop_guard, eng.ptrader.get(),
-                snap.best_bid_price, snap.best_ask_price, last_price,
-                snap.timestamp, "replay");
-            if (pd.state == mokuren::PropState::DailyHalted ||
-                pd.state == mokuren::PropState::TotalHalted) {
-                result.prop_breached = true;
-            }
-
-            TradeSignal tick_signal = eng.alpha->Evaluate(tick_ctx, false);
-            if (tick_signal.direction != SignalDirection::NONE &&
-                (!prop_on || prop_guard.allow_new_entry())) {
-                // cross the spread for hft execution.
-                double exec_price =
-                    (tick_signal.direction == SignalDirection::BUY)
-                        ? all_l2[idx].best_ask_price
-                        : all_l2[idx].best_bid_price;
-                if (exec_price <= 0.0) {
-                    exec_price = live_bar.close > 0.0 ? live_bar.close : last_price;
-                }
-                executor.Execute(tick_signal, exec_price,
-                                 all_l2[idx].timestamp);
-            }
-            session_end_ts = all_l2[idx].timestamp;
-        };
-
-        for (const auto &trade : all_trades) {
-            // Strict `<`, not `<=`. live_streamer.hpp guarantees that at an
-            // identical timestamp the print is emitted BEFORE the book update,
-            // and the triggers depend on that to decide whether the book moved
-            // before or after the print. With `<=` the replay applied the book
-            // frame first, handing the strategy a book the live run had not
-            // seen yet. A frame sharing this print's millisecond is applied
-            // after this print, at the top of the next iteration.
-            //
-            // last_price is set before the catch-up so the fallback mark keeps
-            // matching against the print being evaluated, as it did inline.
-            last_price = trade.price;
-            while (l2_idx < all_l2.size() &&
-                   all_l2[l2_idx].timestamp < trade.timestamp) {
-                process_l2_frame(l2_idx++);
-            }
-
-            // observe the guard before anything can act on this print.
-            const mokuren::PropDecision pd = mokuren::ObserveProp(
-                prop_guard, eng.ptrader.get(), trade.price,
-                trade.timestamp, "replay");
-            if (pd.state == mokuren::PropState::DailyHalted ||
-                pd.state == mokuren::PropState::TotalHalted) {
-                result.prop_breached = true;
-            }
-
-            // pass ts to pos manager
-            eng.pos_manager->Update(trade.price, trade.timestamp);
-            eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-
-            bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
-            eng.htf_aggregator->ProcessTrade(htf_bar, trade);
-            
-            // build market context
-            MarketContext context{
-                eng.aggregator->GetHistory(), 
-                live_bar, 
-                htf_bar, 
-                eng.aggregator->GetSessionMetrics(), 
-                eng.aggregator->GetLatestL2(), 
-                eng.aggregator->GetL2History()
-            };
-
-            TradeSignal candle_signal = eng.alpha->Evaluate(context, candle_finished);
-            if (!prop_on || prop_guard.allow_new_entry()) {
-                executor.Execute(candle_signal, trade.price, trade.timestamp);
-            }
+        // The loop body lives in run_loop.cpp, shared with the grid scan and
+        // both WFA sites. That keeps the three behaviours this function used
+        // to own -- the `strict <` catch-up, the book tail drain, the
+        // end-price fallback chain -- from drifting between callers the way
+        // they did before the extraction: four of the five copies were
+        // missing at least one of them, and two were missing all three.
+        const mokuren::RunLoopStats loop =
+            mokuren::RunLoop(eng, executor, prop_guard, prop_on, "replay",
+                             all_trades, book);
+        if (loop.prop_breached) {
+            result.prop_breached = true;
         }
-
-        // Book frames after the final print. The catch-up above only runs while
-        // there is a trade to catch up for, so a recording whose book outlives
-        // its last fill was truncated at that fill: the tail was never applied
-        // and a book-only signal in it was never evaluated.
-        while (l2_idx < all_l2.size()) process_l2_frame(l2_idx++);
-
-        eng.aggregator->FlushLastCandle(live_bar);
-
-        // Close at the end of the session, not the start of the last bar. The
-        // exit timestamp drives the candle/exit mapping in ReplayResult, so a
-        // position carried past the final print was reported as closed at that
-        // bar's open -- up to a minute early, and before the stop that may have
-        // taken it out.
-        //
-        // The price needs the same care as the timestamp. ResetBar() zeroes
-        // close, and ProcessTrade only restores it on the next print, so a final
-        // bar with no trades leaves close == 0.0 -- and FlushLastCandle skips an
-        // empty bar entirely, so nothing repairs it. Closing at that price books
-        // a total loss and writes 0 into the trade log. The drain above makes
-        // this reachable in the ordinary case (book frames outliving the last
-        // print), so fall back to the last print, then to the last closed bar.
-        double end_price = live_bar.close;
-        if (!(end_price > 0.0)) end_price = last_price;
-        if (!(end_price > 0.0) && !eng.aggregator->GetHistory().empty()) {
-            end_price = eng.aggregator->GetHistory().back().close;
-        }
-        eng.ptrader->CloseOpenPositionAtEnd(
-            end_price,
-            session_end_ts > 0 ? session_end_ts : live_bar.timestamp_start);
 
         result.history_1m = eng.aggregator->GetHistory();
         result.history_15m = eng.htf_aggregator->GetHistory();

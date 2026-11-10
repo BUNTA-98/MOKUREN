@@ -59,22 +59,24 @@ ReplayResult Mokuren::ReplaySingleRun(const std::string &dataset_path, const nlo
     // load, or from ReplayManager once it reads the book. letting that unwind
     // would take the TUI down instead of showing the reason.
     try {
-        // one decode of the recording. ReplayManager used to load the book a
-        // second time from the same path, which cost a second pass over a
-        // multi-gigabyte file and let the two channels come from different
-        // states of a recording that was still being written.
-        DataManager::LoadedDataset loaded = DataManager::LoadAll(active_dataset);
-        if (loaded.trades.empty()) {
+        // Trades are 32 B each and shared; the book is not, and this entry
+        // point is the one that runs AFTER the sweep picks a winner -- so it
+        // is the last place a week of L2Snapshot (~14 GB) was still being
+        // held in a vector. Run(trades, cfg, path) owns the branch internally
+        // and streams a .mkn, so no book crosses this function's stack.
+        const std::vector<TradeEvent> trades =
+            DataManager::LoadAllTrades(active_dataset);
+        if (trades.empty()) {
             LOG_ERROR("replay single run: no trades found in dataset {}", active_dataset);
             return result;
         }
 
         // ReplayManager::Run is the single replay implementation: it owns the
         // stop-validation/sizing/firewall/TP funnel, the L2 catch-up and the
-        // candle mapping, so this entry point cannot drift from it again. it
-        // loads the book from the SAME path, not from the config.
-        result = ReplayManager::Run(loaded.trades, loaded.l2, winning_config,
-                                    active_dataset);
+        // candle mapping, so this entry point cannot drift from it again. The
+        // path overload streams a recording and materialises a directory, so
+        // the two halves stay in sync with the two overloads it exposes.
+        result = ReplayManager::Run(trades, winning_config, active_dataset);
     } catch (const std::exception& e) {
         LOG_ERROR("replay single run: {}", e.what());
         return result;
