@@ -202,8 +202,12 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
     // channels, metadata that says what it is. checked first so a dataset path
     // pointing at a recording is never probed for trades.csv.
     if (mokuren::mdf::IsSessionFile(dataset_path)) {
-        mokuren::mdf::SessionData session =
-            mokuren::mdf::ReadSessionFile(dataset_path);
+        // Trades only. ReadSessionFile decodes both channels, and a day's book
+        // is ~2 GB of L2Snapshot (688 B per frame) that this function would
+        // destroy on return. The mask keeps the decode trades-only, which is
+        // what makes LoadAllTrades usable on a week.
+        mokuren::mdf::SessionData session = mokuren::mdf::ReadSessionFile(
+            dataset_path, mokuren::mdf::Channel::Trades);
         ReportSessionIssues(dataset_path, session);
         RequireCleanSession(dataset_path, session);
         return std::move(session.trades);
@@ -333,8 +337,11 @@ std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &datas
     // across a grid search, and it is a linear pass over the same bytes the
     // legacy .bin cache would read.
     if (mokuren::mdf::IsSessionFile(dataset_path)) {
-        mokuren::mdf::SessionData session =
-            mokuren::mdf::ReadSessionFile(dataset_path);
+        // Book only, for the same reason as LoadAllTrades: a caller that only
+        // wants trades must not pay for the book, and one that only wants the
+        // book must not pay for the trades.
+        mokuren::mdf::SessionData session = mokuren::mdf::ReadSessionFile(
+            dataset_path, mokuren::mdf::Channel::L2);
         ReportSessionIssues(dataset_path, session);
         RequireCleanSession(dataset_path, session);
         return std::move(session.l2);

@@ -20,10 +20,13 @@
 // guarantees it.
 
 #include "market_data/format.hpp"
+#include "order_book.hpp"
 #include "trade_event.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -79,11 +82,31 @@ struct SessionData {
   bool empty() const { return trades.empty() && l2.empty(); }
 };
 
+// Selects which channel a decode materialises. A recording carries BOTH
+// channels in one file, so the materialising loaders decoded both even when
+// the caller wanted one: LoadAllTrades on a 2 GB day allocated the entire
+// book (~2 GB of L2Snapshot) only to destroy it. Callers that need both pass
+// Both -- the default, and what ReadSessionFile keeps doing -- so this is a
+// memory fix, not a behaviour change for them.
+enum class Channel : uint8_t {
+  Trades = 0x1,
+  L2     = 0x2,
+  Both   = 0x3,
+};
+
+inline bool HasChannel(Channel mask, Channel channel) {
+  return (static_cast<uint8_t>(mask) & static_cast<uint8_t>(channel)) != 0;
+}
+
 // Cheap probe: a regular file whose first bytes are the format magic. One
 // 8-byte read, so callers can branch before committing to the CSV pipeline.
 bool IsSessionFile(const std::string& path);
 
-SessionData ReadSessionFile(const std::string& path);
+// `mask` selects which channels the decode materialises. Both by default, so
+// every existing caller is unchanged. See Channel above for why a caller that
+// wants one channel must say so.
+SessionData ReadSessionFile(const std::string& path,
+                            Channel mask = Channel::Both);
 
 // Same decode, restricted to the blocks that overlap [start_ns, end_ns] -- both
 // in NANOSECONDS, matching the on-disk blocks and not the milliseconds the
@@ -108,7 +131,7 @@ SessionData ReadSessionFile(const std::string& path);
 //     only and the merger refuses deltas, so this is a warning, not an error --
 //     but on a delta-carrying file the first book state emitted may be wrong.
 SessionData ReadSessionFileRange(const std::string& path, int64_t start_ns,
-                                 int64_t end_ns);
+                                 int64_t end_ns, Channel mask = Channel::Both);
 
 // Block-level reader used by the merger.
 //
@@ -266,6 +289,140 @@ class Reader {
   uint64_t index_mismatches_ = 0;
   uint64_t blocks_walked_ = 0;
   std::string error_;
+};
+
+// Streams one channel of a recording, bounded in memory.
+//
+// Exists because the materialising decode cannot be the one a weekly backtest
+// uses. A day of book is ~2 GB of L2Snapshot (688 B per frame), a week is
+// ~14 GB, so ReadSessionFile* peaks past RAM on the dataset the backtest is
+// actually run on. The peak here is one block payload plus the reorder window
+// below.
+//
+// Ordering: records come out ascending by (timestamp, arrival sequence), the
+// same order the stable_sort in ReadSessionFileRange produces. The recorder
+// keeps late prints (Meta::max_inversion_ns measures them), so a block that
+// starts later can precede one that started earlier -- a caller that fed
+// SliceTrades an interleaved stream would silently truncate at the first
+// out-of-order timestamp. The cursor therefore buffers at least
+// `max_inversion_ns` of records before emitting. Buffer overflow (a corrupt
+// slack field) emits anyway and reports once, so the stream cannot grow
+// without bound on a bad file.
+//
+// Range: [start_ns, end_ns] in NANOSECONDS, matching the on-disk records. A
+// record whose computed millisecond timestamp falls outside the millisecond
+// projection of that range is dropped. This is record-precise, not the
+// block-atomic gate the materialising reader uses -- a caller walking a window
+// wants the window, not whichever block happened to straddle it. The default
+// is the whole file.
+//
+// Channel: a cursor streams exactly ONE channel. Ask for Both and the cursor
+// refuses -- a single cursor has one front and one Advance, so it cannot keep
+// the two streams coherent. Callers that want both open two cursors, which is
+// also how the replay loop treats them (SliceTrades and SliceL2 are already
+// independent walks).
+//
+// Threading: one cursor per (channel, consumer) pair. Each owns its file
+// handle and, for the L2 channel, its own OrderBook reconstruction, so the
+// trade cursor never pays for deltas it would not apply.
+class SessionCursor {
+ public:
+  SessionCursor() = default;
+  SessionCursor(const SessionCursor&) = delete;
+  SessionCursor& operator=(const SessionCursor&) = delete;
+
+  bool Open(const std::string& path, Channel channel,
+            int64_t start_ns = std::numeric_limits<int64_t>::min(),
+            int64_t end_ns   = std::numeric_limits<int64_t>::max());
+
+  bool is_open() const { return in_.is_open(); }
+  Channel channel() const { return channel_; }
+
+  // Pulls source blocks until Front*() is valid or the input is exhausted.
+  // False means no more records.
+  bool HasNext();
+
+  // Precondition: HasNext() returned true and Advance() has not been called.
+  // The value is a copy owned by the cursor -- it remains valid across
+  // Advance().
+  const TradeEvent& FrontTrade() const { return trade_; }
+  const L2Snapshot& FrontL2() const { return l2_; }
+
+  void Advance();
+
+  // Warnings and skipped-record counters accumulate as blocks are pulled; the
+  // values are final only after HasNext() has returned false. A caller that
+  // commits a result must inspect this first: unlike the materialising loaders,
+  // a cursor hands out data before it discovers a corrupt tail.
+  const SessionData& status() const { return status_; }
+
+  // Largest timestamp emitted so far, or 0 before the first emit. Lets a
+  // caller assert the ascending contract without trusting the cursor.
+  int64_t last_emitted_ts() const { return last_emitted_ts_; }
+
+ private:
+  // One buffered record. seq is the arrival order within the file, and is the
+  // tiebreak when two records share a timestamp -- the same tiebreak
+  // stable_sort gives. Storing both trade and l2 wastes the L2Snapshot on a
+  // trade cursor; it buys a single code path in the reorder heap, which is
+  // cheap next to the O(n log n) sort this replaces.
+  struct Entry {
+    int64_t    ts    = 0;
+    uint64_t   seq   = 0;
+    bool       is_l2 = false;
+    TradeEvent trade{};
+    L2Snapshot l2{};
+  };
+
+  // Reads one block into payload_buf_. False means "nothing left to read"
+  // (normal end-of-file or a hard read error, reported through status_).
+  bool PullBlock();
+
+  // Moves buffer_.front() into trade_ / l2_, sets front_ready_ = true, and
+  // pops the entry. Precondition: buffer_ is non-empty.
+  void EmitTop();
+
+  // Inserts `entry` keeping buffer_ ascending by (ts, seq). Insertion is
+  // O(log n) to locate and O(n) to shift, but n is bounded by the reorder
+  // window, not by the recording.
+  void InsertBuffered(Entry entry);
+
+  std::ifstream in_;
+  uint64_t file_size_ = 0;
+  uint64_t data_end_ = 0;                 // where blocks stop, in bytes
+  uint64_t cursor_offset_ = 0;            // next block header to read
+  int64_t  start_ns_ = 0;
+  int64_t  end_ns_ = 0;
+  int64_t  start_ms_ = 0;                 // start_ns / end_ns projected to ms
+  int64_t  end_ms_ = 0;
+  int64_t  slack_ns_ = 0;                 // >= Meta::max_inversion_ns
+  int64_t  newest_seen_ts_ = 0;           // largest ts decoded from the file
+  uint64_t next_arrival_seq_ = 0;
+  bool     overflow_reported_ = false;
+
+  Channel channel_ = Channel::Trades;
+
+  // Book state, only meaningful when channel_ == L2. A merged recording is
+  // snapshot-only (the merger refuses deltas), so on the path the backtest
+  // actually uses these never carry delta state -- but they are maintained so
+  // a cursor over an unmerged recording does not silently disagree with the
+  // materialising reader.
+  OrderBook  book_;
+  bool       deltas_seen_ = false;
+  int64_t    last_snapshot_seq_ = 0;
+  bool       has_decoded_snapshot_ = false;
+  L2Snapshot last_decoded_snapshot_{};
+
+  std::deque<Entry> buffer_;
+  bool       front_ready_ = false;
+  TradeEvent trade_{};
+  L2Snapshot l2_{};
+
+  int64_t last_emitted_ts_ = 0;
+  bool    exhausted_ = false;
+
+  std::vector<uint8_t> payload_buf_;
+  SessionData status_;
 };
 
 }  // namespace mokuren::mdf

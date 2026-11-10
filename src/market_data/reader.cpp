@@ -163,8 +163,13 @@ void ParseMetadata(std::ifstream& in, const FileLayout& layout,
   }
 }
 
-void DecodeTrades(const BlockHeader& block,
-                  const std::vector<uint8_t>& payload, SessionData& out) {
+// Emit receives each validated TradeEvent. The materialising reader pushes
+// into out.trades; SessionCursor pushes into its reorder buffer. One body so
+// the two paths cannot disagree about what a valid trade is.
+template <typename Emit>
+void DecodeTradesImpl(const BlockHeader& block,
+                      const std::vector<uint8_t>& payload, SessionData& out,
+                      Emit&& emit) {
   if (block.record_size != sizeof(TradeRec)) {
     out.warnings.push_back("trade block has record stride " +
                            std::to_string(block.record_size) + " (expected " +
@@ -198,14 +203,24 @@ void DecodeTrades(const BlockHeader& block,
     trade.quantity = rec.qty;
     trade.is_buyer_maker =
         (rec.aggressor == static_cast<uint8_t>(Aggressor::Sell));
-    out.trades.push_back(trade);
+    emit(trade);
   }
 }
 
-void DecodeSnapshots(const BlockHeader& block,
-                     const std::vector<uint8_t>& payload, SessionData& out,
-                     OrderBook& book, const bool& deltas_seen,
-                     int64_t& last_snapshot_seq) {
+void DecodeTrades(const BlockHeader& block,
+                  const std::vector<uint8_t>& payload, SessionData& out) {
+  DecodeTradesImpl(block, payload, out,
+                   [&out](TradeEvent t) { out.trades.push_back(t); });
+}
+
+// Emit receives each validated snapshot. Both readers get the same stride
+// check, the same one-sided-book rejection, and the same delta-book
+// bookkeeping -- only the sink differs.
+template <typename Emit>
+void DecodeSnapshotsImpl(const BlockHeader& block,
+                         const std::vector<uint8_t>& payload, SessionData& out,
+                         OrderBook& book, const bool& deltas_seen,
+                         int64_t& last_snapshot_seq, Emit&& emit) {
   if (block.record_size < sizeof(BookSnapshotRec) ||
       (block.record_size - sizeof(BookSnapshotRec)) % sizeof(BookLevel) != 0) {
     out.warnings.push_back(
@@ -273,7 +288,7 @@ void DecodeSnapshots(const BlockHeader& block,
     snap.best_ask_price = snap.asks[0].price;
     snap.best_ask_qty = snap.asks[0].qty;
 
-    out.l2.push_back(snap);
+    emit(snap);
     last_snapshot_seq = rec.seq;
 
     // Keep the delta book in step with what was emitted, but only after the
@@ -303,10 +318,25 @@ void DecodeSnapshots(const BlockHeader& block,
   }
 }
 
-void DecodeDeltas(const BlockHeader& block,
-                  const std::vector<uint8_t>& payload, SessionData& out,
-                  OrderBook& book, bool& deltas_seen,
-                  int64_t last_snapshot_seq) {
+void DecodeSnapshots(const BlockHeader& block,
+                     const std::vector<uint8_t>& payload, SessionData& out,
+                     OrderBook& book, const bool& deltas_seen,
+                     int64_t& last_snapshot_seq) {
+  DecodeSnapshotsImpl(block, payload, out, book, deltas_seen,
+                      last_snapshot_seq,
+                      [&out](L2Snapshot s) { out.l2.push_back(s); });
+}
+
+// `last_snapshot` is the snapshot to seed the book from on the first delta.
+// The materialising path passes &out.l2.back(); SessionCursor passes the last
+// snapshot it decoded. nullptr means "there is no snapshot behind these
+// deltas" and is the same failure the materialising path already warns about.
+template <typename Emit>
+void DecodeDeltasImpl(const BlockHeader& block,
+                      const std::vector<uint8_t>& payload, SessionData& out,
+                      OrderBook& book, bool& deltas_seen,
+                      int64_t last_snapshot_seq,
+                      const L2Snapshot* last_snapshot, Emit&& emit) {
   if (block.record_size < sizeof(BookDeltaRec) ||
       (block.record_size - sizeof(BookDeltaRec)) % sizeof(BookChange) != 0) {
     out.warnings.push_back(
@@ -322,13 +352,13 @@ void DecodeDeltas(const BlockHeader& block,
   // and the book would silently lose every level they do not mention.
   if (!deltas_seen) {
     deltas_seen = true;
-    if (out.l2.empty()) {
+    if (last_snapshot == nullptr) {
       out.warnings.push_back(
           "book delta block appears before any snapshot; the deltas cannot be "
           "applied and are skipped");
       return;
     }
-    const L2Snapshot& last = out.l2.back();
+    const L2Snapshot& last = *last_snapshot;
     std::vector<OrderBook::Level> bids;
     std::vector<OrderBook::Level> asks;
     for (int i = 0; i < MAX_L2_DEPTH && last.bids[i].price > 0.0; ++i) {
@@ -397,12 +427,23 @@ void DecodeDeltas(const BlockHeader& block,
       ++out.l2_skipped;
       continue;
     }
-    out.l2.push_back(book.ToSnapshot(NsToMs(rec.ts_exchange_ns)));
+    emit(book.ToSnapshot(NsToMs(rec.ts_exchange_ns)));
   }
 }
 
+void DecodeDeltas(const BlockHeader& block,
+                  const std::vector<uint8_t>& payload, SessionData& out,
+                  OrderBook& book, bool& deltas_seen,
+                  int64_t last_snapshot_seq) {
+  const L2Snapshot* last = out.l2.empty() ? nullptr : &out.l2.back();
+  DecodeDeltasImpl(block, payload, out, book, deltas_seen, last_snapshot_seq,
+                   last,
+                   [&out](L2Snapshot s) { out.l2.push_back(s); });
+}
+
 bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
-                  SessionData& out, int64_t start_ns, int64_t end_ns) {
+                  SessionData& out, int64_t start_ns, int64_t end_ns,
+                  Channel mask) {
   std::vector<uint8_t> payload;
 
   // Set when a delta block before the requested range had to be skipped. It is
@@ -455,6 +496,19 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
           block.first_ts_ns < start_ns) {
         delta_skipped_before_range = true;
       }
+      offset = next;
+      continue;
+    }
+
+    // Channel filter, applied BEFORE the payload is read: a caller that only
+    // wants trades must not pay the crc and the copy for a day's book, which
+    // is the whole reason the mask exists.
+    const RecordKind mask_kind = static_cast<RecordKind>(block.kind);
+    if ((mask_kind == RecordKind::Trade &&
+         !HasChannel(mask, Channel::Trades)) ||
+        ((mask_kind == RecordKind::BookSnapshot ||
+          mask_kind == RecordKind::BookDelta) &&
+         !HasChannel(mask, Channel::L2))) {
       offset = next;
       continue;
     }
@@ -527,6 +581,32 @@ bool DecodeBlocks(std::ifstream& in, const FileLayout& layout,
         "reconstructed book at the start of the range may be incomplete");
   }
   return true;
+}
+
+// Largest same-kind step backwards between two adjacent index entries, in
+// physical (block_offset) order. Same measurement Reader::Open takes to fill
+// Meta::max_inversion_ns, factored out so SessionCursor can size its reorder
+// window without going through the merger-facing Reader.
+int64_t MaxInversionFromIndex(const std::vector<IndexEntry>& index) {
+  int64_t last_ts[3] = {0, 0, 0};
+  bool    seen[3]    = {false, false, false};
+  int64_t max_inv    = 0;
+  for (const auto& e : index) {
+    int slot = -1;
+    switch (static_cast<RecordKind>(e.kind)) {
+      case RecordKind::Trade:        slot = 0; break;
+      case RecordKind::BookSnapshot: slot = 1; break;
+      case RecordKind::BookDelta:    slot = 2; break;
+      default:                       continue;
+    }
+    if (seen[slot]) {
+      const int64_t back = last_ts[slot] - e.first_ts_ns;
+      if (back > max_inv) max_inv = back;
+    }
+    seen[slot]    = true;
+    last_ts[slot] = e.last_ts_ns;
+  }
+  return max_inv;
 }
 
 }  // namespace
@@ -926,13 +1006,13 @@ bool IsSessionFile(const std::string& path) {
   return std::memcmp(magic, kFileMagic, sizeof(magic)) == 0;
 }
 
-SessionData ReadSessionFile(const std::string& path) {
+SessionData ReadSessionFile(const std::string& path, Channel mask) {
   return ReadSessionFileRange(path, std::numeric_limits<int64_t>::min(),
-                              std::numeric_limits<int64_t>::max());
+                              std::numeric_limits<int64_t>::max(), mask);
 }
 
 SessionData ReadSessionFileRange(const std::string& path, int64_t start_ns,
-                                 int64_t end_ns) {
+                                 int64_t end_ns, Channel mask) {
   SessionData out;
 
   std::ifstream in(path, std::ios::binary | std::ios::ate);
@@ -951,7 +1031,7 @@ SessionData ReadSessionFileRange(const std::string& path, int64_t start_ns,
   if (!ReadFileHeader(in, file_size, layout, out.error)) return out;
 
   ParseMetadata(in, layout, file_size, out);
-  if (!DecodeBlocks(in, layout, out, start_ns, end_ns)) {
+  if (!DecodeBlocks(in, layout, out, start_ns, end_ns, mask)) {
     // Keep the partial result: an hour of book in front of a corrupt tail is
     // still an hour the backtest can run on.
   }
@@ -981,6 +1061,299 @@ SessionData ReadSessionFileRange(const std::string& path, int64_t start_ns,
         "with no snapshot behind it");
   }
   return out;
+}
+
+// --- SessionCursor ---------------------------------------------------------
+
+namespace {
+
+// Slack applied when the file has no measurable inversion: no index (a
+// recording that was never finalised), or every stream strictly ascending.
+// Buffering a few seconds is cheap -- a busy second is a few hundred trade
+// records and a few dozen book frames -- and removes the failure mode where an
+// unfinalised file emits out of order and SliceTrades truncates on the first
+// inversion.
+constexpr int64_t kDefaultCursorSlackNs = 5'000'000'000LL;
+
+// Ceiling on reorder entries held per cursor. Never reached on a healthy file
+// (the window is slack_ns worth of records); a corrupt slack field must not
+// turn the cursor back into a full materialisation. 131k entries is ~5 minutes
+// of a busy market's trades or ~3.5 hours of book frames -- enough margin that
+// only a genuinely broken metadata figure touches it. When exceeded, the
+// oldest entry is emitted anyway and reported once.
+constexpr size_t kMaxReorderEntries = 131072;
+
+}  // namespace
+
+bool SessionCursor::Open(const std::string& path, Channel channel,
+                         int64_t start_ns, int64_t end_ns) {
+  channel_ = channel;
+  start_ns_ = start_ns;
+  end_ns_ = end_ns;
+  status_ = SessionData{};
+
+  // A cursor has one front and one Advance, so it cannot stream two channels
+  // coherently. Callers wanting both open two cursors.
+  if (channel != Channel::Trades && channel != Channel::L2) {
+    status_.error =
+        "SessionCursor: channel must be Trades or L2, not Both";
+    return false;
+  }
+
+  // NsToMs the boundary. NsToMs negates to floor negatives, which overflows
+  // on int64_t::min(); the unset bounds are the common case for a full-file
+  // walk, so guard them here rather than forcing the caller to pass a
+  // different sentinel.
+  start_ms_ = (start_ns == std::numeric_limits<int64_t>::min())
+                  ? std::numeric_limits<int64_t>::min()
+                  : NsToMs(start_ns);
+  end_ms_ = (end_ns == std::numeric_limits<int64_t>::max())
+                ? std::numeric_limits<int64_t>::max()
+                : NsToMs(end_ns);
+
+  in_.open(path, std::ios::binary | std::ios::ate);
+  if (!in_) {
+    status_.error = "cannot open '" + path + "'";
+    return false;
+  }
+  const std::streamoff size = in_.tellg();
+  if (size < 0) {
+    status_.error = "cannot determine the size of '" + path + "'";
+    return false;
+  }
+  file_size_ = static_cast<uint64_t>(size);
+
+  FileLayout layout;
+  if (!ReadFileHeader(in_, file_size_, layout, status_.error)) return false;
+  ParseMetadata(in_, layout, file_size_, status_);
+  data_end_ = layout.data_end;
+  cursor_offset_ = layout.header.header_size;
+
+  // Size the reorder window from the file's OWN inversion measurement, not a
+  // guessed constant. The floor keeps an unfinalised file (index_size == 0)
+  // and a file whose blocks happen to be in physical order from emitting
+  // before a late print has had a chance to arrive.
+  slack_ns_ = kDefaultCursorSlackNs;
+  if (layout.header.index_size > 0 &&
+      layout.header.index_size % kIndexEntrySize == 0 &&
+      layout.header.index_offset >= layout.header.header_size &&
+      layout.header.index_offset + layout.header.index_size <= file_size_) {
+    std::vector<IndexEntry> index(
+        static_cast<size_t>(layout.header.index_size / kIndexEntrySize));
+    if (!index.empty() &&
+        ReadExactAt(in_, layout.header.index_offset, index.data(),
+                    static_cast<size_t>(layout.header.index_size))) {
+      // The index is written in block_offset order; sort defensively so a
+      // damaged trailer cannot make the inversion figure meaningless.
+      std::sort(index.begin(), index.end(),
+                [](const IndexEntry& a, const IndexEntry& b) {
+                  return a.block_offset < b.block_offset;
+                });
+      const int64_t measured = MaxInversionFromIndex(index);
+      if (measured > slack_ns_) slack_ns_ = measured;
+    }
+  }
+
+  return true;
+}
+
+void SessionCursor::InsertBuffered(Entry entry) {
+  // lower_bound on (ts, seq): ties in ts are broken by arrival order, exactly
+  // what stable_sort produces on the materialising path. seq is unique, so the
+  // order is strict.
+  auto pos = std::lower_bound(
+      buffer_.begin(), buffer_.end(), entry,
+      [](const Entry& existing, const Entry& value) {
+        if (existing.ts != value.ts) return existing.ts < value.ts;
+        return existing.seq < value.seq;
+      });
+  buffer_.insert(pos, std::move(entry));
+  if (buffer_.size() > kMaxReorderEntries) {
+    if (!overflow_reported_) {
+      status_.warnings.push_back(
+          "reorder buffer exceeded its cap; emitting records slightly out of "
+          "order. The file's max_inversion_ns is implausibly large for a real "
+          "recording.");
+      overflow_reported_ = true;
+    }
+    EmitTop();
+  }
+}
+
+void SessionCursor::EmitTop() {
+  if (buffer_.empty()) return;
+  const Entry& front = buffer_.front();
+  if (front.is_l2) l2_ = front.l2;
+  else             trade_ = front.trade;
+  last_emitted_ts_ = front.ts;
+  buffer_.pop_front();
+  front_ready_ = true;
+}
+
+bool SessionCursor::HasNext() {
+  if (front_ready_) return true;
+  if (exhausted_ && buffer_.empty()) return false;
+
+  // An entry at T can be followed by an unseen record with ts >= T - slack
+  // (that is what slack measures), so nothing above T - slack can be emitted
+  // yet. At EOF the remaining buffer is already in the correct order.
+  while (!front_ready_) {
+    if (!buffer_.empty() &&
+        (exhausted_ || buffer_.front().ts <= newest_seen_ts_ - slack_ns_)) {
+      EmitTop();
+      return true;
+    }
+    if (!PullBlock()) {
+      exhausted_ = true;
+      if (buffer_.empty()) return false;
+      // else: loop again; EmitTop fires because exhausted_ is now set and
+      // short-circuits the slack check above.
+    }
+  }
+  return true;
+}
+
+void SessionCursor::Advance() { front_ready_ = false; }
+
+bool SessionCursor::PullBlock() {
+  if (cursor_offset_ + kBlockHeaderSize > data_end_) return false;
+
+  BlockHeader block{};
+  if (!ReadExactAt(in_, cursor_offset_, &block, sizeof(block))) {
+    status_.error = "short read at block header, offset " +
+                    std::to_string(cursor_offset_);
+    return false;
+  }
+  if (block.magic != kBlockMagic) {
+    status_.error = "block magic mismatch at offset " +
+                    std::to_string(cursor_offset_) +
+                    ": the file is corrupt or was not written by this format";
+    return false;
+  }
+  const uint64_t payload_offset = cursor_offset_ + kBlockHeaderSize;
+  if (block.payload_size > kMaxPayloadBytes ||
+      payload_offset + block.payload_size > data_end_) {
+    status_.warnings.push_back(
+        "block at offset " + std::to_string(cursor_offset_) + " claims " +
+        std::to_string(block.payload_size) +
+        " payload bytes past the end of the recording; stopping here "
+        "(truncated write)");
+    ++status_.blocks_skipped;
+    cursor_offset_ = data_end_;
+    return false;
+  }
+  const uint64_t next = payload_offset + block.payload_size;
+  const RecordKind kind = static_cast<RecordKind>(block.kind);
+
+  // Range gate (block level). A block entirely outside [start, end] cannot
+  // hold a record inside it, whatever order the blocks are in.
+  if (block.last_ts_ns < start_ns_ || block.first_ts_ns > end_ns_) {
+    cursor_offset_ = next;
+    return true;
+  }
+
+  // Channel gate. Rejects a whole block before the payload read so a trades
+  // cursor does not pay the cache and the crc for a day's book frames.
+  const bool kind_is_trade = (kind == RecordKind::Trade);
+  const bool kind_is_book  = (kind == RecordKind::BookSnapshot ||
+                              kind == RecordKind::BookDelta);
+  if ((channel_ == Channel::Trades && !kind_is_trade) ||
+      (channel_ == Channel::L2 && !kind_is_book)) {
+    cursor_offset_ = next;
+    return true;
+  }
+
+  payload_buf_.assign(static_cast<size_t>(block.payload_size), 0);
+  if (block.payload_size > 0 &&
+      !ReadExactAt(in_, payload_offset, payload_buf_.data(),
+                   payload_buf_.size())) {
+    status_.error = "short read at block payload, offset " +
+                    std::to_string(payload_offset);
+    return false;
+  }
+  if (Crc32c(payload_buf_.data(), payload_buf_.size()) != block.payload_crc32c) {
+    status_.warnings.push_back(
+        "block at offset " + std::to_string(cursor_offset_) +
+        " failed its checksum; skipping " +
+        std::to_string(block.record_count) + " record(s)");
+    ++status_.blocks_skipped;
+    cursor_offset_ = next;
+    return true;
+  }
+  if (block.codec != static_cast<uint16_t>(BlockCodec::None)) {
+    status_.warnings.push_back(
+        "block at offset " + std::to_string(cursor_offset_) +
+        " uses block codec " + std::to_string(block.codec) +
+        ", which this reader does not implement; skipping");
+    ++status_.blocks_skipped;
+    cursor_offset_ = next;
+    return true;
+  }
+
+  ++status_.blocks_read;
+  status_.records_read += block.record_count;
+
+  // The Emit callbacks below apply the range filter at RECORD granularity, not
+  // block granularity: a block that straddles start_ms_ (or end_ms_) is
+  // decoded whole and the individual records are filtered, which is what a
+  // caller passing a window wants. The materialising path is block-atomic;
+  // this one is record-precise, matching SliceTrades / SliceL2.
+  switch (kind) {
+    case RecordKind::Trade:
+      DecodeTradesImpl(block, payload_buf_, status_, [this](TradeEvent t) {
+        if (t.timestamp < start_ms_ || t.timestamp > end_ms_) return;
+        if (t.timestamp > newest_seen_ts_) newest_seen_ts_ = t.timestamp;
+        Entry e{};
+        e.ts    = t.timestamp;
+        e.seq   = next_arrival_seq_++;
+        e.is_l2 = false;
+        e.trade = t;
+        InsertBuffered(std::move(e));
+      });
+      break;
+
+    case RecordKind::BookSnapshot:
+      DecodeSnapshotsImpl(block, payload_buf_, status_, book_, deltas_seen_,
+                          last_snapshot_seq_, [this](L2Snapshot s) {
+        // Track the seed regardless of range: a delta behind the range still
+        // needs the last snapshot behind it, and that snapshot is with high
+        // probability outside [start, end].
+        last_decoded_snapshot_ = s;
+        has_decoded_snapshot_ = true;
+        if (s.timestamp < start_ms_ || s.timestamp > end_ms_) return;
+        if (s.timestamp > newest_seen_ts_) newest_seen_ts_ = s.timestamp;
+        Entry e{};
+        e.ts    = s.timestamp;
+        e.seq   = next_arrival_seq_++;
+        e.is_l2 = true;
+        e.l2    = s;
+        InsertBuffered(std::move(e));
+      });
+      break;
+
+    case RecordKind::BookDelta: {
+      const L2Snapshot* seed =
+          has_decoded_snapshot_ ? &last_decoded_snapshot_ : nullptr;
+      DecodeDeltasImpl(block, payload_buf_, status_, book_, deltas_seen_,
+                       last_snapshot_seq_, seed, [this](L2Snapshot s) {
+        if (s.timestamp < start_ms_ || s.timestamp > end_ms_) return;
+        if (s.timestamp > newest_seen_ts_) newest_seen_ts_ = s.timestamp;
+        Entry e{};
+        e.ts    = s.timestamp;
+        e.seq   = next_arrival_seq_++;
+        e.is_l2 = true;
+        e.l2    = s;
+        InsertBuffered(std::move(e));
+      });
+      break;
+    }
+
+    default:
+      break;
+  }
+
+  cursor_offset_ = next;
+  return true;
 }
 
 }  // namespace mokuren::mdf

@@ -6,7 +6,7 @@
     "config_profile": "configs/bybit_to_blofin.json"
   },
   "environment": {
-    "dataset": "data/2026/bybit-BTCUSDT",
+    "dataset": "data/2026/bybit-BTCUSDT/bybit-BTCUSDT-2026-11-01.mkn",
     "interval_ms": 60000.0,
     "macro_interval_ms": 300000.0,
     "max_cores": 6.0,
@@ -73,7 +73,7 @@
   "initial_balance": 25000.0,
   "prop": {
     "daily_reset_hour_utc": 0,
-    "enabled": true,
+    "enabled": false,
     "flatten_on_breach": true,
     "max_daily_drawdown_pct": 0.04,
     "max_total_drawdown_pct": 0.06,
@@ -103,8 +103,20 @@
       }
     ],
     "risk_per_trade_pct": 0.01,
-    "sl_pct": 0.004,
-    "tp_r": 3.0
+    "sl_pct": {
+      "max": 0.005,
+      "min": 0.001,
+      "mode": "range",
+      "step": 0.0001,
+      "val": 0.001
+    },
+    "tp_r": {
+      "max": 5.0,
+      "min": 2.0,
+      "mode": "range",
+      "step": 1.0,
+      "val": 2.0
+    }
   },
   "startup_probe": {
     "min_l2_depth": 20,
@@ -130,32 +142,14 @@
   },
   "triggers": [
     {
-      "active": false,
-      "drop_threshold": {
-        "max": 1.0,
-        "min": 0.1,
-        "mode": "range",
-        "step": 0.1,
-        "val": 0.1
-      },
-      "lookback_ms": {
-        "max": 3000.0,
-        "min": 500.0,
-        "mode": "range",
-        "step": 250.0,
-        "val": 500.0
-      },
-      "min_wall_qty": {
-        "max": 2.0,
-        "min": 0.5,
-        "mode": "range",
-        "step": 0.5,
-        "val": 0.5
-      },
+      "active": true,
+      "drop_threshold": 0.5,
+      "lookback_ms": 500.0,
+      "min_wall_qty": 1.0,
       "name": "SpoofHunter"
     },
     {
-      "active": true,
+      "active": false,
       "min_level_qty": 0.001,
       "min_stacked_count": 3.0,
       "name": "StackedImbalance",
