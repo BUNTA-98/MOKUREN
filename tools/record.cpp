@@ -12,15 +12,19 @@
 //   mokuren_record --symbol ETHUSDT --l2-interval 100
 //   mokuren_record --help
 
+#include "blofin_streamer.hpp"
 #include "bybit_streamer.hpp"
 #include "hyperliquid_streamer.hpp"
 #include "live_debug.hpp"
 #include "logger.hpp"
 #include "recorder.hpp"
 
+#include <ixwebsocket/IXNetSystem.h>
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -28,6 +32,12 @@
 #include <memory>
 #include <string>
 #include <thread>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -49,6 +59,10 @@ struct Args {
   std::string venue = "bybit";
   std::string env = "mainnet";
   std::string category;
+  // Empty -> the streamer's built-in endpoint. A 403 on the upgrade is either
+  // "this client" or "this network", and the only way to tell them apart
+  // without a rebuild is to point the same code at another host.
+  std::string url;
   int64_t duration_s = 0;       // 0 = until interrupted
   int64_t l2_min_interval_ms = 0;
   bool validate = true;
@@ -67,18 +81,28 @@ void PrintUsage() {
       "usage: mokuren_record [options]\n"
       "\n"
       "  --symbol NAME        venue symbol\n"
-      "                       (default: BTCUSDT on bybit, BTC on hyperliquid)\n"
+      "                       (default: BTCUSDT on bybit, BTC on hyperliquid,\n"
+      "                        BTC-USDT on blofin -- the only blofin symbol\n"
+      "                        this build knows a contract size for; any\n"
+      "                        other is refused rather than mis-scaled)\n"
       "  --out PATH           output .mkn file; with --daily, the root\n"
       "                       directory to write day files under\n"
       "                       (default recordings/<venue>_<symbol>_<utc>.mkn,\n"
       "                        or recordings/ with --daily)\n"
       "  --venue NAME         which streamer to record (default bybit)\n"
-      "                       supported: bybit, hyperliquid\n"
+      "                       supported: blofin, bybit, hyperliquid\n"
+      "  --url URL            override the venue's websocket endpoint\n"
+      "                       (default: the streamer's built-in mainnet URL)\n"
+      "                       a refused handshake is either this client or\n"
+      "                       this network; a second host tells them apart\n"
       "  --env NAME           session metadata only (default mainnet)\n"
       "  --category NAME      session metadata only (default linear)\n"
       "                       one of: linear, spot, inverse\n"
       "  --duration SECONDS   stop after N seconds (0 = until ctrl-c)\n"
       "  --l2-interval MS     at most one book frame per MS (0 = every frame)\n"
+      "                       a delta-driven book (blofin) emits many more\n"
+      "                       frames than a snapshot feed; 100 is a sane\n"
+      "                       starting point for a long mainnet session\n"
       "  --daily              --out is a root directory: one file per UTC day,\n"
       "                       rotated at midnight, never mid-record\n"
       "  --overwrite-existing with --daily: replace a same-day restart's file\n"
@@ -125,6 +149,8 @@ bool ParseArgs(int argc, char** argv, Args& a, bool& wants_help,
       if (!next("--out", a.out)) return false;
     } else if (arg == "--venue") {
       if (!next("--venue", a.venue)) return false;
+    } else if (arg == "--url") {
+      if (!next("--url", a.url)) return false;
     } else if (arg == "--env") {
       if (!next("--env", a.env)) return false;
     } else if (arg == "--category") {
@@ -178,13 +204,26 @@ bool ParseArgs(int argc, char** argv, Args& a, bool& wants_help,
 // profile and rebuilds the wrong book, and nothing in the file says so.
 std::unique_ptr<IMarketStreamer> MakeStreamer(const Args& a, std::string& err) {
   if (a.venue == "bybit") {
-    return std::make_unique<BybitDataStreamer>(a.symbol);
+    if (a.url.empty()) return std::make_unique<BybitDataStreamer>(a.symbol);
+    return std::make_unique<BybitDataStreamer>(a.symbol, a.url);
+  }
+  if (a.venue == "blofin") {
+    // the ctor default is the mainnet public endpoint
+    // (wss://openapi.blofin.com/ws/public); the symbol is the only thing this
+    // factory has to supply. --url exists for the case where that endpoint
+    // answers 403: pointing the same parser at another host is the only way to
+    // learn whether the refusal is aimed at this client or at this network.
+    if (a.url.empty()) return std::make_unique<BloFinDataStreamer>(a.symbol);
+    return std::make_unique<BloFinDataStreamer>(a.symbol, a.url);
   }
   if (a.venue == "hyperliquid") {
-    return std::make_unique<HyperliquidDataStreamer>(a.symbol);
+    if (a.url.empty()) {
+      return std::make_unique<HyperliquidDataStreamer>(a.symbol);
+    }
+    return std::make_unique<HyperliquidDataStreamer>(a.symbol, a.url);
   }
   err = "no streamer for venue '" + a.venue +
-        "' (supported: bybit, hyperliquid)";
+        "' (supported: blofin, bybit, hyperliquid)";
   return nullptr;
 }
 
@@ -208,6 +247,47 @@ std::string DefaultPath(const Args& a) {
   // One directory under the working tree, so a session is a file that can be
   // moved, not a name that depends on where the binary was started from.
   return "recordings/" + a.venue + "_" + a.symbol + "_" + stamp + ".mkn";
+}
+
+// Uptime for the one status line: "HH:MM", switching to "Nd HH:MM" once the
+// session passes a full day. The day count is not cosmetic -- at that length the
+// hour total stops meaning anything ("99:07" is not a time, it is arithmetic the
+// reader has to do), and it is the number being read that matters: how long this
+// process has been recording, not a wall clock. The width is a MINIMUM, never a
+// truncation, so nothing wraps and no digits are lost at 100 hours.
+//
+// The days term carries the overflow, so the hour field is genuinely a clock
+// hour from 00 to 23 and the total reads correctly at any length: 1d 03:07,
+// 41d 00:00. Monotonic, so the '\r' redraw in the poll loop only ever lengthens
+// the line and never leaves the tail of a shorter previous one behind.
+std::string FormatUptime(int64_t elapsed_s) {
+  if (elapsed_s < 0) elapsed_s = 0;
+  const int64_t days  = elapsed_s / 86400;
+  const int64_t hours = (elapsed_s / 3600) % 24;
+  const int64_t mins  = (elapsed_s / 60) % 60;
+  char buf[32];
+  if (days > 0) {
+    std::snprintf(buf, sizeof buf, "%lldd %02lld:%02lld",
+                  static_cast<long long>(days),
+                  static_cast<long long>(hours),
+                  static_cast<long long>(mins));
+  } else {
+    std::snprintf(buf, sizeof buf, "%02lld:%02lld",
+                  static_cast<long long>(hours),
+                  static_cast<long long>(mins));
+  }
+  return buf;
+}
+
+// A carriage return only redraws a line when something is watching it. Piping
+// or redirecting the output would otherwise collapse the whole session into one
+// line with embedded '\r's, which is worse than the repeated lines it replaces.
+bool StdoutIsTty() {
+#if defined(_WIN32)
+  return ::_isatty(_fileno(stdout)) != 0;
+#else
+  return ::isatty(fileno(stdout)) != 0;
+#endif
 }
 
 void PrintStats(const mokuren::MarketDataRecorder& rec, const std::string& path,
@@ -257,6 +337,13 @@ extern "C" void MokurenRecordOnSignal(int) {
 }
 
 int main(int argc, char** argv) {
+  // the same call main.cpp makes, and for the same reason: ixwebsocket expects
+  // the platform/TLS layer to be initialised before a socket is built. without
+  // it a handshake can fail in a way that looks exactly like the feed going
+  // quiet -- one Error, then silence -- and this binary was the only one that
+  // skipped it.
+  ix::initNetSystem();
+
   Args args;
   bool wants_help = false;
   std::string err;
@@ -291,11 +378,21 @@ int main(int argc, char** argv) {
     mokuren::debug::g_live_debug_enabled.store(true, std::memory_order_relaxed);
   }
 
-  // The symbol is genuinely per-venue ("BTC" vs "BTCUSDT") and only resolvable
-  // now: subscribing to the wrong coin leaves the socket open and silent, which
-  // is indistinguishable from a quiet market.
+  // The symbol is genuinely per-venue ("BTC" vs "BTCUSDT" vs "BTC-USDT") and
+  // only resolvable now: subscribing to the wrong coin leaves the socket open
+  // and silent, which is indistinguishable from a quiet market.
   if (args.symbol.empty()) {
-    args.symbol = (args.venue == "hyperliquid") ? "BTC" : "BTCUSDT";
+    if (args.venue == "hyperliquid") {
+      args.symbol = "BTC";
+    } else if (args.venue == "blofin") {
+      // hyphenated: blofin lists "BTC-USDT", not "BTCUSDT". a subscription to
+      // an instId the venue does not know is accepted and then never delivers
+      // a frame, so falling back to bybit's spelling would record an empty
+      // file rather than fail.
+      args.symbol = "BTC-USDT";
+    } else {
+      args.symbol = "BTCUSDT";
+    }
   }
   // The category is NOT per-venue, despite looking like it should be. It is a
   // closed set of contract kinds -- linear, spot, inverse -- written into the
@@ -319,7 +416,28 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  const std::string path = args.out.empty() ? DefaultPath(args) : args.out;
+  // non-owning, diagnostics only. blofin is the only streamer that reports what
+  // arrived on the wire, and "recorded nothing" is exactly the case those
+  // tallies exist for: the recorder's counters start one layer below the
+  // socket and cannot tell a silent venue from a frame the parser dropped.
+  // dynamic_cast rather than a member on IMarketStreamer: the base class is the
+  // contract every venue shares, and diagnostics are not part of it.
+  const auto* blofin = dynamic_cast<const BloFinDataStreamer*>(streamer.get());
+
+  std::string path = args.out.empty() ? DefaultPath(args) : args.out;
+
+  // The default root is "recordings", which is relative to the process's
+  // working directory -- and a service is not started from the place a human
+  // would guess. Resolving it once here means the startup banner, the daily
+  // directory and the summary all name the same absolute location, so "where
+  // did it write" is answerable from the output alone. Lexical only: nothing
+  // is created or touched by this call, and an operator-supplied path is
+  // resolved for the same reason.
+  {
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(path, ec);
+    if (!ec) path = abs.lexically_normal().string();
+  }
 
   // --daily reinterprets --out, so a typo'd single-file path (or a stale
   // recording from an earlier run) must fail loudly instead of being adopted as
@@ -440,23 +558,51 @@ int main(int argc, char** argv) {
   // feels immediate and long enough not to spin a core.
   const auto started = std::chrono::steady_clock::now();
   auto last_note = started;
+
+  // On a terminal the status is ONE line, rewritten in place, so a long session
+  // does not push the startup block off the screen. Redrawn every second (the
+  // text only changes once a minute) so ctrl-c never appears to hang waiting
+  // for the next tick. A redirected run keeps whole lines, just far less often
+  // and in the same HH:MM shape.
+  const bool tty = StdoutIsTty();
+  const int64_t note_interval_s = tty ? 1 : 30;
+  bool status_drawn = false;
+
   while (!g_stop.load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     const auto now = std::chrono::steady_clock::now();
     if (args.duration_s > 0 &&
         now - started >= std::chrono::seconds(args.duration_s)) {
-      std::cout << "\nduration reached\n";
+      // the status line has no trailing newline; close it before printing
+      // anything else, or the message lands on the end of it.
+      if (status_drawn) {
+        std::cout << "\n";
+        status_drawn = false;
+      }
+      std::cout << "duration reached\n";
       break;
     }
-    if (now - last_note >= std::chrono::seconds(30)) {
+    if (now - last_note >= std::chrono::seconds(note_interval_s)) {
       last_note = now;
-      std::cout << "still recording ("
-                << std::chrono::duration_cast<std::chrono::seconds>(now -
-                                                                    started)
-                       .count()
-                << "s)\n";
+      const int64_t elapsed_s =
+          std::chrono::duration_cast<std::chrono::seconds>(now - started)
+              .count();
+      if (tty) {
+        std::cout << "\rstill recording  " << FormatUptime(elapsed_s)
+                  << "  (ctrl-c to stop)" << std::flush;
+        status_drawn = true;
+      } else {
+        std::cout << "still recording " << FormatUptime(elapsed_s) << "\n";
+      }
     }
+  }
+
+  // every way out of the loop above -- ctrl-c, a feed error, a natural end --
+  // leaves the rewritten line unterminated. Close it here so the summary starts
+  // on its own line instead of appended to the uptime.
+  if (status_drawn) {
+    std::cout << "\n";
   }
 
   // Order matters and is the writer's whole threading contract: Stop() joins
@@ -469,6 +615,41 @@ int main(int argc, char** argv) {
                                 std::chrono::steady_clock::now() - started)
                                 .count();
   PrintStats(recorder, path, elapsed_s, args.daily);
+
+  // what the venue actually sent, as opposed to what the recorder was able to
+  // use. without this an empty recording is one number with three causes.
+  if (blofin != nullptr) {
+    const auto w = blofin->wire_stats();
+    std::cout << "--- venue wire ---\n"
+              << "socket opens:      " << w.opens << "\n"
+              << "books  frames:     " << w.books << "\n"
+              << "trades frames:     " << w.trades << "\n"
+              << "control frames:    " << w.control << "\n"
+              << "unparsable:        " << w.unparsable << "\n"
+              << "l2      emitted:   " << w.l2_emitted << "\n"
+              << "trades  emitted:   " << w.trades_emitted << "\n";
+    const std::string rejection = blofin->last_rejection();
+    if (!rejection.empty()) {
+      std::cout << "venue rejected:    " << rejection << "\n";
+    } else if (w.books == 0 && w.trades == 0) {
+      if (w.opens == 0) {
+        // the distinction the summary could not make before: nothing was ever
+        // parsed because nothing was ever connected to. the cause itself was
+        // reported through the error channel above -- a refused upgrade, or an
+        // instrument spec the streamer could not read -- so this line does not
+        // guess at which.
+        std::cout << "the socket never opened: no frame could arrive\n"
+                     "  the feed error above has the cause; a refused upgrade "
+                     "is a network the venue declines, not a quiet market\n";
+      } else {
+        std::cout << "venue sent no market data: " << w.control
+                  << " control frame(s), 0 data frames over " << w.opens
+                  << " open connection(s)\n"
+                     "  (logs/record.log has the open/close/error lines; "
+                     "rerun with --debug for every frame)\n";
+      }
+    }
+  }
 
   // flush the async pool before the process exits, or the last lines -- which
   // are exactly the ones describing why a run was short -- are lost.

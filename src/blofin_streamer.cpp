@@ -5,6 +5,7 @@
 #include "logger.hpp"
 
 #include <chrono>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +16,22 @@ namespace {
 // it. the loop sleeps in slices so Stop() is not blocked for a full interval.
 constexpr int kHeartbeatIntervalMs = 20000;
 constexpr int kHeartbeatSliceMs = 100;
+
+// base coins per contract, per instrument, from the venue's contract
+// specifications. BloFin quotes book and trade `size` in CONTRACTS, while
+// bybit's qty and hyperliquid's sz are base coin, and the .mkn format has
+// exactly one meaning for qty -- so the conversion happens here, at the
+// producer, where a contract-sized book is still structurally valid and
+// nothing downstream could ever notice it was wrong.
+//
+// 0 means "unknown", and Start() refuses to open a socket for it rather than
+// run one instrument's sizes through another's multiplier. Adding an
+// instrument is one line here and nothing else.
+double ContractToBaseFor(const std::string& symbol) {
+  // one contract = 0.001 BTC (venue contract specifications, BTC-USDT SWAP).
+  if (symbol == "BTC-USDT") return 0.001;
+  return 0.0;
+}
 
 int64_t NowMillis() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -81,11 +98,23 @@ int64_t ParseSeq(const nlohmann::json& body, const char* key) {
   return 0;
 }
 
+// The headers the front door in front of BloFin expects: a bare handshake was
+// refused with HTTP 403, and these are what turned it into an open socket.
+constexpr const char* kBrowserUserAgent =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like "
+    "Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 }  // namespace
 
 BloFinDataStreamer::BloFinDataStreamer(const std::string& symbol,
                                        const std::string& url)
-    : symbol_(symbol), url_(url) {}
+    : symbol_(symbol),
+      url_(url),
+      // resolved once here, not on the first frame: the multiplier follows the
+      // symbol for the whole session, and it decides whether Start() may open
+      // a socket at all. deriving it per frame would let an unsupported
+      // instrument look healthy until the first print.
+      contract_to_base_(ContractToBaseFor(symbol)) {}
 
 BloFinDataStreamer::~BloFinDataStreamer() {
   // joins the heartbeat thread and stops the socket before the state it
@@ -99,8 +128,34 @@ void BloFinDataStreamer::Start() {
     return;
   }
 
+  // The multiplier is per-instrument. Without this, `--symbol ETH-USDT` would
+  // apply BTC's 0.001 and produce a complete, plausible file that is wrong by
+  // a constant factor -- the one failure mode nothing downstream can detect.
+  if (contract_to_base_ <= 0.0) {
+    running_.store(false, std::memory_order_release);
+    const std::string msg =
+        "blofin: no contract size known for '" + symbol_ +
+        "'; this build only knows BTC-USDT. add its multiplier to "
+        "ContractToBaseFor() before recording it";
+    LOG_ERROR("BloFinDataStreamer: {}", msg);
+    EmitError(msg);
+    return;
+  }
+
   web_socket_.setUrl(url_);
   LOG_INFO("BloFinDataStreamer: connecting to {}", url_);
+
+  // 403 on the upgrade is what a bare handshake gets from the front door in
+  // front of BloFin: it expects the headers a browser sends, and ixwebsocket
+  // sends none of them -- no User-Agent, no Origin. These are ignored when the
+  // check is not applied, and are the difference between "HTTP/1.1 403
+  // Forbidden" and a socket that opens. They cannot fix a network the venue
+  // refuses outright (see the 4xx path in the Error handler); --url is what
+  // tells those two apart.
+  web_socket_.setExtraHeaders({
+      {"User-Agent", kBrowserUserAgent},
+      {"Origin", "https://blofin.com"},
+  });
 
   // a dropped public feed is a transient transport failure, not the end of the
   // run: the socket reconnects on its own and Open fires again.
@@ -111,6 +166,7 @@ void BloFinDataStreamer::Start() {
         switch (msg->type) {
           case ix::WebSocketMessageType::Open:
             LOG_INFO(">>> BLOFIN WEBSOCKET OPENED <<<");
+            wire_opens_.fetch_add(1, std::memory_order_relaxed);
             // a fresh socket carries no book, so nothing is "lost" yet: the
             // reset cannot start the resync clock here.
             ResetOrderBook();
@@ -122,6 +178,15 @@ void BloFinDataStreamer::Start() {
             }
             first_open = false;
             SendSubscription();
+            // a healthy connection answers a books subscribe with a snapshot in
+            // milliseconds, so a book that has not arrived YET is as unusable
+            // as one that was lost. without this the resync clock only ever
+            // started from ResetOrderBook(), which needs a book to have
+            // existed: a subscription that was accepted and then silently never
+            // answered left the feed dark for the whole session -- one gap
+            // sentinel and nothing else, which is what a 60s blofin recording
+            // produced.
+            resync_.OnBookInvalidated(NowMillis());
             break;
           case ix::WebSocketMessageType::Close: {
             const bool was_running =
@@ -147,12 +212,31 @@ void BloFinDataStreamer::Start() {
             }
             break;
           }
-          case ix::WebSocketMessageType::Error:
-            LOG_ERROR(">>> BLOFIN WEBSOCKET ERROR ({}): {} <<<",
-                      msg->errorInfo.http_status, msg->errorInfo.reason);
+          case ix::WebSocketMessageType::Error: {
+            const int status = msg->errorInfo.http_status;
+            LOG_ERROR(">>> BLOFIN WEBSOCKET ERROR ({}): {} <<<", status,
+                      msg->errorInfo.reason);
             ResetOrderBook();
             ReportGapOnce();
+            // A refused HTTP UPGRADE is not a dropped feed: there is no
+            // connection to lose, and reconnecting repeats the same refusal
+            // for as long as the run lasts. 4xx is the venue (or the WAF in
+            // front of it) declining THIS client -- wrong host or path, a
+            // missing header, or a blocked network -- and no retry turns that
+            // into a frame. Report it once through the error channel the owner
+            // already listens on, then stop retrying. Status 0 (no status line
+            // at all: a TCP reset, a timeout) stays on the reconnect path: that
+            // one really is transient.
+            if (status >= 400 && status < 500 &&
+                !fatal_reported_.exchange(true, std::memory_order_acq_rel)) {
+              web_socket_.disableAutomaticReconnection();
+              EmitError("blofin: handshake rejected with HTTP " +
+                        std::to_string(status) + " (" +
+                        msg->errorInfo.reason +
+                        "); retrying cannot fix a refused upgrade");
+            }
             break;
+          }
           case ix::WebSocketMessageType::Message:
             OnMessage(msg->str);
             break;
@@ -257,10 +341,14 @@ void BloFinDataStreamer::OnMessage(const std::string& payload) {
   LIVE_DBG("blofin: RAW FRAME RECEIVED len={}", payload.size());
 
   // pong is a raw string, not JSON.
-  if (payload == "pong") return;
+  if (payload == "pong") {
+    wire_control_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
 
   const nlohmann::json root = nlohmann::json::parse(payload, nullptr, false);
   if (root.is_discarded() || !root.is_object()) {
+    wire_unparsable_.fetch_add(1, std::memory_order_relaxed);
     LOG_WARN("BloFinDataStreamer: dropped unparsable frame (len={})",
              payload.size());
     return;
@@ -270,8 +358,16 @@ void BloFinDataStreamer::OnMessage(const std::string& payload) {
   // a REJECTION has the same shape as an ack, so it is named explicitly here:
   // a refused channel and a quiet feed would otherwise be indistinguishable.
   if (root.contains("event")) {
+    wire_control_.fetch_add(1, std::memory_order_relaxed);
     const std::string event = root.value("event", "");
     if (event == "error") {
+      {
+        // the venue's own words, kept for the recorder's summary. a refused
+        // channel is otherwise a warn-level line in a file nobody reads, and
+        // the session summary can only say that nothing was written.
+        std::lock_guard<std::mutex> lock(rejection_mutex_);
+        last_rejection_ = root.dump();
+      }
       LOG_ERROR("BloFinDataStreamer: request REJECTED: {}", root.dump());
     } else if (event == "subscribe") {
       LOG_DEBUG("BloFinDataStreamer: subscribe ack: {}", root.dump());
@@ -291,8 +387,10 @@ void BloFinDataStreamer::OnMessage(const std::string& payload) {
 
   try {
     if (channel == "trades") {
+      wire_trades_.fetch_add(1, std::memory_order_relaxed);
       HandleTrades(root["data"]);
     } else if (channel == "books") {
+      wire_books_.fetch_add(1, std::memory_order_relaxed);
       // the WHOLE envelope: blofin puts "action" a level up, next to "data",
       // not inside it. reading it inside data[0] drops every frame before a
       // single level is parsed.
@@ -319,14 +417,27 @@ void BloFinDataStreamer::HandleTrades(const nlohmann::json& data) {
 
     TradeEvent ev{};
     ev.price = JsonNumber(trade["price"]);
-    ev.quantity = JsonNumber(trade["size"]);
+    // contracts -> base coin, at the producer. the venue's `size` counts
+    // contracts while every other streamer in this build reports base coin, so
+    // this is the one place the two conventions can be reconciled -- and the
+    // place they must be, because nothing downstream can tell them apart.
+    ev.quantity = ToBase(JsonNumber(trade["size"]));
     ev.timestamp = ParseSeq(trade, "ts");
     // "side" is the TAKER side: "sell" -> aggressive sell into the bid, so the
     // resting order was a buy and the maker is a buyer.
     ev.is_buyer_maker = (trade.value("side", "") == "sell");
 
-    LIVE_DBG("blofin: TRADE PARSED ts={} price={} qty={} is_buyer_maker={}",
-             ev.timestamp, ev.price, ev.quantity, ev.is_buyer_maker);
+    // notional is how a human reads `size`'s UNIT off one line. the raw field
+    // is venue units, and the same print reads ~$2.3k (contracts) or ~$2.3M
+    // (base BTC) depending on the multiplier -- the second is absurd for a
+    // retail print, the first is ordinary. printing both ends the argument
+    // without consulting docs.
+    LIVE_DBG(
+        "blofin: TRADE PARSED ts={} price={} qty={} notional={:.2f} "
+        "is_buyer_maker={}",
+        ev.timestamp, ev.price, ev.quantity, ev.price * ev.quantity,
+        ev.is_buyer_maker);
+    wire_trades_emitted_.fetch_add(1, std::memory_order_relaxed);
     EmitTrade(ev);
   }
 }
@@ -362,24 +473,23 @@ void BloFinDataStreamer::EmitOrderBook(int64_t ts_ms) {
 
   const L2Snapshot snap = book_.ToSnapshot(ts_ms);
 
-  // once a second is enough to see the feed is alive and roughly where the
-  // book is. measured on a steady clock, not on the venue's "ts": a delta
-  // carrying a slightly older timestamp would make the subtraction negative
-  // and silence the heartbeat until the venue clock caught up.
-  static auto last_info =
-      std::chrono::steady_clock::now() - std::chrono::seconds(2);
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_info >= std::chrono::seconds(1)) {
-    last_info = now;
-    LOG_INFO(
-        "LIVE L2   | Best Bid: {:.2f} ({:.4f}) | Best Ask: {:.2f} ({:.4f})",
-        snap.best_bid_price, snap.best_bid_qty, snap.best_ask_price,
-        snap.best_ask_qty);
-  }
-  LIVE_DBG("blofin: L2 ts={} bid={} bid_qty={} ask={} ask_qty={}",
-           snap.timestamp, snap.best_bid_price, snap.best_bid_qty,
-           snap.best_ask_price, snap.best_ask_qty);
+  // no per-frame LOG_INFO here. this was the only streamer printing book state
+  // into a recording session, and it is why a blofin run looked different from
+  // a bybit or hyperliquid one: an INFO line once a second is not debug output,
+  // it is a live-trading heartbeat, and in a recorder it collides with the
+  // session's own "still recording" status on stdout. the LIVE_DBG below says
+  // more (both sides, plus notionals) and only reaches a console when tracing
+  // was asked for.
+  // same reasoning as the trade line: top-of-book notional states the unit in
+  // a number that can be checked against the venue's size, not just logged.
+  LIVE_DBG(
+      "blofin: L2 ts={} bid={} bid_qty={} bid_notional={:.2f} ask={} "
+      "ask_qty={} ask_notional={:.2f}",
+      snap.timestamp, snap.best_bid_price, snap.best_bid_qty,
+      snap.best_bid_price * snap.best_bid_qty, snap.best_ask_price,
+      snap.best_ask_qty, snap.best_ask_price * snap.best_ask_qty);
 
+  wire_l2_emitted_.fetch_add(1, std::memory_order_relaxed);
   EmitL2(snap);
 }
 
@@ -419,6 +529,13 @@ void BloFinDataStreamer::HandleOrderBook(const nlohmann::json& envelope) {
   std::vector<mokuren::OrderBook::Level> asks;
   if (body.contains("bids")) ParseLevels(body["bids"], bids);
   if (body.contains("asks")) ParseLevels(body["asks"], asks);
+  // The same conversion as the tape, on both sides. A book left in contracts
+  // beside base-coin trades would corrupt every ratio the engine reads --
+  // imbalance, footprint, spoof distance -- by the multiplier, and since a
+  // contract-sized book passes every structural check, nothing downstream
+  // would report it.
+  for (auto& level : bids) level.second = ToBase(level.second);
+  for (auto& level : asks) level.second = ToBase(level.second);
 
   int64_t ts_ms = ParseSeq(body, "ts");
   if (ts_ms <= 0) {
@@ -474,6 +591,31 @@ void BloFinDataStreamer::HandleOrderBook(const nlohmann::json& envelope) {
   last_seq_id_ = seq_id;
   book_.ApplyDelta(bids, asks, ++apply_counter_);
   EmitOrderBook(ts_ms);
+}
+
+double BloFinDataStreamer::ToBase(double size) const {
+  // 0 is unreachable on the wire: Start() refuses to open a socket without a
+  // multiplier. A test that drives the parser directly on an unsupported
+  // symbol therefore gets 0, not the raw size -- a visible failure instead of a
+  // silently unscaled quantity.
+  return size * contract_to_base_;
+}
+
+BloFinDataStreamer::WireStats BloFinDataStreamer::wire_stats() const {
+  WireStats s;
+  s.opens = wire_opens_.load(std::memory_order_relaxed);
+  s.books = wire_books_.load(std::memory_order_relaxed);
+  s.trades = wire_trades_.load(std::memory_order_relaxed);
+  s.control = wire_control_.load(std::memory_order_relaxed);
+  s.unparsable = wire_unparsable_.load(std::memory_order_relaxed);
+  s.l2_emitted = wire_l2_emitted_.load(std::memory_order_relaxed);
+  s.trades_emitted = wire_trades_emitted_.load(std::memory_order_relaxed);
+  return s;
+}
+
+std::string BloFinDataStreamer::last_rejection() const {
+  std::lock_guard<std::mutex> lock(rejection_mutex_);
+  return last_rejection_;
 }
 
 bool BloFinDataStreamer::HandleFrameForTests(const std::string& payload) {
