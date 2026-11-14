@@ -116,6 +116,9 @@ class MarketDataRecorder {
   bool RotateIfNeeded(int64_t ts_ns);
   bool OpenDayFor(int64_t ts_ns);
   bool CloseCurrentFile();  // flush + close + .part -> .mkn
+  // Drops the daily-mode directory lock, if held. Idempotent; Close() and the
+  // destructor both call it so a failed Open() cannot leave it behind.
+  void ReleaseLock();
 
   RecorderConfig cfg_;
   mdf::Writer writer_;
@@ -131,6 +134,12 @@ class MarketDataRecorder {
   std::string current_path_;    // final name, without .part
   std::string current_part_path_;
   int64_t     current_day_ = -1;
+
+  // Exclusive lock on <dir>/.<venue>-<symbol>.lock, held for the recorder's
+  // lifetime. Keeps a second process from recording the same instrument at the
+  // same time; see Open().
+  int         lock_fd_ = -1;
+  std::string lock_path_;
 };
 
 }  // namespace mokuren

@@ -541,6 +541,13 @@ int main(int argc, char** argv) {
 
   std::signal(SIGINT, MokurenRecordOnSignal);
   std::signal(SIGTERM, MokurenRecordOnSignal);
+#if !defined(_WIN32)
+  // A tmux session that is killed, or a terminal that is closed, sends SIGHUP.
+  // Without a handler that is an instant death: no destructors, so no flush, no
+  // trailer and no .part -> .mkn rename -- which is exactly how a recording
+  // ended at 12:04 with a .part that the merger refuses. Windows has no SIGHUP.
+  std::signal(SIGHUP, MokurenRecordOnSignal);
+#endif
 
   std::cout << "recording " << args.venue << " " << args.symbol << " -> "
             << path

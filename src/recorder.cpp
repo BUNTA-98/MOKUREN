@@ -8,6 +8,14 @@
 #include <filesystem>
 #include <utility>
 
+#if !defined(_WIN32)
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
+
 namespace mokuren {
 
 int64_t DayKeyFromNs(int64_t ts_ns) {
@@ -81,6 +89,7 @@ MarketDataRecorder::MarketDataRecorder(RecorderConfig cfg)
 MarketDataRecorder::~MarketDataRecorder() {
   // Idempotent; finalises (flushes + renames) a daily file still open.
   if (opened_ || writer_.is_open()) Close();
+  ReleaseLock();  // no-op once Close() has run
 }
 
 void MarketDataRecorder::Attach(IMarketStreamer& streamer) {
@@ -111,6 +120,31 @@ bool MarketDataRecorder::Open() {
     error_ = "create_directories " + dir_ + ": " + ec.message();
     return false;
   }
+
+#if !defined(_WIN32)
+  // One recorder per instrument. Writer::Open is fopen(path, "wb") -- truncate,
+  // no O_EXCL, no lock -- so two processes on the same day would interleave
+  // into one inode. The name-collision fallback in OpenDayFor prevents most of
+  // that, but it does so silently: an overlapping session became a T<HHMMSS>
+  // sibling that nothing reported. flock makes the second process refuse to
+  // start and say why, and the kernel drops the lock when the holder dies, so
+  // there is never a stale lock to clear by hand.
+  lock_path_ = dir_ + "/." + cfg_.venue + "-" + cfg_.symbol + ".lock";
+  lock_fd_ = ::open(lock_path_.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  if (lock_fd_ < 0) {
+    error_ = "open lock " + lock_path_ + ": " + std::strerror(errno);
+    return false;
+  }
+  if (::flock(lock_fd_, LOCK_EX | LOCK_NB) != 0) {
+    ::close(lock_fd_);
+    lock_fd_ = -1;
+    error_ = "another recorder is already running for " + cfg_.venue + "-" +
+             cfg_.symbol + " (lock held on " + lock_path_ +
+             "); stop it before starting a second one";
+    return false;
+  }
+#endif
+
   current_day_ = -1;
   current_path_.clear();
   current_part_path_.clear();
@@ -121,8 +155,28 @@ bool MarketDataRecorder::Open() {
 
 bool MarketDataRecorder::Close() {
   opened_ = false;
-  if (!cfg_.daily) return writer_.is_open() ? writer_.Close() : true;
-  return CloseCurrentFile();
+  bool ok = true;
+  if (!cfg_.daily) {
+    ok = writer_.is_open() ? writer_.Close() : true;
+  } else {
+    ok = CloseCurrentFile();
+  }
+  // Released before returning, so a restart can open the directory immediately.
+  // The lock FILE is deliberately not unlinked: removing it while another
+  // process is racing to lock it hands two writers a lock on two different
+  // inodes.
+  ReleaseLock();
+  return ok;
+}
+
+void MarketDataRecorder::ReleaseLock() {
+#if !defined(_WIN32)
+  if (lock_fd_ >= 0) {
+    ::flock(lock_fd_, LOCK_UN);
+    ::close(lock_fd_);
+    lock_fd_ = -1;
+  }
+#endif
 }
 
 bool MarketDataRecorder::EnsureOpenFor(int64_t ts_ns) {

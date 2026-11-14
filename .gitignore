@@ -16,3 +16,4 @@ configs/dev/
 *.sec.*
 recordings/
 configs/*.local.json
+agents/
