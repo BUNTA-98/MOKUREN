@@ -179,6 +179,13 @@ void ApplyRMultiplesManagement(const nlohmann::json& json_config, double base_sl
         scale_out_on,
         level_r(so, "trigger_r", "trigger_pct", "trade_management.scale_out"),
         scale_fraction);
+
+    // Structural exits: a separate block with its own master switch. Parse
+    // it here rather than reading eng's config, because the grid/WFA/replay
+    // paths re-parse the original JSON per permutation. Configure is a no-op
+    // when structural_exit is absent, so the existing paths are unchanged.
+    eng.pos_manager->ConfigureStructuralExit(
+        mokuren::ResolveStructuralExitConfig(json_config["trade_management"]));
 }
 
 } // namespace mokuren

@@ -1196,6 +1196,14 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
           so, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.scale_out");
       cfg.tm_config.scale_out_fraction =
           RequireNumber(so, "fraction", "trade_management.scale_out");
+
+      // Optional structural-exit block. Absent = no-op. When enabled, the
+      // resolver validates min_holdtime_ms and the rules list itself; per-rule
+      // params are stored verbatim and interpreted at build time in
+      // structural_exit.hpp. This mirrors the trigger pipeline: the loader
+      // parses opaque JSON, the factory interprets names.
+      cfg.tm_config.structural_exit =
+          mokuren::ResolveStructuralExitConfig(tm);
     }
   });
 

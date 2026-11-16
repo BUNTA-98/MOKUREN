@@ -78,6 +78,7 @@
       "ratio": 3.0
     }
   ],
+  "initial_balance": 10000.0,
   "is_testnet": false,
   "prop": {
     "daily_reset_hour_utc": 0,
@@ -125,6 +126,44 @@
       "enabled": false,
       "fraction": 0.5,
       "trigger_r": 0.8
+    },
+    "structural_exit": {
+      "enabled": false,
+      "min_holdtime_ms": 180000,
+      "rules": [
+        {
+          "enabled": true,
+          "giveback_r": 1.0,
+          "name": "MfeGiveback"
+        },
+        {
+          "enabled": true,
+          "min_levels": 2,
+          "name": "ImbalanceBreak",
+          "ratio": 2.0
+        },
+        {
+          "enabled": true,
+          "max_hold_ms": 3600000,
+          "name": "TimeStop"
+        },
+        {
+          "enabled": false,
+          "min_delta": 50.0,
+          "name": "DeltaFlip"
+        },
+        {
+          "drop_pct": 0.5,
+          "enabled": false,
+          "min_qty": 5.0,
+          "name": "SpoofPull"
+        },
+        {
+          "enabled": false,
+          "lookback": 5,
+          "name": "DeltaDivergence"
+        }
+      ]
     },
     "trailing": {
       "distance_r": 0.5,

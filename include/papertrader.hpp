@@ -59,6 +59,12 @@ public:
   double GetPositionSize() const { return position_size; }
   void UpdateStopLoss(double new_sl) override { current_sl_ = new_sl; }
   TradeSignal GetCurrentPosition() const override;
+  // the real fill time, so the structural-exit guard measures a trade's age
+  // rather than the process's. 0 while flat, which the guard reads as "no
+  // clock yet".
+  int64_t GetPositionEntryTime() const override {
+    return position_size > 0.0 ? entry_time_ : 0;
+  }
 
   // interface implementation for partial closes
   void ClosePartial(double fraction, double current_price, int64_t current_time, const std::string& reason) override;

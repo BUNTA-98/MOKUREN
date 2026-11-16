@@ -1,6 +1,8 @@
 #pragma once
 #include "ibroker.hpp"
 #include "logger.hpp"
+#include "market_context.hpp"
+#include "structural_exit.hpp"
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -15,6 +17,14 @@ private:
   bool enable_scale_out_; // toggle for partial takes
   double scale_fraction_; // fraction to sell (e.g. 0.7 for 70%)
   bool enabled_ = true;   // false when the broker manages the trade itself
+
+  // Third close path on an open position: market structure / trade age / MFE.
+  // Owned here so it shares the position state (entry_ts, mfe, mae) with the
+  // BE/trail/scale ladder, and so a structural close and a BE/trail/scale
+  // close cannot race on the same tick. ConfigureStructuralExit is called
+  // once at construction time (factory or runner_common); absent config => the
+  // guard is inert and this file behaves exactly as before.
+  mokuren::StructuralExitGuard structural_exit_;
 
   // Thresholds are multiples of the placed risk (1R = |entry - stop|), never
   // percentages of entry. The defaults reproduce the old hardcoded behaviour
@@ -82,17 +92,41 @@ public:
   void SetEnabled(bool on) { enabled_ = on; }
   bool IsEnabled() const { return enabled_; }
 
-  void Update(double current_price, int64_t current_time) {
-    if (!enabled_) return;
+  // Arm the structural exit guard. Called once, after the config is loaded.
+  // A disabled StructuralExitConfig leaves the guard inert; no other code has
+  // to check the master switch.
+  void ConfigureStructuralExit(const mokuren::StructuralExitConfig& c) {
+    structural_exit_.Configure(c);
+  }
 
-    // reset state if no active trade
+  // The MarketContext is passed on the trade tick so structural-exit rules
+  // that read the bar / book see the same state alpha sees. The pre-existing
+  // BE/trail/scale body does not use it -- those branches key on current_price
+  // only -- so the signature change is behaviour-neutral for the ladder.
+  void Update(const MarketContext& ctx, double current_price, int64_t current_time) {
+    // reset state if no active trade. Done BEFORE the enabled_ early return so
+    // a SetEnabled(false) or a structural-only config still leaves the guard
+    // clean for the next position.
     if (!broker_->HasOpenPosition()) {
       stop_moved_to_be_ = false;
       scaled_out_ = false;
       last_stop_attempt_ms_ = 0;
       last_trailing_attempt_ms_ = 0;
+      structural_exit_.ResetTradeState();
       return;
     }
+
+    // Structural exits run on the trade tick regardless of enabled_: they are
+    // their own close path, with their own master switch (structural_exit.
+    // enabled). When the guard fires, the position is flat before BE/trail/
+    // scale can race it; the next tick sees HasOpenPosition()==false and
+    // resets. Checking HasOpenPosition() again after the call is what makes
+    // that ordering real -- a fired structural close must not be followed by
+    // a scale_out or a stop move against a position that no longer exists.
+    structural_exit_.OnTrade(ctx, broker_, current_price, current_time);
+    if (!broker_->HasOpenPosition()) return;
+
+    if (!enabled_) return;
 
     TradeSignal pos = broker_->GetCurrentPosition();
     if (pos.direction == SignalDirection::NONE || pos.stop_loss == 0.0) return;
@@ -178,5 +212,19 @@ public:
         }
       }
     }
+  }
+
+  // Book-path entry point: BE/trail/scale are trade-price driven and stay on
+  // Update (above); structural rules that watch the book fire here. Separate
+  // method on purpose: calling Update itself from a book frame would trigger
+  // BE/trail on a book price that has no trade behind it, which is what the
+  // current design deliberately avoids.
+  void UpdateOnL2(const MarketContext& ctx, int64_t current_time) {
+    if (!broker_) return;
+    if (!broker_->HasOpenPosition()) {
+      structural_exit_.ResetTradeState();
+      return;
+    }
+    structural_exit_.OnBook(ctx, broker_, current_time);
   }
 };

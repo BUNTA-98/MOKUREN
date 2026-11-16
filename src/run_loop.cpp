@@ -49,6 +49,13 @@ RunLoopStats RunLoop(EngineInstance& eng, SignalExecutor& executor,
                            eng.aggregator->GetLatestL2(),
                            eng.aggregator->GetL2History()};
 
+    // Structural exits read the book, so they run on the book path. The
+    // BE/trail/scale ladder stays on the trade path only (Update); calling
+    // Update here would fire scale-out on a quote that has no print behind it.
+    if (eng.pos_manager) {
+      eng.pos_manager->UpdateOnL2(tick_ctx, snap.timestamp);
+    }
+
     const TradeSignal tick_sig = eng.alpha->Evaluate(tick_ctx, false);
     if (tick_sig.direction == SignalDirection::NONE) return;
 
@@ -95,9 +102,10 @@ RunLoopStats RunLoop(EngineInstance& eng, SignalExecutor& executor,
       stats.prop_breached = true;
     }
 
-    eng.pos_manager->Update(trade.price, trade.timestamp);
-    eng.ptrader->CheckRisk(trade.price, trade.timestamp);
-
+    // Aggregators first: the structural-exit rules read the bar, so the print
+    // must be folded into it before the guard sees it. Behaviour-neutral for
+    // the pre-existing BE/trail/scale ladder: those branches read
+    // current_price, not the bar.
     const bool candle_finished = eng.aggregator->ProcessTrade(live_bar, trade);
     eng.htf_aggregator->ProcessTrade(htf_bar, trade);
 
@@ -105,6 +113,12 @@ RunLoopStats RunLoop(EngineInstance& eng, SignalExecutor& executor,
                           eng.aggregator->GetSessionMetrics(),
                           eng.aggregator->GetLatestL2(),
                           eng.aggregator->GetL2History()};
+
+    // pos_manager takes the context so structural exits can read the same
+    // bar alpha sees. The BE/trail/scale body ignores it (current_price
+    // driven) and behaves exactly as before.
+    eng.pos_manager->Update(context, trade.price, trade.timestamp);
+    eng.ptrader->CheckRisk(trade.price, trade.timestamp);
 
     // Execute() is only reached for a real signal. One caller used to pass a
     // NONE signal straight through; PrepareSignalRisk rejects it on the missing

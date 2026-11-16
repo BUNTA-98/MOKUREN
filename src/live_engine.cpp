@@ -879,8 +879,12 @@ void LiveOrchestrator::WorkerLoop() {
           break;
         }
 
-        // tick-level alpha evaluation (mirrors backtest l2 catch-up loop).
-        if (engine_.alpha && engine_.aggregator) {
+        // tick-level evaluation. Structural exits fire on the book path here
+        // (mirrors run_loop's apply_book): BE/trail/scale stay on the trade
+        // path, so a rule that reads the book is the only thing this call
+        // can trigger. Built on the aggregator so the alpha and the guard see
+        // the same context.
+        if (engine_.aggregator) {
           MarketContext tick_ctx{
               engine_.aggregator->GetHistory(),
               live_bar_,
@@ -889,21 +893,26 @@ void LiveOrchestrator::WorkerLoop() {
               engine_.aggregator->GetLatestL2(),
               engine_.aggregator->GetL2History(),
           };
-          TradeSignal tick_sig = engine_.alpha->Evaluate(tick_ctx, false);
-          LIVE_DBG("orchestrator: alpha->Evaluate(tick) returned direction={}",
-                   static_cast<int>(tick_sig.direction));
-          if (tick_sig.direction != SignalDirection::NONE) {
-            double exec_price = (tick_sig.direction == SignalDirection::BUY)
-                                    ? ev.l2.best_ask_price
-                                    : ev.l2.best_bid_price;
-            if (exec_price <= 0.0) {
-              exec_price = live_bar_.close > 0.0 ? live_bar_.close
-                                                 : ev.l2.best_bid_price;
+          if (engine_.pos_manager) {
+            engine_.pos_manager->UpdateOnL2(tick_ctx, ev.l2.timestamp);
+          }
+          if (engine_.alpha) {
+            TradeSignal tick_sig = engine_.alpha->Evaluate(tick_ctx, false);
+            LIVE_DBG("orchestrator: alpha->Evaluate(tick) returned direction={}",
+                     static_cast<int>(tick_sig.direction));
+            if (tick_sig.direction != SignalDirection::NONE) {
+              double exec_price = (tick_sig.direction == SignalDirection::BUY)
+                                      ? ev.l2.best_ask_price
+                                      : ev.l2.best_bid_price;
+              if (exec_price <= 0.0) {
+                exec_price = live_bar_.close > 0.0 ? live_bar_.close
+                                                   : ev.l2.best_bid_price;
+              }
+              LOG_TRACE("LiveOrchestrator: tick signal dir={} exec={} ts={}",
+                        static_cast<int>(tick_sig.direction), exec_price,
+                        ev.l2.timestamp);
+              execute_signal(tick_sig, exec_price, ev.l2.timestamp);
             }
-            LOG_TRACE("LiveOrchestrator: tick signal dir={} exec={} ts={}",
-                      static_cast<int>(tick_sig.direction), exec_price,
-                      ev.l2.timestamp);
-            execute_signal(tick_sig, exec_price, ev.l2.timestamp);
           }
         }
         break;
@@ -916,22 +925,10 @@ void LiveOrchestrator::WorkerLoop() {
         // stream, so this reads the most recent value the broker holds.
         CheckPropGuard(ev.trade.timestamp, ev.trade.price);
 
-        // 1. position manager update (trailing / be / scale-out bookkeeping).
-        if (engine_.pos_manager) {
-          engine_.pos_manager->Update(ev.trade.price, ev.trade.timestamp);
-        }
-
-        // 2. active-broker risk check (sl/tp/trail/scale-out triggers).
-        //    the position-closed broadcast no longer hangs off a return value
-        //    here: on the venue path CheckRisk does nothing and the close
-        //    arrives on the websocket thread. ObservePositionTransition below
-        //    sees the transition on the next event instead.
-        IBroker* broker = ActiveBroker();
-        if (broker) {
-          broker->CheckRisk(ev.trade.price, ev.trade.timestamp);
-        }
-
-        // 3. build the live bar (and htf bar) from the trade.
+        // 1. build the live bar (and htf bar) from the trade. Structural
+        //    exits read the bar, so the print must be folded in first.
+        //    Behaviour-neutral for BE/trail/scale: those branches key on
+        //    current_price, not the bar.
         bool candle_finished = false;
         if (engine_.aggregator) {
           candle_finished =
@@ -945,23 +942,46 @@ void LiveOrchestrator::WorkerLoop() {
                  live_bar_.timestamp_start, live_bar_.close);
 
         // guard: never evaluate a candle that was never initialized by
-        // a real trade (close stays 0.0).
-        if (live_bar_.close == 0.0) {
+        // a real trade (close stays 0.0). Also the earliest point at which
+        // building a MarketContext is safe -- the aggregator may be null on a
+        // tooling path, and pos_manager / CheckRisk below need it.
+        if (!engine_.aggregator || live_bar_.close == 0.0) {
           LIVE_DBG("orchestrator: skipping candle alpha, live_bar_ not "
                    "initialized (close=0.0)");
           break;
         }
 
-        // 4. candle-level alpha evaluation.
-        if (engine_.alpha && engine_.aggregator) {
-          MarketContext ctx{
-              engine_.aggregator->GetHistory(),
-              live_bar_,
-              htf_live_bar_,
-              engine_.aggregator->GetSessionMetrics(),
-              engine_.aggregator->GetLatestL2(),
-              engine_.aggregator->GetL2History(),
-          };
+        // 2. context is built once and shared by pos_manager and alpha. The
+        //    structural-exit guard reads the same bar alpha does, so it
+        //    cannot fire on a bar the strategy was never shown.
+        MarketContext ctx{
+            engine_.aggregator->GetHistory(),
+            live_bar_,
+            htf_live_bar_,
+            engine_.aggregator->GetSessionMetrics(),
+            engine_.aggregator->GetLatestL2(),
+            engine_.aggregator->GetL2History(),
+        };
+
+        // 3. position manager update (structural exits first, then BE/trail/
+        //    scale-out). The structural branch runs before BE/trail and can
+        //    leave the position flat; the ladder sees that and does nothing.
+        if (engine_.pos_manager) {
+          engine_.pos_manager->Update(ctx, ev.trade.price, ev.trade.timestamp);
+        }
+
+        // 4. active-broker risk check (sl/tp/trail/scale-out triggers).
+        //    the position-closed broadcast no longer hangs off a return value
+        //    here: on the venue path CheckRisk does nothing and the close
+        //    arrives on the websocket thread. ObservePositionTransition below
+        //    sees the transition on the next event instead.
+        IBroker* broker = ActiveBroker();
+        if (broker) {
+          broker->CheckRisk(ev.trade.price, ev.trade.timestamp);
+        }
+
+        // 5. candle-level alpha evaluation reusing the same ctx.
+        if (engine_.alpha) {
           TradeSignal candle_sig = engine_.alpha->Evaluate(ctx, candle_finished);
           LIVE_DBG("orchestrator: alpha->Evaluate(candle) returned direction={} candle_finished={}",
                    static_cast<int>(candle_sig.direction), candle_finished);

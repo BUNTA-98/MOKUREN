@@ -120,3 +120,55 @@ Values may be grid objects; `val` is used outside a sweep.
 
 Two sweep parameters give 4 × 3 = 12 runs. `--live` and `--paper` collapse both
 to their `val`.
+
+## Paper: structural exits as the primary exit
+
+Break-even, trailing and scale-out are off and the target is far away, so the
+only exits are the fixed stop and the structural rules. That is the shape to
+sweep when the question is "does closing on structure beat holding to the
+target".
+
+```json
+{
+  "exchange": "bybit",
+  "venue": {"environment": "mainnet", "category": "linear",
+            "symbol": "BTCUSDT", "position_mode": "one_way",
+            "allow_mainnet": true},
+  "environment": {"interval_ms": 60000, "macro_interval_ms": 900000,
+                  "tick_size": 0.1, "vwap_reset_hour": 0},
+  "execution": {"taker_fee_pct": 0.0004, "slippage_pct": 0.0002},
+  "risk": {
+    "sl_pct": 0.005, "tp_r": 5.0, "risk_per_trade_pct": 0.01,
+    "max_daily_loss": 400.0,
+    "modules": [{"name": "SinglePositionLock"}]
+  },
+  "trade_management": {
+    "break_even": {"enabled": false, "trigger_r": 1.0, "target_r": 0.2},
+    "trailing":   {"enabled": false, "trigger_r": 1.5, "distance_r": 0.5},
+    "scale_out":  {"enabled": false, "trigger_r": 1.0, "fraction": 0.5},
+    "structural_exit": {
+      "enabled": true,
+      "min_holdtime_ms": 180000,
+      "rules": [
+        {"name": "MfeGiveback", "enabled": true, "giveback_r": 1.0},
+        {"name": "TimeStop", "enabled": true, "max_hold_ms": 3600000},
+        {"name": "ImbalanceBreak", "enabled": false,
+         "ratio": 2.0, "min_levels": 2}
+      ]
+    }
+  },
+  "triggers": [
+    {"name": "StackedImbalance", "ratio": 1.5, "levels": 2}
+  ],
+  "filters": [{"name": "MinVolume", "min_volume": 2.0}]
+}
+```
+
+`tp_r: 5` keeps the target out of the race without hitting the loader's ceiling:
+at `sl_pct: 0.005`, 5R is 2.5%. Raise `tp_r` only together with a narrower
+`sl_pct`.
+
+Expected exits in the trade log: `struct_MfeGiveback` on a trade that ran and
+gave back 1R, `struct_TimeStop` on one that went nowhere for an hour, and plain
+`stop_loss` on everything else. Nothing structural can happen in a trade's first
+three minutes, whatever the rules say.

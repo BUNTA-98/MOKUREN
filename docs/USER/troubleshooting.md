@@ -34,6 +34,13 @@ A required key is missing or mistyped. The message names the full path
 (`risk.sl_pct`). There is no fallback for the venue, for take-profit, or for any
 trade-management level. Fix the file rather than adding a default elsewhere.
 
+**`config error: 'trade_management.structural_exit.…'`**
+The block is enabled but cannot work: `min_holdtime_ms` is missing or not
+`> 0`, `rules` is empty, or every rule in it is disabled. All three are load
+errors on purpose — an enabled block that can never close a position looks
+exactly like a working one. An unknown rule `name`, or a missing/mistyped param
+on an enabled rule, fails later, when the plan is built.
+
 **`AppConfig validation failed: ...`**
 The value is present but out of range. See the valid-ranges table in
 [Configuration](configuration.md).
@@ -154,6 +161,18 @@ config, and `risk.max_daily_loss` only reaches the paper account.
 The venue-path risk modules read the exchange's cached account state. Until the
 first private websocket frame arrives the balance reads as 0, so
 `MaxLeverageLock` rejects everything and the sizer produces no volume.
+
+**A structural exit never fires**
+In order: `structural_exit.enabled` (default `false`); at least one rule enabled
+(an all-disabled block fails at load, so a run that started has one);
+`min_holdtime_ms` elapsed since the first tick that saw the position; and the
+right data for the rule's hook — `ImbalanceBreak` and `SpoofPull` read book
+frames, the rest read prints. A rule also needs a placed stop: with
+`stop_loss == 0` the guard has no 1R and evaluates nothing. The trade clock
+comes from `IBroker::GetPositionEntryTime()`, so after a restart a rule waits
+for the trade's real age rather than the process's — a broker that answers 0
+(today, the venue adapter) makes the clock start at the restart instead, so
+`TimeStop` may fire later than the real hold time.
 
 ## Process
 

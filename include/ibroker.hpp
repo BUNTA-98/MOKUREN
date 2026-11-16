@@ -66,6 +66,16 @@ public:
     virtual TradeSignal GetCurrentPosition() const = 0;
     virtual void UpdateStopLoss(double new_sl) = 0;
 
+    // When the open position was filled, on the clock the engine hands to
+    // CheckRisk/Update (ms since epoch). 0 means "unknown": no position, or a
+    // broker that does not track it. A default body rather than a pure
+    // virtual because it is an optimisation, not a capability -- the caller
+    // falls back to latching on the first tick it sees, which is what every
+    // broker did before this existed. The structural-exit guard is the only
+    // reader today, and only across a restart, where the difference between
+    // the real entry and the process start is the whole question.
+    virtual int64_t GetPositionEntryTime() const { return 0; }
+
     // core execution hooks called by the orchestrator
     virtual void ProcessSignal(TradeSignal signal, double fill_price, int64_t current_time) = 0;
     virtual void CheckRisk(double current_price, int64_t current_time) = 0;

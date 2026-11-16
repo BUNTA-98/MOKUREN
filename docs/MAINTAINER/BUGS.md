@@ -554,3 +554,15 @@ Append-only. One entry per issue; keep it short.
   overlay. The details popup has the same dead `q`/`Q` branch.
 - Fix: drop `q`/`Q` from both handlers, or have `UIManager` honour
   `BlocksGlobalHotkeys()` for open overlays.
+
+## Venue brokers do not report the open position's entry time
+- `include/ibroker.hpp`: `GetPositionEntryTime()` defaults to 0 (unknown), and
+  only `PaperTrader` overrides it. The venue adapter does not, so the
+  structural-exit guard falls back to latching the trade clock on the first
+  tick it sees.
+- On a venue restart with a position already open, `min_holdtime_ms` and
+  `TimeStop` therefore count from the restart: `TimeStop` waits a full
+  `max_hold_ms` again and the hold gate re-applies. Both delay an exit that
+  should have fired on the missed tick; neither rushes one.
+- Fix: persist the fill timestamp at reconciliation and answer the hook from
+  it. The guard needs no change — it already prefers the broker's answer.

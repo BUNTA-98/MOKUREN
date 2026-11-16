@@ -416,10 +416,37 @@ Same behaviour-neutral argument as `run_loop.cpp`.
 - [ ] `src/momentum.md` updated with any deviations from this plan
       before the PR is opened.
 
+## Deviations from this plan (as shipped in v1)
+
+- **`enabled_` gating.** The interaction matrix above says the guard sits
+  inside `PositionManager`'s master gate, but the "MODIFIED —
+  `include/position_manager.hpp`" section says to call
+  `structural_exit_.OnTrade(...)` *before* the existing `enabled_` early
+  return. The code follows the latter: `SetEnabled(false)` silences
+  BE/trail/scale but structural exits still honour their own master switch
+  (`structural_exit.enabled`). `SetEnabled(false)` is never called today,
+  so the two readings are indistinguishable in production.
+- **Parity test (test 9) not written.** The other eight scenario tests live
+  in `test/test_structural_exit.cpp` against a `MockBroker`. Cross-path
+  parity needs the `PaperTrader` fixtures.
+- **Config fixtures not added as JSON files.** The four `structural_exit`
+  shapes from step 7 are covered by the resolver/build tests rather than
+  standalone fixtures.
+- **Restart clock.** On a venue restart with an existing position,
+  `entry_ts_ms` latches to the restart time, so `min_holdtime_ms` and
+  `TimeStop` measure from process start (see `ExitState.entry_ts_ms`).
+- **Trade identity hardening (not in this plan).** The guard remembers the
+  broker's reported fill time (`IBroker::GetPositionEntryTime`) and resets
+  `ExitState` plus the rule latches when it changes, so a close-and-reopen
+  that lands between two `Update` calls cannot inherit the previous trade's
+  `mfe` (which would fire `MfeGiveback` as a hidden stop on a trade that
+  never moved). A broker that answers `0` is unaffected: there the reset
+  still requires `PositionManager` to observe a flat tick.
+
 ## References
 
-- `include/position_manager.hpp:79-83` — `enabled_` semantics; guard
-  stays inside the gate.
+- `include/position_manager.hpp` — `enabled_` semantics; the guard runs
+  before the `enabled_` early return (see deviations).
 - `include/ibroker.hpp:52-62, 74` — `GetEquityAt`,
   `GetEquityAtBidAsk`, `ClosePartial` semantics.
 - `include/prop_equity.hpp:52-63, 80-82` — canonical flatten via

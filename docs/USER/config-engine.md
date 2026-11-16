@@ -151,6 +151,72 @@ explicitly.
 One component owns trade management (`PositionManager`). The paper trader's own
 ladder is disabled in the same step, so a stop never moves twice.
 
+### Structural exits
+
+Optional fourth block. A third, parallel close path on an open position —
+alongside the venue's stop/target and the R-multiple ladder above. It closes when
+the market structure that justified the entry disappears, not when a price level
+is reached. The fixed stop is still the floor: a structural close is an early
+way out, never a replacement for the stop, and whoever closes first wins.
+
+```json
+"structural_exit": {
+  "enabled": true,
+  "min_holdtime_ms": 180000,
+  "rules": [
+    {"name": "MfeGiveback",    "enabled": true,  "giveback_r": 1.0},
+    {"name": "TimeStop",       "enabled": true,  "max_hold_ms": 3600000},
+    {"name": "ImbalanceBreak", "enabled": false, "ratio": 2.0, "min_levels": 2}
+  ]
+}
+```
+
+| key | required | meaning |
+| --- | -------- | ------- |
+| `enabled` | no (default `false`) | master switch; absent or false leaves every existing config unchanged |
+| `min_holdtime_ms` | **yes when enabled** | minimum age of the position, in ms, before any rule may close it; must be `> 0` |
+| `rules` | **yes when enabled** | at least one entry with a non-empty `name` that is not disabled |
+
+| rule | evaluated on | params | closes when |
+| ---- | ------------ | ------ | ----------- |
+| `MfeGiveback` | trade | `giveback_r` | the trade gives back that many R of its best favourable excursion, after having actually earned it |
+| `TimeStop` | trade | `max_hold_ms` | the position is older than this |
+| `ImbalanceBreak` | book | `ratio`, `min_levels` | the top-`min_levels` depth ratio in the position's favour reached `ratio` and has since fallen below it |
+| `DeltaFlip` | trade | `min_delta` | the live bar's cumulative delta has flipped against the position by at least this many base-asset units |
+| `SpoofPull` | book | `drop_pct`, `min_qty` | a level of at least `min_qty` on the position's side lost `drop_pct` of its size, or disappeared |
+| `DeltaDivergence` | trade | `lookback` | price and cumulative delta have diverged against the position over the window |
+
+Book rules run on book frames; trade rules run on prints, ahead of the
+break-even/trailing/scale-out ladder. `min_holdtime_ms` is enforced once,
+centrally — no rule, including a book rule, can fire before it has elapsed.
+
+The recorded exit reason names the rule: `struct_MfeGiveback`,
+`struct_TimeStop`, `struct_ImbalanceBreak`, `struct_DeltaFlip`,
+`struct_SpoofPull`, `struct_DeltaDivergence`. A close from this block is
+therefore distinguishable from `stop_loss`, `take_profit`, `trailing`,
+`scale_out` and `prop_guard` in the trade log.
+
+Validation is split the same way the trigger pipeline is. At load: `enabled`
+without a positive `min_holdtime_ms`, an empty `rules`, or an all-disabled
+`rules` list aborts. At build: an unknown rule `name`, or a missing/mistyped
+param on an *enabled* rule, aborts. A disabled rule's params are never read, so
+a typo inside one cannot fail a run.
+
+A rule param may be a grid node, so a sweep can walk `giveback_r` or
+`max_hold_ms` like any other number; the scanner prunes a block with
+`enabled: false` like any other disabled component.
+
+Only `Close` is implemented. The close flattens through the same
+`ClosePartial(1.0)` path the prop guard uses; a `Reduce` or `TightenStop` from a
+future rule is logged and ignored, not silently applied.
+
+The guard's trade clock comes from the broker: `IBroker::GetPositionEntryTime()`
+reports when the open position was filled. `PaperTrader` answers it, so a
+backtest and a paper run measure from the real entry even across a restart. A
+broker that answers 0 (unknown) falls back to the first tick the guard sees, and
+`min_holdtime_ms` and `TimeStop` then measure from process start — which delays
+an exit, never rushes one.
+
 ## `prop`
 
 Optional. Funded-account survival rules, enforced independently of `sl_pct`:

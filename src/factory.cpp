@@ -655,5 +655,11 @@ EngineInstance StrategyFactory::Build(const AppConfig &cfg, bool live_mode,
       cfg.tm_config.scale_out_trigger_pct * inv_sl,
       cfg.tm_config.scale_out_fraction);
 
+  // structural exits: a third close path, separate state and separate master
+  // switch. ConfigureStructuralExit is a no-op when the block is absent (the
+  // common case), so the existing paper/backtest output is byte-for-byte
+  // identical.
+  inst.pos_manager->ConfigureStructuralExit(cfg.tm_config.structural_exit);
+
   return inst;
 }

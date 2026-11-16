@@ -130,7 +130,15 @@ Every block below is optional unless marked required.
   "trade_management": {
     "break_even": {"trigger_r": 1.0, "target_r": 0.2, "enabled": true},
     "trailing":   {"enabled": true, "trigger_r": 1.5, "distance_r": 0.5},
-    "scale_out":  {"enabled": false, "trigger_r": 1.0, "fraction": 0.5}
+    "scale_out":  {"enabled": false, "trigger_r": 1.0, "fraction": 0.5},
+    "structural_exit": {
+      "enabled": false,
+      "min_holdtime_ms": 180000,
+      "rules": [
+        {"name": "MfeGiveback", "giveback_r": 1.0},
+        {"name": "TimeStop", "max_hold_ms": 3600000}
+      ]
+    }
   },
 
   "triggers": [
@@ -189,6 +197,8 @@ Checked when the config is loaded.
 | `break_even.target_pct` | [0.0, 0.1) |
 | `trailing.distance_pct` | (0.0, 0.1), and < `trigger_pct` when trailing is enabled |
 | `scale_out.fraction` | [0.1, 0.9] |
+| `structural_exit.min_holdtime_ms` | > 0 when `structural_exit.enabled` is true |
+| `structural_exit.rules` | at least one non-disabled rule when enabled |
 | `startup_probe.min_l2_depth` | ≤ the engine's maximum book depth |
 | `startup_probe.timeout_ms` | ≥ `min_duration_ms`; both ≥ 0 |
 | `prop.*_drawdown_pct` | (0.0, 1.0] when prop is enabled |

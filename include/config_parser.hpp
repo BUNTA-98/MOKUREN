@@ -11,6 +11,7 @@
 
 #include "prop_guard.hpp"
 #include "startup_gate.hpp"
+#include "trade_management.hpp"
 #include "venue_spec.hpp"
 
 using json = nlohmann::json;
@@ -69,6 +70,14 @@ struct TradeManagementConfig {
   bool enable_scale_out = false;
   double scale_out_trigger_pct = 0.006;
   double scale_out_fraction = 0.5;
+
+  // Optional structural-exit block. Absent = enabled=false (feature off,
+  // existing configs unaffected). When enabled, min_holdtime_ms is required
+  // and at least one rule must be non-disabled -- both enforced at load by
+  // mokuren::ResolveStructuralExitConfig. Per-rule params are stored verbatim
+  // and interpreted at BUILD time in structural_exit.hpp, matching the
+  // trigger pipeline.
+  mokuren::StructuralExitConfig structural_exit;
 };
 
 // main application config
