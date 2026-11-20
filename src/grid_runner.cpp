@@ -2,6 +2,7 @@
 
 #include "config_parser.hpp"
 #include "data_manager.hpp"
+#include "dataset_resolver.hpp"
 #include "factory.hpp"
 #include "l2_feed.hpp"
 #include "logger.hpp"
@@ -120,11 +121,13 @@ void GridRunner::Run(const std::string &config_path,
     // actually selected. the fallback keeps CLI/test callers working.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        // no silent "data" fallback: that default is what turned a config
-        // pointing at a .mkn the operator picked into a scan of the directory
-        // "data", and the failure read as "no trades found".
-        const auto env = base_json.value("environment", nlohmann::json::object());
-        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+        // One owner: DatasetFromJson applies environment.dataset's table
+        // default exactly as AppConfig::Load does. Reading the raw key here
+        // meant a profile the editor saved (a diff, so a key at its default is
+        // omitted) answered "no dataset configured" while Load resolved
+        // "data/" for the very same file. The explicit path still wins -- that
+        // is the one the operator picked.
+        active_dataset = mokuren::DatasetFromJson(base_json);
     }
     if (active_dataset.empty()) {
         LOG_ERROR("grid search: no dataset configured");

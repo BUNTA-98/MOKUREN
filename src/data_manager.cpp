@@ -110,7 +110,93 @@ bool IsBuyerMakerFromSideToken(const char *token) {
            s == "short" || s == "-1" || s == "false";
 }
 
+// Does this directory hold anything a loader reads? The caches are matched by
+// PREFIX on purpose: a version bump (trades_cache_v2 -> v3) must not make a
+// dataset the loader still opens invisible to the resolver, or the root scan
+// would skip a day that is perfectly readable.
+bool LooksLikeDatasetDir(const fs::path &dir) {
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return false;
+    if (fs::exists(dir / "trades.csv", ec)) return true;
+    if (fs::exists(dir / "L2.csv", ec)) return true;
+    for (const auto &entry : fs::directory_iterator(dir, ec)) {
+        if (ec) return false;
+        std::error_code file_ec;
+        if (!entry.is_regular_file(file_ec)) continue;
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("trades_cache", 0) == 0) return true;
+        if (name.rfind("L2_cache", 0) == 0) return true;
+    }
+    return false;
+}
+
 } // namespace
+
+std::string DataManager::ResolveDatasetRoot(const std::string &dataset_path) {
+    // a recording is already the leaf; nothing to resolve.
+    if (mokuren::mdf::IsSessionFile(dataset_path)) return dataset_path;
+
+    std::error_code ec;
+    const fs::path given(dataset_path);
+    if (!fs::exists(given, ec)) {
+        // let the loader word the error. an empty value means the config named
+        // nothing; a bogus one means a typo. neither is this function's message
+        // to write, and inventing one here would replace "neither a .mkn session
+        // file nor an existing path" with something vaguer.
+        return dataset_path;
+    }
+
+    // a directory that already holds a loader's files IS a dataset. checked
+    // before the scan so a legitimate trade-only directory (no trades.csv, an
+    // L2 cache and nothing else) is not searched for a "better" dataset deeper
+    // down -- a dataset is a leaf, not a root.
+    if (LooksLikeDatasetDir(given)) return given.string();
+
+    if (!fs::is_directory(given, ec)) {
+        // an existing regular file that is not a .mkn: hand it back unchanged
+        // and let the loader reject it by name.
+        return dataset_path;
+    }
+
+    // a ROOT. pick the newest dataset beneath it.
+    //
+    // "newest" is by PATH, not by write time. the layout puts the date in the
+    // name (bybit-BTCUSDT-2026-11-07.mkn, 2026/2026-06), so lexical order is
+    // chronological -- and mtime is rewritten by a copy, a checkout or an rsync,
+    // which would pick a random day after a clone. the iterator's order is
+    // unspecified, which is why this cannot simply keep the last entry it sees.
+    std::string best;
+    fs::recursive_directory_iterator it(given, ec);
+    const fs::recursive_directory_iterator end;
+    if (ec) return dataset_path;
+
+    while (it != end) {
+        const fs::directory_entry &entry = *it;
+        std::error_code entry_ec;
+
+        bool candidate = false;
+        if (entry.is_regular_file(entry_ec)) {
+            candidate = entry.path().extension() == ".mkn";
+        } else if (entry.is_directory(entry_ec) &&
+                   LooksLikeDatasetDir(entry.path())) {
+            candidate = true;
+            // no need to look inside a dataset for more datasets.
+            it.disable_recursion_pending();
+        }
+        if (candidate) {
+            const std::string path = entry.path().string();
+            if (path > best) best = path;
+        }
+
+        it.increment(ec);
+        if (ec) break;
+    }
+
+    // nothing beneath it: return the root unchanged so the loaders answer
+    // exactly as they did before (an empty channel) rather than inventing an
+    // error for a directory that may simply not be populated yet.
+    return best.empty() ? dataset_path : best;
+}
 
 bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::string& bin_path) {
     std::ifstream csv_file(csv_path);
@@ -198,26 +284,33 @@ bool DataManager::ConvertL2CsvToBin(const std::string& csv_path, const std::stri
 }
 
 std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_path) {
+    // resolve FIRST: the argument may be the data root, and the recording check
+    // below only asks the right question about a concrete file (15.9).
+    const std::string resolved = ResolveDatasetRoot(dataset_path);
+
     // a recorded session replaces the whole CSV/cache pipeline: one file, both
     // channels, metadata that says what it is. checked first so a dataset path
     // pointing at a recording is never probed for trades.csv.
-    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+    if (mokuren::mdf::IsSessionFile(resolved)) {
         // Trades only. ReadSessionFile decodes both channels, and a day's book
         // is ~2 GB of L2Snapshot (688 B per frame) that this function would
         // destroy on return. The mask keeps the decode trades-only, which is
         // what makes LoadAllTrades usable on a week.
         mokuren::mdf::SessionData session = mokuren::mdf::ReadSessionFile(
-            dataset_path, mokuren::mdf::Channel::Trades);
-        ReportSessionIssues(dataset_path, session);
-        RequireCleanSession(dataset_path, session);
+            resolved, mokuren::mdf::Channel::Trades);
+        ReportSessionIssues(resolved, session);
+        RequireCleanSession(resolved, session);
         return std::move(session.trades);
     }
 
-    const fs::path path = dataset_path;
+    const fs::path path = resolved;
     // a typo, a wrong extension, or a wrong CWD used to fall through to an
     // empty vector and surface as "no trades found in dataset". name the
     // problem instead of letting the caller guess.
     if (!fs::exists(path)) {
+        // name the ORIGINAL argument, not the resolved one: "data/2026/x" is
+        // not what the operator typed, and a message about a path they never
+        // wrote sends them looking in the wrong place.
         throw std::runtime_error(
             "dataset '" + dataset_path + "' is neither a .mkn session file nor "
             "an existing path");
@@ -331,23 +424,25 @@ std::vector<TradeEvent> DataManager::LoadAllTrades(const std::string &dataset_pa
 
 
 std::vector<L2Snapshot> DataManager::LoadAllL2Snapshots(const std::string &dataset_path) {
+    const std::string resolved = ResolveDatasetRoot(dataset_path);
+
     // same branch as LoadAllTrades: a recording is one file holding both
     // channels, so neither loader looks for a side cache beside it. reading it
     // twice per run is the price of not holding a decoded session in memory
     // across a grid search, and it is a linear pass over the same bytes the
     // legacy .bin cache would read.
-    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+    if (mokuren::mdf::IsSessionFile(resolved)) {
         // Book only, for the same reason as LoadAllTrades: a caller that only
         // wants trades must not pay for the book, and one that only wants the
         // book must not pay for the trades.
         mokuren::mdf::SessionData session = mokuren::mdf::ReadSessionFile(
-            dataset_path, mokuren::mdf::Channel::L2);
-        ReportSessionIssues(dataset_path, session);
-        RequireCleanSession(dataset_path, session);
+            resolved, mokuren::mdf::Channel::L2);
+        ReportSessionIssues(resolved, session);
+        RequireCleanSession(resolved, session);
         return std::move(session.l2);
     }
 
-    fs::path path = dataset_path;
+    fs::path path = resolved;
     // bumped to v3 together with the L2Snapshot layout change (dropping the
     // pragma pack widened a record from 200 to 688 bytes). a stale v2 cache
     // must never be read at the new stride.
@@ -384,11 +479,13 @@ DataManager::LoadedDataset DataManager::LoadAll(const std::string &dataset_path)
     // of the same bytes. the directory layout keeps its two independent loads:
     // trades and L2 are separate files there, so "one pass" would only be a
     // fiction.
-    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+    const std::string resolved = ResolveDatasetRoot(dataset_path);
+
+    if (mokuren::mdf::IsSessionFile(resolved)) {
         mokuren::mdf::SessionData session =
-            mokuren::mdf::ReadSessionFile(dataset_path);
-        ReportSessionIssues(dataset_path, session);
-        RequireCleanSession(dataset_path, session);
+            mokuren::mdf::ReadSessionFile(resolved);
+        ReportSessionIssues(resolved, session);
+        RequireCleanSession(resolved, session);
 
         LoadedDataset loaded;
         loaded.trades = std::move(session.trades);
@@ -396,18 +493,26 @@ DataManager::LoadedDataset DataManager::LoadAll(const std::string &dataset_path)
         return loaded;
     }
 
+    // hand the two loaders the RESOLVED path: it is already a dataset, so both
+    // short-circuit the root scan instead of walking the tree twice.
     LoadedDataset loaded;
-    loaded.trades = LoadAllTrades(dataset_path);
-    loaded.l2 = LoadAllL2Snapshots(dataset_path);
+    loaded.trades = LoadAllTrades(resolved);
+    loaded.l2 = LoadAllL2Snapshots(resolved);
     return loaded;
 }
 
 DataManager::LoadedDataset DataManager::LoadAllRange(const std::string &dataset_path, int64_t start_ns, int64_t end_ns) {
-    if (mokuren::mdf::IsSessionFile(dataset_path)) {
+    // resolve BEFORE the recording check. a root that resolves to a .mkn has
+    // to reach ReadSessionFileRange, or it falls through to the directory
+    // branch below -- which decodes the whole file and trims in memory, the
+    // exact cost this function exists to avoid.
+    const std::string resolved = ResolveDatasetRoot(dataset_path);
+
+    if (mokuren::mdf::IsSessionFile(resolved)) {
         mokuren::mdf::SessionData session =
-            mokuren::mdf::ReadSessionFileRange(dataset_path, start_ns, end_ns);
-        ReportSessionIssues(dataset_path, session);
-        RequireCleanSession(dataset_path, session);
+            mokuren::mdf::ReadSessionFileRange(resolved, start_ns, end_ns);
+        ReportSessionIssues(resolved, session);
+        RequireCleanSession(resolved, session);
 
         LoadedDataset loaded;
         loaded.trades = std::move(session.trades);
@@ -418,7 +523,7 @@ DataManager::LoadedDataset DataManager::LoadAllRange(const std::string &dataset_
     // Directory layout: no block index, so the trim happens after the load.
     // SliceTrades/SliceL2 are exactly this operation, and they are only correct
     // on an ascending vector -- which both loaders guarantee.
-    LoadedDataset loaded = LoadAll(dataset_path);
+    LoadedDataset loaded = LoadAll(resolved);
     const int64_t start_ms = start_ns / 1'000'000;
     const int64_t end_ms = end_ns / 1'000'000;
     loaded.trades = SliceTrades(loaded.trades, start_ms, end_ms);
@@ -427,7 +532,10 @@ DataManager::LoadedDataset DataManager::LoadAllRange(const std::string &dataset_
 }
 
 bool DataManager::IsSessionRecording(const std::string &dataset_path) {
-    return mokuren::mdf::IsSessionFile(dataset_path);
+    // resolves: the runners branch on this to choose a streaming BOOK source,
+    // and answering "false" for a root that points at a recording puts a week
+    // of L2Snapshot back in a vector -- the freeze streaming exists to avoid.
+    return mokuren::mdf::IsSessionFile(ResolveDatasetRoot(dataset_path));
 }
 
 bool DataManager::ValidateDataAlignment(const std::vector<TradeEvent>& trades, const std::vector<L2Snapshot>& l2, std::function<void(const std::string&)> on_status) {

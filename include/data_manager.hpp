@@ -18,6 +18,14 @@ public:
     // metadata, so both loaders read the same file path and neither builds a
     // side cache for it.
     //
+    // It may also be the data ROOT -- the "data/" that environment.dataset
+    // defaults to, holding one directory per symbol per day -- in which case
+    // it is resolved to the newest dataset beneath it (ResolveDatasetRoot).
+    // That resolution has to happen before the recording check, not after: a
+    // root that resolves to a .mkn must reach the block-indexed path, or
+    // LoadAllRange loads the whole file and slices in memory, which is the
+    // freeze the range read exists to avoid.
+    //
     // Both THROW std::runtime_error when a recording decoded with an error, a
     // block was unusable, or records had to be dropped. A recording with
     // skipped book blocks is not a shorter dataset, it is a book-blind one --
@@ -69,4 +77,14 @@ public:
 private:
     // internal fast dyn l2 csv to bin parser
     static bool ConvertL2CsvToBin(const std::string& csv_path, const std::string& bin_path);
+
+    // Resolve a dataset argument to the one directory or recording it names.
+    //
+    // environment.dataset defaults to "data/", which CONTAINS datasets rather
+    // than being one. The old loaders answered that root by looking for
+    // "data/trades.csv", finding nothing, and returning an empty channel --
+    // legal, because a trade-only recording returns empty L2 too -- so the run
+    // was a silent no-op instead of an error (config.md 15.9). A path that is
+    // already a dataset (or a recording, or nonexistent) is returned unchanged.
+    static std::string ResolveDatasetRoot(const std::string& dataset_path);
 };

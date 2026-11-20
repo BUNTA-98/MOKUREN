@@ -141,9 +141,30 @@ std::unique_ptr<ITrigger> MakeTrigger(const std::string& name, const json& p) {
         ParamNumber(p, "min_wall_qty", 30.0),
         ParamNumber(p, "drop_threshold", 0.9));
   }
+  if (name == "LiveImbalance") {
+    // The tick-side reporter. It reads the SAME three parameters as
+    // StackedImbalance on purpose: both scan through imbalance::ScanFootprint,
+    // and a key one of them read while the other did not would make two
+    // configs that look identical behave differently. The alternate spellings
+    // are accepted for the same reason the close-time branch accepts them --
+    // older configs and their grid nodes say `ratio` / `levels`.
+    auto num_any = [&p](std::initializer_list<const char*> keys, double fb) {
+      for (const char* k : keys) {
+        if (p.contains(k)) return ParamNumber(p, k, fb);
+      }
+      return fb;
+    };
+    const double ratio = num_any({"ratio_threshold", "ratio"}, 1.5);
+    const int stacked =
+        static_cast<int>(num_any({"min_stacked_count", "levels"}, 2.0));
+    const double min_qty = num_any({"min_level_qty", "min_qty"}, 0.0001);
+    // no candle-agreement argument: the body it would check is unfinished
+    // mid-candle, which is the entire reason this trigger exists.
+    return std::make_unique<LiveImbalanceTrigger>(ratio, stacked, min_qty);
+  }
   throw std::runtime_error("factory: unknown trigger '" + name +
                            "' (supported: DeltaAbsorption, StackedImbalance, "
-                           "SpoofHunter)");
+                           "SpoofHunter, LiveImbalance)");
 }
 
 // "BTCUSDT" -> "BTC-USDT". idempotent if already hyphenated. only the two quote

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <string>
 #include "config_parser.hpp"
 
 using json = nlohmann::json;
@@ -32,6 +33,7 @@ TEST_CASE("Config Parser Basics", "[config]") {
         // the first slash -- which is exactly how this test failed.
         json custom_json = R"({
             "exchange": "hyperliquid",
+            "initial_balance": 5000.0,
             "environment": {
                 "interval_ms": 60000,
                 "macro_interval_ms": 900000,
@@ -43,8 +45,7 @@ TEST_CASE("Config Parser Basics", "[config]") {
             "risk": {
                 "sl_pct": 0.01,
                 "tp_r": 2.0,
-                "risk_per_trade_pct": 0.01,
-                "max_daily_loss": 500.0
+                "risk_per_trade_pct": 0.01
             },
             "trade_management": {
                 "break_even": {"trigger_r": 1.0, "target_r": 0.2},
@@ -56,21 +57,37 @@ TEST_CASE("Config Parser Basics", "[config]") {
         AppConfig cfg = AppConfig::Load(custom_json);
         
         REQUIRE(cfg.exchange == "hyperliquid");
+        // required with no default (D7): the fixture has to name it, and the
+        // number it names is the one that reaches the struct.
+        REQUIRE(cfg.initial_balance == 5000.0);
         REQUIRE(cfg.tick_size == 0.5);
         REQUIRE(cfg.sl_pct == 0.01);
-        // this fixture deliberately still carries risk.max_daily_loss, a key
-        // Load no longer reads. reaching this assertion at all is the
-        // compatibility guarantee made when that ladder was deleted: an old
-        // config loads unchanged, and the key is ignored rather than rejected.
-        //
-        // what the account's limit is now lives under "prop", and this fixture
-        // has no such block -- so the guard is inert here. it is NOT silently
-        // armed off the dead dollar amount, which is the failure the presence
-        // rule below is written to rule out.
+        // the account's limit lives under "prop" now. this fixture carries no
+        // such block, so the guard is inert -- not silently armed off a dollar
+        // amount nothing reads any more. the presence rules have their own
+        // case below.
         REQUIRE_FALSE(cfg.prop.enabled);
         // tp_r is a multiple of sl_pct (1R), so 2R of a 1% stop is 2%.
         REQUIRE(cfg.tp_pct == 0.02);
         REQUIRE(cfg.tm_config.be_trigger_pct == 0.01);
+
+        // risk.max_daily_loss is a removed spelling (config.md 10.13, 15.2
+        // item 7). this fixture used to carry it and load "unchanged", which
+        // was the compatibility promise P1b deleted on purpose: a second,
+        // dollar-anchored ladder beside prop.max_daily_drawdown_pct is the
+        // two-owners bug, so the key must stop the load instead of being
+        // ignored. asserted here because this is the fixture old profiles were
+        // copied from.
+        json stale = custom_json;
+        stale["risk"]["max_daily_loss"] = 500.0;
+        try {
+            (void)AppConfig::Load(stale);
+            FAIL("Load() accepted the removed key risk.max_daily_loss");
+        } catch (const std::runtime_error& e) {
+            const std::string msg = e.what();
+            REQUIRE(msg.find("unknown key") != std::string::npos);
+            REQUIRE(msg.find("risk.max_daily_loss") != std::string::npos);
+        }
     }
 }
 
@@ -163,7 +180,7 @@ TEST_CASE("Grid Scanner Logic", "[grid]") {
     }
 }
 
-TEST_CASE("a prop block arms the account limits by its presence", "[config][prop]") {
+TEST_CASE("a prop block needs an explicit enabled", "[config][prop]") {
     // every key that changes what a run does is still required; only the prop
     // block varies below. hyperliquid with require_venue_credentials=false, so
     // the fixture needs no api key and no venue block.
@@ -201,12 +218,14 @@ TEST_CASE("a prop block arms the account limits by its presence", "[config][prop
         REQUIRE_FALSE(cfg.prop.enabled);
     }
 
-    SECTION("presence alone arms it and its values win") {
-        // the semantics this pins: a block that omitted "enabled" used to parse
-        // as OFF, so a config that looked like it configured the firm's limits
-        // enforced nothing and reported nothing. presence is now the opt-in,
-        // and these are the numbers the guard actually measures against.
+    SECTION("an explicit true arms it and its values win") {
+        // the semantics this pins: an omitted "enabled" is a LOAD ERROR now
+        // (config.md 10.1a), covered by the case below -- not a silent OFF,
+        // which is what let a block that looked like it configured the firm's
+        // limits enforce nothing. arming is explicit, and these are the
+        // numbers the guard actually measures against.
         const AppConfig cfg = load_with_prop(json{
+            {"enabled", true},
             {"max_daily_drawdown_pct", 0.03},
             {"max_total_drawdown_pct", 0.08},
             {"warn_fraction", 0.5},
@@ -221,6 +240,21 @@ TEST_CASE("a prop block arms the account limits by its presence", "[config][prop
         REQUIRE_FALSE(cfg.prop.flatten_on_breach);
     }
 
+    SECTION("omitting enabled is a load error, not a silent off") {
+        // the failure this rules out: a profile whose author wrote the block
+        // to arm it loading disarmed, enforcing nothing and reporting nothing.
+        // falling back to the table's false would do exactly that, so the
+        // loader refuses the block instead (config.md 10.1a, 15.4 item 18).
+        try {
+            (void)load_with_prop(json{{"max_daily_drawdown_pct", 0.03}});
+            FAIL("Load() accepted a 'prop' block with no 'enabled'");
+        } catch (const std::runtime_error& e) {
+            const std::string msg = e.what();
+            REQUIRE(msg.find("prop.enabled") != std::string::npos);
+            REQUIRE(msg.find("missing") != std::string::npos);
+        }
+    }
+
     SECTION("an explicit false still turns it off") {
         // the one escape hatch left. a run that wants the block documented but
         // inactive (a template, a shared config) says so here.
@@ -230,12 +264,19 @@ TEST_CASE("a prop block arms the account limits by its presence", "[config][prop
 
     SECTION("arming the guard is what makes its limits checked") {
         // 5.0 is 500%, not a fraction. this only throws because the block armed
-        // the guard -- which is the point of the presence rule: a typo in a
+        // the guard -- which is the point of arming explicitly: a typo in a
         // block that looks configured can no longer hide behind a guard that
         // never ran.
+        //
+        // std::invalid_argument, not std::runtime_error: the bounds live in
+        // Validate(), which throws that type for every out-of-range value.
+        // asserting runtime_error here passed for the WRONG reason before --
+        // the missing-enabled error is a runtime_error, so the range check
+        // below was never reached.
         REQUIRE_THROWS_AS(
-            load_with_prop(json{{"max_daily_drawdown_pct", 5.0}}),
-            std::runtime_error);
+            load_with_prop(json{{"enabled", true},
+                                {"max_daily_drawdown_pct", 5.0}}),
+            std::invalid_argument);
         // the same number is tolerated when the guard is explicitly off, so a
         // config carrying the block for the other fields stays loadable.
         const AppConfig off =

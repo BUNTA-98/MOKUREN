@@ -1,4 +1,5 @@
 #pragma once
+#include "dataset_resolver.hpp"
 #include "ui_pages.hpp"
 #include "ui_theme.hpp"
 #include "engine_state.hpp"
@@ -515,19 +516,15 @@ public:
                         return;
                     }
                     json j = json::parse(file);
-                    // one key, one owner: environment.dataset (filepath as the
-                    // legacy alias), identical to grid_runner.cpp:Run() and
-                    // AppConfig::Load. the old recursive match took the last
-                    // hit in map order across the whole tree, so a config
-                    // carrying both keys handed RunGridSearch a different
-                    // dataset than Run() would have resolved for itself.
-                    if (j.contains("environment") && j["environment"].is_object()) {
-                        const auto& env = j["environment"];
-                        if (env.contains("dataset") && env["dataset"].is_string())
-                            data_path = env["dataset"].get<std::string>();
-                        else if (env.contains("filepath") && env["filepath"].is_string())
-                            data_path = env["filepath"].get<std::string>();
-                    }
+                    // one owner, shared with every driver and with
+                    // AppConfig::Load: DatasetFromJson applies
+                    // environment.dataset's table default, and "filepath" is a
+                    // removed spelling (config.md 10.13) that
+                    // RejectUnknownKeys stops at load. Reading the raw key here
+                    // made a profile the editor saved -- a diff, so a default
+                    // is omitted -- scan a different dataset than the runner
+                    // resolved for the very same file.
+                    data_path = mokuren::DatasetFromJson(j);
                 } catch (const std::exception& e) {
                     bg_state->SetStatus(std::string("ERR: bad config ") + e.what());
                     bg_state->is_running = false;

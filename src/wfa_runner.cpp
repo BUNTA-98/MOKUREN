@@ -2,6 +2,7 @@
 
 #include "config_parser.hpp"
 #include "data_manager.hpp"
+#include "dataset_resolver.hpp"
 #include "factory.hpp"
 #include "l2_feed.hpp"
 #include "logger.hpp"
@@ -54,12 +55,10 @@ void WfaRunner::RunWFA(const std::string &config_path,
     // actually selected. the fallback keeps CLI/test callers working.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        // No silent "data" fallback: that default is what turned a config
-        // pointing at a .mkn the operator picked into a run over the directory
-        // "data", and the failure read as "no trades found". Matches
-        // grid_runner and ReplayManager::Run, both of which dropped it.
-        const auto env = base_json.value("environment", nlohmann::json::object());
-        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+        // Same rule as grid_runner, same owner: the table default counts, so a
+        // sparse profile resolves identically here and in Load. The explicit
+        // path still wins -- that is the one the operator picked.
+        active_dataset = mokuren::DatasetFromJson(base_json);
     }
     if (active_dataset.empty()) {
         LOG_ERROR("wfa: no dataset configured");
@@ -425,11 +424,10 @@ ReplayResult WfaRunner::ReplayWFA(const std::vector<WFAOOSConfig>& wfa_configs,
     // fall back to the first window's config when it did not.
     std::string active_dataset = dataset_path;
     if (active_dataset.empty()) {
-        // same rule as RunWFA: dataset is canonical, filepath is the legacy
-        // alias, and there is no silent "data" default.
-        const auto env =
-            wfa_configs[0].config.value("environment", nlohmann::json::object());
-        active_dataset = env.value("dataset", env.value("filepath", std::string{}));
+        // same rule and same owner as RunWFA. the stored config is the one the
+        // sweep ran, so resolving it through the table gives back the path the
+        // in-sample run used.
+        active_dataset = mokuren::DatasetFromJson(wfa_configs[0].config);
     }
     if (active_dataset.empty()) {
         LOG_ERROR("replay wfa: no dataset configured");

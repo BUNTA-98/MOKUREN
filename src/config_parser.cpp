@@ -1,4 +1,5 @@
 #include "config_parser.hpp"
+#include "config_schema.hpp"
 #include "trade_management.hpp"
 
 #include <cctype>
@@ -7,6 +8,13 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <sstream>
+
+// This file is at global scope (it fully qualifies mokuren::RiskPcts,
+// mokuren::venue::ParseEnv, ... and only AppConfig/GridScanner are re-exported
+// by config_parser.hpp). So `cfg::` alone has nothing to bind to -- the schema
+// namespace is mokuren::cfg. One alias here beats spelling mokuren::cfg:: at
+// every call site.
+namespace cfg = mokuren::cfg;
 
 // ============================================================================
 // GridScanner
@@ -143,39 +151,11 @@ std::vector<RunConfig> GridScanner::GenerateGrid(const json& root) {
 
 namespace {
 
-// true when j["val"] is a number or a numeric string. hand-written configs
-// carry "val": "0.5"; leaving that as an object meant the live factory saw a
-// grid node as a param object and every numeric reader fell back to default.
-bool HasScalarVal(const json& j) {
-  if (!j.contains("val")) return false;
-  const auto& v = j["val"];
-  if (v.is_number()) return true;
-  if (!v.is_string()) return false;
-  try {
-    const std::string s = v.get<std::string>();
-    size_t used = 0;
-    std::stod(s, &used);
-    while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
-      ++used;
-    }
-    return used == s.size();
-  } catch (...) {
-    return false;
-  }
-}
-
-// a grid node is an object that carries min/max/step plus a scalar "val".
-bool IsGridNode(const json& j) {
-  return j.is_object() &&
-         j.contains("min") && j["min"].is_number() &&
-         j.contains("max") && j["max"].is_number() &&
-         j.contains("step") && j["step"].is_number() &&
-         HasScalarVal(j);
-}
-
 void FlattenGridsRec(json& j) {
   if (j.is_object()) {
-    if (IsGridNode(j)) {
+    // one "is this a sweep" predicate, the table's (config.md D5/9): shape
+    // only, no Field, so component-array grids still flatten.
+    if (cfg::IsGridNode(j)) {
       // collapse the whole node into its scalar "val". keep the original
       // type: SafeNumber and the factory both parse numeric strings.
       j = j["val"];
@@ -198,9 +178,25 @@ void FlattenGrids(json& j) {
 }
 
 namespace {
-// defined with the other config readers further down; declared here because
-// Validate rejects an all-disabled pipeline and needs it first.
-bool SafeBool(const json& parent, const std::string& key, bool fallback);
+
+// A component is disabled when any of the three spellings says so. They live
+// inside component arrays (triggers, filters, risk.modules), which the schema
+// deliberately does not model, so the three names travel with the data and are
+// honoured here rather than in the table.
+bool ComponentDisabled(const json& params) {
+  for (const char* key : {"active", "enabled", "isActive"}) {
+    if (!params.contains(key)) continue;
+    const auto& v = params[key];
+    if (v.is_boolean() && !v.get<bool>()) return true;
+    if (v.is_string() && (v.get<std::string>() == "false" ||
+                          v.get<std::string>() == "0")) {
+      return true;
+    }
+    if (v.is_number() && v.get<double>() == 0.0) return true;
+  }
+  return false;
+}
+
 } // namespace
 
 // ============================================================================
@@ -442,6 +438,29 @@ void AppConfig::Validate(bool require_venue_credentials) const {
          std::to_string(MAX_L2_DEPTH) + ")");
   }
 
+  // --- prop ---
+  // bounds are checked only when the guard is armed: a disabled block must not
+  // abort a run for a limit that will never be evaluated.
+  if (prop.enabled) {
+    auto bad_pct = [](double v) { return !(v > 0.0) || v > 1.0; };
+    if (bad_pct(prop.max_daily_drawdown_pct)) {
+      fail("prop.max_daily_drawdown_pct must be a fraction in (0, 1], e.g. "
+           "0.04 (got " + std::to_string(prop.max_daily_drawdown_pct) + ")");
+    }
+    if (bad_pct(prop.max_total_drawdown_pct)) {
+      fail("prop.max_total_drawdown_pct must be a fraction in (0, 1], e.g. "
+           "0.06 (got " + std::to_string(prop.max_total_drawdown_pct) + ")");
+    }
+    if (!(prop.warn_fraction > 0.0) || prop.warn_fraction >= 1.0) {
+      fail("prop.warn_fraction must be in (0, 1), e.g. 0.8 (got " +
+           std::to_string(prop.warn_fraction) + ")");
+    }
+    if (prop.daily_reset_hour_utc < 0 || prop.daily_reset_hour_utc > 23) {
+      fail("prop.daily_reset_hour_utc must be 0..23 (got " +
+           std::to_string(prop.daily_reset_hour_utc) + ")");
+    }
+  }
+
   // --- components ---
   if (triggers.empty()) {
     fail("triggers must not be empty (at least one trigger is required)");
@@ -454,10 +473,7 @@ void AppConfig::Validate(bool require_venue_credentials) const {
     // a missing flag means enabled, matching GridScanner::FindParams, which
     // prunes on all three. reading only "active" let {"enabled": false} pass
     // validation and then vanish from the sweep.
-    const bool disabled = !SafeBool(t.params, "active", true) ||
-                          !SafeBool(t.params, "enabled", true) ||
-                          !SafeBool(t.params, "isActive", true);
-    if (!disabled) any_trigger_active = true;
+    if (!ComponentDisabled(t.params)) any_trigger_active = true;
   }
   if (!any_trigger_active) {
     fail("every entry in 'triggers' is disabled -- the pipeline can never "
@@ -495,178 +511,23 @@ mokuren::venue::Spec AppConfig::ExecSpec() const {
 // AppConfig::Load
 // ============================================================================
 
-namespace {
-
-// safely read a numeric field. if the value is an object (e.g. a grid
-// definition with min/max/step) or missing, the default is returned instead
-// of throwing. this keeps the parser tolerant of grid-style configs.
-//
-// numeric strings are accepted too: hand-written configs carry "0.004"
-// rather than 0.004, and silently falling back to the default there changes
-// the risk of the run without any error.
-double SafeNumber(const json& parent, const std::string& key, double fallback) {
-  if (!parent.contains(key)) return fallback;
-  const auto& v = parent[key];
-  if (v.is_number()) return v.get<double>();
-  if (v.is_string()) {
-    try {
-      const std::string s = v.get<std::string>();
-      size_t used = 0;
-      const double parsed = std::stod(s, &used);
-      while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
-        ++used;
-      }
-      if (used == s.size() && std::isfinite(parsed)) return parsed;
-    } catch (...) {
-      // fall through to the default
-    }
-  }
-  return fallback;
-}
 
 
-// read a boolean field. accepts the same spellings GridScanner treats as a
-// disable flag: bool, "true"/"false"/"1"/"0", and integer 1/0. without this,
-// {"enabled": "false"} silently returned the fallback (true for trailing),
-// enabling a component the config explicitly turned off.
-bool SafeBool(const json& parent, const std::string& key, bool fallback) {
-  if (!parent.contains(key)) return fallback;
-  const auto& v = parent[key];
-  if (v.is_boolean()) return v.get<bool>();
-  if (v.is_string()) {
-    const std::string s = v.get<std::string>();
-    if (s == "true" || s == "True" || s == "TRUE" || s == "1") return true;
-    if (s == "false" || s == "False" || s == "FALSE" || s == "0") return false;
-    return fallback;
-  }
-  if (v.is_number_integer()) return v.get<long long>() != 0;
-  if (v.is_number_float()) return v.get<double>() != 0.0;
-  return fallback;
-}
 
-std::string SafeString(const json& parent, const std::string& key, const std::string& fallback) {
-  if (!parent.contains(key)) return fallback;
-  const auto& v = parent[key];
-  if (v.is_string()) return v.get<std::string>();
-  return fallback;
-}
-
-// strict readers for every field that changes what a run does. a missing or
-// mistyped key aborts with the full path instead of substituting a number the
-// author never wrote: a run must mean exactly what its config says.
-double RequireNumber(const json& parent, const std::string& key,
-                     const std::string& section) {
-  const std::string path = section + "." + key;
-  if (!parent.contains(key)) {
-    throw std::runtime_error("config error: missing required key '" + path + "'");
-  }
-  const auto& v = parent[key];
-  if (v.is_number()) {
-    const double d = v.get<double>();
-    if (!std::isfinite(d)) {
-      throw std::runtime_error("config error: '" + path + "' must be finite");
-    }
-    return d;
-  }
-  if (v.is_string()) {
-    const std::string s = v.get<std::string>();
-    size_t used = 0;
-    try {
-      const double parsed = std::stod(s, &used);
-      while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
-        ++used;
-      }
-      if (used == s.size() && std::isfinite(parsed)) return parsed;
-    } catch (...) {
-      // fall through to the typed error below
-    }
-  }
-  throw std::runtime_error("config error: '" + path + "' must be a number (got " +
-                           v.dump() + ")");
-}
-
-int RequireInt(const json& parent, const std::string& key,
-               const std::string& section) {
-  const std::string path = section + "." + key;
-  if (!parent.contains(key)) {
-    throw std::runtime_error("config error: missing required key '" + path + "'");
-  }
-  const auto& v = parent[key];
-  if (v.is_number_integer()) return v.get<int>();
-  if (v.is_number_float()) {
-    const double d = v.get<double>();
-    if (std::floor(d) == d) return static_cast<int>(d);
-  }
-  if (v.is_string()) {
-    const std::string s = v.get<std::string>();
-    size_t used = 0;
-    try {
-      const long long parsed = std::stoll(s, &used);
-      while (used < s.size() && std::isspace(static_cast<unsigned char>(s[used]))) {
-        ++used;
-      }
-      if (used == s.size()) return static_cast<int>(parsed);
-    } catch (...) {
-      // fall through
-    }
-  }
-  throw std::runtime_error("config error: '" + path + "' must be an integer (got " +
-                           v.dump() + ")");
-}
-
-bool RequireBool(const json& parent, const std::string& key,
-                 const std::string& section) {
-  const std::string path = section + "." + key;
-  if (!parent.contains(key)) {
-    throw std::runtime_error("config error: missing required key '" + path + "'");
-  }
-  const auto& v = parent[key];
-  if (v.is_boolean()) return v.get<bool>();
-  if (v.is_string()) {
-    const std::string s = v.get<std::string>();
-    if (s == "true" || s == "True" || s == "TRUE" || s == "1") return true;
-    if (s == "false" || s == "False" || s == "FALSE" || s == "0") return false;
-  }
-  if (v.is_number_integer()) return v.get<long long>() != 0;
-  if (v.is_number_float()) return v.get<double>() != 0.0;
-  throw std::runtime_error("config error: '" + path + "' must be a boolean (got " +
-                           v.dump() + ")");
-}
-
-double RequireNumberAny(const json& parent, std::initializer_list<const char*> keys,
-                        const std::string& section) {
-  for (const char* k : keys) {
-    if (parent.contains(k)) return RequireNumber(parent, k, section);
-  }
-  std::string names;
-  for (const char* k : keys) {
-    if (!names.empty()) names += " / ";
-    names += std::string(section) + "." + k;
-  }
-  throw std::runtime_error("config error: one of '" + names + "' is required");
-}
-
-// wrap a section parse in a try/catch that reports the section name.
-template <typename Fn>
-void ParseSection(const std::string& section, Fn&& fn) {
-  try {
-    fn();
-  } catch (const json::exception& e) {
-    throw std::runtime_error("config parse error in section '" + section + "': " + e.what());
-  }
-}
-
-} // namespace
 
 AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
-  AppConfig cfg;
+  // `conf`, not `cfg`: this function is inside namespace mokuren, so a local
+  // named `cfg` shadows mokuren::cfg and every `cfg::GetX` below reads as
+  // member access on this object ("'cfg' is not a class, namespace, or
+  // enumeration"). The table keeps its documented spelling; only the builder
+  // is renamed.
+  AppConfig conf;
 
   // collapse any grid node ({"min":..,"max":..,"step":..,"val":..}) into its
-  // scalar "val" before reading. the TUI seeds configs from _defaults.json,
-  // which carries grid nodes on purpose so GridScanner can sweep them; the
-  // normal run path (single backtest, --paper, --live) must see plain numbers
-  // or every numeric reader falls back to its default. FlattenGrids is a
-  // no-op on an already-flat config, so this is safe on every path.
+  // scalar "val" before reading. the TUI seeds configs with grid nodes on
+  // purpose so GridScanner can sweep them; the normal run path (single
+  // backtest, --paper, --live) must see plain numbers. FlattenGrids is a no-op
+  // on an already-flat config, so this is safe on every path.
   //
   // the backtest grid path (GridRunner/WfaRunner) calls GenerateGrid on the
   // ORIGINAL json first, then Load on each permutation's full_json -- which
@@ -676,106 +537,34 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   FlattenGrids(flat);
   const json& src = flat;
 
-  // --- auth ---
-  // credentials live at the root of the config, and may also be nested under
-  // "exchange" or "environment" for configs that group connection settings:
-  //   {"api_key": "...", "api_secret": "...", "is_testnet": true, ...}
-  //   {"environment": {"api_key": "...", "api_secret": "...", ...}}
-  ParseSection("auth", [&]() {
-    // resolve the source once so all three fields are read from the same
-    // place. root keys win; the nested lookup only applies when the root has
-    // no credential keys at all.
-    const json* creds = &src;
-    if (!src.contains("api_key") && !src.contains("api_secret")) {
-      if (src.contains("exchange") && src["exchange"].is_object()) {
-        creds = &src["exchange"];
-      } else if (src.contains("environment") && src["environment"].is_object()) {
-        creds = &src["environment"];
-      }
-    }
+  // prop.initial_balance is a second owner of the account's base capital. the
+  // table does not carry it, so RejectUnknownKeys would catch it too -- but
+  // "unknown key" does not say WHY it is refused or where the number lives
+  // now. This check has to run FIRST or the specific message is unreachable.
+  if (src.contains("prop") && src["prop"].is_object() &&
+      src["prop"].contains("initial_balance")) {
+    throw std::runtime_error(
+        "config error: prop.initial_balance is no longer read; total drawdown "
+        "is measured against initial_balance (the account seed)");
+  }
 
-    cfg.api_key = SafeString(src, "api_key", SafeString(*creds, "api_key", ""));
-    cfg.api_secret = SafeString(src, "api_secret", SafeString(*creds, "api_secret", ""));
-    // blofin's third credential. optional on every other venue, so absence is
-    // not an error here -- Validate() enforces it only when exchange=="blofin".
-    cfg.api_passphrase =
-        SafeString(src, "api_passphrase", SafeString(*creds, "api_passphrase", ""));
-    // cfg.is_testnet already defaults to true, so it doubles as the fallback.
-    cfg.is_testnet = SafeBool(src, "is_testnet", SafeBool(*creds, "is_testnet", cfg.is_testnet));
-  });
+  // one table, one spelling per field (config.md D1/10.13). a key the schema
+  // does not own is an error, not a warning: profiles are rebuilt against the
+  // table, so a stale spelling must stop the run instead of half-applying.
+  cfg::RejectUnknownKeys(src);
 
-  // --- paper account starting capital ---
-  // only consumed in --paper (shadow) mode, where the factory hands this to
-  // PaperTrader instead of the compile-time default. optional on purpose: a
-  // config that omits it must behave exactly like today's paper runs.
-  //
-  // presence is captured here so the prop section below can refuse a
-  // prop-enabled config that never named a base. the struct default stays
-  // 10000 for directly-constructed AppConfig (tests, tooling); the check
-  // belongs at load time, not at use time.
-  const bool has_initial_balance = src.contains("initial_balance");
-  cfg.initial_balance = SafeNumber(src, "initial_balance", cfg.initial_balance);
-
-  // --- environment ---
-  ParseSection("environment", [&]() {
-    if (!src.contains("environment") || !src["environment"].is_object()) {
-      throw std::runtime_error("config error: missing required section 'environment'");
-    }
-    {
-      const auto& env = src["environment"];
-      // `dataset` is canonical; `filepath` is a legacy alias kept so older
-      // configs keep loading. one key, one owner -- the grid runner already
-      // reads `dataset`, so accepting both under one name removes the
-      // two-readers-one-file bug.
-      cfg.filepath = SafeString(env, "dataset", SafeString(env, "filepath", ""));
-      cfg.interval_ms = RequireInt(env, "interval_ms", "environment");
-      cfg.macro_interval_ms = RequireInt(env, "macro_interval_ms", "environment");
-      cfg.tick_size = RequireNumber(env, "tick_size", "environment");
-      cfg.vwap_reset_hour = RequireInt(env, "vwap_reset_hour", "environment");
-
-      if (env.contains("max_cores") && env["max_cores"].is_number_integer() &&
-          env["max_cores"].get<int>() > 0) {
-        cfg.max_cores = env["max_cores"].get<unsigned int>();
-      } else {
-        cfg.max_cores = std::thread::hardware_concurrency();
-        if (cfg.max_cores == 0) cfg.max_cores = 4;
-      }
-    }
-  });
-
-  // --- exchange ---
-  // read the data source ("bybit" or "hyperliquid") from the config. accepts the
-  // key either at the top level or nested under "environment".
-  ParseSection("exchange", [&]() {
-    // never default the venue. a missing key used to mean "binance", which
-    // would stream binance data for an account configured elsewhere.
-    bool found = false;
-    if (src.contains("exchange")) {
-      const auto& ex = src["exchange"];
-      if (ex.is_string()) {
-        cfg.exchange = ex.get<std::string>();
-        found = !cfg.exchange.empty();
-      } else if (ex.is_object()) {
-        // credentials may be grouped under "exchange"; the venue name then
-        // lives inside that object.
-        const std::string name = SafeString(ex, "name", SafeString(ex, "venue", ""));
-        if (!name.empty()) {
-          cfg.exchange = name;
-          found = true;
-        }
-      }
-    }
-    if (!found && src.contains("environment") && src["environment"].is_object()) {
-      const std::string name = SafeString(src["environment"], "exchange", "");
-      if (!name.empty()) {
-        cfg.exchange = name;
-        found = true;
-      }
-    }
-    if (!found) {
-      throw std::runtime_error("config error: 'exchange' is required");
-    }
-  });
+  // --- account ---
+  // credentials live at the root of the config. grouping them under "exchange"
+  // or "environment" is a removed spelling (config.md 10.13).
+  conf.exchange = cfg::GetString(src, "exchange");
+  // required, with no default: it is the denominator of every drawdown figure
+  // and the capital PaperTrader is seeded with (config.md D7).
+  conf.initial_balance = cfg::GetDouble(src, "initial_balance");
+  conf.api_key = cfg::GetString(src, "api_key");
+  conf.api_secret = cfg::GetString(src, "api_secret");
+  // blofin's third credential. optional on every other venue, so absence is
+  // not an error here -- Validate() enforces it only when exchange=="blofin".
+  conf.api_passphrase = cfg::GetString(src, "api_passphrase");
 
   // --- credentials from the environment -----------------------------------
   // a config that names a live account is meant to be committed and shared; a
@@ -783,8 +572,8 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
   // after the EXECUTION venue, so a config cannot pick up another venue's key
   // by accident: BLOFIN_API_KEY / BLOFIN_API_SECRET / BLOFIN_API_PASSPHRASE,
   // BYBIT_API_KEY / BYBIT_API_SECRET.
-  if (!cfg.exchange.empty()) {
-    std::string prefix = cfg.exchange;
+  {
+    std::string prefix = conf.exchange;
     for (char& c : prefix) {
       c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
@@ -792,45 +581,48 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
       const char* v = std::getenv((prefix + suffix).c_str());
       return v != nullptr ? std::string(v) : std::string();
     };
-    if (cfg.api_key.empty()) cfg.api_key = from_env("_API_KEY");
-    if (cfg.api_secret.empty()) cfg.api_secret = from_env("_API_SECRET");
-    if (cfg.api_passphrase.empty()) {
-      cfg.api_passphrase = from_env("_API_PASSPHRASE");
+    if (conf.api_key.empty()) conf.api_key = from_env("_API_KEY");
+    if (conf.api_secret.empty()) conf.api_secret = from_env("_API_SECRET");
+    if (conf.api_passphrase.empty()) {
+      conf.api_passphrase = from_env("_API_PASSPHRASE");
     }
   }
+
+  // --- environment ---
+  conf.filepath = cfg::GetString(src, "environment.dataset");
+  conf.interval_ms = cfg::GetInt(src, "environment.interval_ms");
+  conf.macro_interval_ms = cfg::GetInt(src, "environment.macro_interval_ms");
+  conf.tick_size = cfg::GetDouble(src, "environment.tick_size");
+  conf.vwap_reset_hour = cfg::GetInt(src, "environment.vwap_reset_hour");
+  // 0 is the "auto" sentinel: the table cannot name a machine-dependent
+  // number, so the loader resolves it (config.md 4). the coercion also fixes
+  // "max_cores": 6.0, which is_number_integer() used to ignore (config.md 10.8).
+  {
+    const int cores = cfg::GetInt(src, "environment.max_cores");
+    if (cores > 0) {
+      conf.max_cores = static_cast<unsigned int>(cores);
+    } else {
+      conf.max_cores = std::thread::hardware_concurrency();
+      if (conf.max_cores == 0) conf.max_cores = 4;
+    }
+  }
+
 
   // --- venue identity ---
   // environment + category + symbol + position mode form ONE identity. the
   // broker and the streamer are both built from it, and neither may derive a
   // host or a symbol of its own -- that is how a config ended up streaming
   // mainnet data into a testnet account.
-  ParseSection("venue", [&]() {
-    if (src.contains("venue") && src["venue"].is_object()) {
-      const auto& v = src["venue"];
-      const std::string env_name =
-          SafeString(v, "environment", SafeString(v, "env", ""));
-      if (!env_name.empty()) {
-        try {
-          cfg.env = mokuren::venue::ParseEnv(env_name);
-        } catch (const std::exception& e) {
-          throw std::runtime_error(std::string("config error: venue.environment: ") +
-                                   e.what());
-        }
-        cfg.is_testnet = (cfg.env != mokuren::venue::Env::Mainnet);
-      }
-      cfg.category = SafeString(v, "category", cfg.category);
-      cfg.symbol = SafeString(v, "symbol", cfg.symbol);
-      cfg.position_mode = SafeString(v, "position_mode", cfg.position_mode);
-      // order quantity grid. optional, but when present it must be a real
-      // increment: it is a per-symbol venue constraint, not a tuning knob.
-      cfg.lot_step = SafeNumber(v, "lot_step", cfg.lot_step);
-      cfg.allow_mainnet = SafeBool(v, "allow_mainnet", cfg.allow_mainnet);
-    } else if (src.contains("is_testnet")) {
-      // legacy spelling. demo cannot be selected this way, on purpose.
-      cfg.is_testnet = SafeBool(src, "is_testnet", true);
-      cfg.env = cfg.is_testnet ? mokuren::venue::Env::Testnet
-                               : mokuren::venue::Env::Mainnet;
-    }
+  {
+    const std::string env_name = cfg::GetString(src, "venue.environment");
+    conf.env = mokuren::venue::ParseEnv(env_name);
+    // derived, never a config key: the broker reads it (config.md 15.3).
+    conf.is_testnet = (conf.env != mokuren::venue::Env::Mainnet);
+    conf.category = cfg::GetString(src, "venue.category");
+    conf.symbol = cfg::GetString(src, "venue.symbol");
+    conf.position_mode = cfg::GetString(src, "venue.position_mode");
+    conf.lot_step = cfg::GetDouble(src, "venue.lot_step");
+    conf.allow_mainnet = cfg::GetBool(src, "venue.allow_mainnet");
 
     // --- market-data feed -------------------------------------------------
     // optional, and the only part of the venue identity that may differ from
@@ -838,377 +630,199 @@ AppConfig AppConfig::Load(const json& j, bool require_venue_credentials) {
     // is free. the instrument stays shared -- a feed for a different symbol
     // would size a contract the engine never priced.
     //
-    // accepted spellings, most specific first:
-    //   "venue": {"data_exchange": "bybit", "data_environment": "mainnet"}
-    //   "venue": {"data_venue": {"exchange": "bybit", "environment": "mainnet"}}
-    //   "data_venue": {"exchange": "bybit", "environment": "mainnet"}   (root)
-    //   "data_exchange": "bybit"                                        (root)
-    //
-    // absent is the default and means "the feed and the account are the same
-    // venue in the same world", so a config written before the split keeps its
-    // exact meaning.
-    {
-      auto read_env = [](const json& block) -> std::string {
-        if (!block.is_object()) return std::string();
-        return SafeString(block, "environment", SafeString(block, "env", ""));
-      };
-      auto read_venue = [](const json& block) -> std::string {
-        if (!block.is_object()) return std::string();
-        return SafeString(block, "exchange", "");
-      };
-
-      std::string data_env_name;
-      std::string data_exchange_name;
-      if (src.contains("venue") && src["venue"].is_object()) {
-        const auto& v = src["venue"];
-        data_env_name = SafeString(v, "data_environment", "");
-        data_exchange_name = SafeString(v, "data_exchange", "");
-        if (v.contains("data_venue")) {
-          if (data_env_name.empty()) data_env_name = read_env(v["data_venue"]);
-          if (data_exchange_name.empty()) {
-            data_exchange_name = read_venue(v["data_venue"]);
-          }
-        }
-      }
-      if (src.contains("data_venue")) {
-        if (data_env_name.empty()) data_env_name = read_env(src["data_venue"]);
-        if (data_exchange_name.empty()) {
-          data_exchange_name = read_venue(src["data_venue"]);
-        }
-      }
-      if (data_exchange_name.empty()) {
-        data_exchange_name = SafeString(src, "data_exchange", "");
-      }
-      if (!data_env_name.empty()) {
-        try {
-          cfg.data_env = mokuren::venue::ParseEnv(data_env_name);
-        } catch (const std::exception& e) {
-          throw std::runtime_error(
-              std::string("config error: venue.data_environment: ") + e.what());
-        }
-      }
-      if (!data_exchange_name.empty()) {
-        cfg.data_exchange = data_exchange_name;
-      }
+    // empty means "the feed and the account are the same venue in the same
+    // world", so a config written before the split keeps its exact meaning.
+    const std::string data_env_name =
+        cfg::GetString(src, "venue.data_environment");
+    if (!data_env_name.empty()) {
+      conf.data_env = mokuren::venue::ParseEnv(data_env_name);
     }
-
-    // root-level overrides for the instrument identity.
-    cfg.category = SafeString(src, "category", cfg.category);
-    cfg.symbol = SafeString(src, "symbol", cfg.symbol);
-    cfg.allow_mainnet = SafeBool(src, "allow_mainnet", cfg.allow_mainnet);
-  });
+    const std::string data_exchange_name =
+        cfg::GetString(src, "venue.data_exchange");
+    if (!data_exchange_name.empty()) {
+      conf.data_exchange = data_exchange_name;
+    }
+  }
 
   // --- funded-account survival rules ---
   // parsed as their own section and deliberately not under a strategy block:
   // these limits belong to the account, not to a parameter set. a fraction
   // (0.04) is the unit here, matching every other pct in this file.
-  if (src.contains("prop") && src["prop"].is_object()) {
-    const auto& p = src["prop"];
-
-    // numbers or numeric strings, as the rest of this loader accepts.
-    auto read_num = [&p](const char* key, double fallback) {
-      if (!p.contains(key)) return fallback;
-      const auto& v = p[key];
-      if (v.is_number()) return v.get<double>();
-      if (v.is_string()) {
-        try {
-          return std::stod(v.get<std::string>());
-        } catch (...) {
-          return fallback;
-        }
-      }
-      return fallback;
-    };
-
-    // presence of the block IS the opt-in. a config that writes
-    // "prop": { ... } means "measure this account", and the old fallback
-    // (false) made a block whose author omitted one key behave exactly like no
-    // block at all: no daily limit, no total limit, in a backtest that looked
-    // configured. an explicit "enabled": false still turns it off, and that is
-    // now the only way to say it.
-    cfg.prop.enabled = SafeBool(p, "enabled", true);
-    cfg.prop.max_daily_drawdown_pct =
-        read_num("max_daily_drawdown_pct", cfg.prop.max_daily_drawdown_pct);
-    cfg.prop.max_total_drawdown_pct =
-        read_num("max_total_drawdown_pct", cfg.prop.max_total_drawdown_pct);
-    cfg.prop.warn_fraction = read_num("warn_fraction", cfg.prop.warn_fraction);
-    // a starting balance is account state and is passed to PropGuard by the
-    // caller (cfg.initial_balance on the backtest paths, the firm's baseline
-    // live). accepting it here would reintroduce a second, silently different
-    // base -- the bug that made total drawdown report against an account the
-    // run never funded -- so name it instead of quietly ignoring it.
-    if (p.contains("initial_balance")) {
+  //
+  // presence of the block is the opt-in, but "enabled" must be explicit: a
+  // profile whose author wrote the block to arm it must not load silently
+  // disarmed (config.md 10.1a). the bounds are checked in Validate(), together
+  // with every other numeric limit.
+  if (cfg::Has(src, "prop")) {
+    if (!cfg::Has(src, "prop.enabled")) {
       throw std::runtime_error(
-          "config error: prop.initial_balance is no longer read; total "
-          "drawdown is measured against initial_balance (the account seed)");
+          "config error: 'prop' present but 'prop.enabled' is missing; add it "
+          "explicitly (true to arm, false to disable)");
     }
-    cfg.prop.flatten_on_breach =
-        SafeBool(p, "flatten_on_breach", cfg.prop.flatten_on_breach);
-    if (p.contains("daily_reset_hour_utc") &&
-        p["daily_reset_hour_utc"].is_number_integer()) {
-      cfg.prop.daily_reset_hour_utc = p["daily_reset_hour_utc"].get<int>();
-    }
-
-    // a zero or >100% limit silently disables half the protection, and a warn
-    // fraction at 1.0 means the only warning is the breach itself.
-    if (cfg.prop.enabled) {
-      // a prop-enabled config silently armed the survival guard against the
-      // compiled-in 10000 when initial_balance was absent. every drawdown
-      // percentage is a fraction of that base, so a $25k account with no
-      // initial_balance was halted at 4% of 10000 = $400 down, not $1000.
-      // the factory seeds PaperTrader from the same field, so the two agree --
-      // they just both describe an account the config never named. refuse at
-      // load, the same way prop.initial_balance is refused below, rather than
-      // run against capital nobody chose.
-      if (!has_initial_balance) {
-        throw std::runtime_error(
-            "config error: a config with a 'prop' block needs an explicit "
-            "'initial_balance' at the root; drawdown limits are fractions of "
-            "that base, and falling back to the compiled-in 10000 would arm "
-            "the guard against an account the config never described");
-      }
-      auto bad_pct = [](double v) { return !(v > 0.0) || v > 1.0; };
-      if (bad_pct(cfg.prop.max_daily_drawdown_pct)) {
-        throw std::runtime_error(
-            "config error: prop.max_daily_drawdown_pct must be a fraction in "
-            "(0, 1], e.g. 0.04");
-      }
-      if (bad_pct(cfg.prop.max_total_drawdown_pct)) {
-        throw std::runtime_error(
-            "config error: prop.max_total_drawdown_pct must be a fraction in "
-            "(0, 1], e.g. 0.06");
-      }
-      if (!(cfg.prop.warn_fraction > 0.0) || cfg.prop.warn_fraction >= 1.0) {
-        throw std::runtime_error(
-            "config error: prop.warn_fraction must be in (0, 1), e.g. 0.8");
-      }
-      if (cfg.prop.daily_reset_hour_utc < 0 ||
-          cfg.prop.daily_reset_hour_utc > 23) {
-        throw std::runtime_error(
-            "config error: prop.daily_reset_hour_utc must be 0..23");
-      }
-    }
+    conf.prop.enabled = cfg::GetBool(src, "prop.enabled");
+    conf.prop.max_daily_drawdown_pct =
+        cfg::GetDouble(src, "prop.max_daily_drawdown_pct");
+    conf.prop.max_total_drawdown_pct =
+        cfg::GetDouble(src, "prop.max_total_drawdown_pct");
+    conf.prop.warn_fraction = cfg::GetDouble(src, "prop.warn_fraction");
+    conf.prop.flatten_on_breach = cfg::GetBool(src, "prop.flatten_on_breach");
+    conf.prop.daily_reset_hour_utc =
+        cfg::GetInt(src, "prop.daily_reset_hour_utc");
   }
 
   // --- startup data-integrity gate ---
   // sits next to prop rather than under a strategy block: like the account's
   // survival limits, this is an operational precondition, not a tuning knob.
-  if (src.contains("startup_probe") && src["startup_probe"].is_object()) {
-    const auto& p = src["startup_probe"];
+  //
+  // `preset` is a cascade a flat table cannot express (config.md 15.6a): it
+  // picks the base values, and every key the profile writes overrides them.
+  {
+    const std::string preset = cfg::GetString(src, "startup_probe.preset");
+    conf.probe = (preset == "production")
+                     ? mokuren::integrity::ProbeCriteria::Production()
+                     : mokuren::integrity::ProbeCriteria::Development();
 
-    const std::string preset = SafeString(p, "preset", "");
-    if (preset == "production") {
-      cfg.probe = mokuren::integrity::ProbeCriteria::Production();
-    } else if (preset == "development") {
-      cfg.probe = mokuren::integrity::ProbeCriteria::Development();
-    } else if (!preset.empty()) {
-      throw std::runtime_error(
-          "config error: startup_probe.preset must be 'development' or "
-          "'production' (got '" + preset + "')");
-    }
-
-    // negative values are rejected rather than clamped: a typo like
-    // "min_trades": -1000 would otherwise wrap through uint64_t and read as an
-    // astronomically high minimum.
-    auto read_count = [&p](const char* key, uint64_t fallback) -> uint64_t {
-      if (!p.contains(key)) return fallback;
-      const double v = SafeNumber(p, key, -1.0);
-      if (!(v >= 0.0) || !std::isfinite(v)) {
-        throw std::runtime_error(
-            "config error: startup_probe." + std::string(key) +
-            " must be a finite number >= 0");
+    // explicit keys win over the preset: soak for a minute, but lower the frame
+    // counts for a thin instrument. a negative count is rejected rather than
+    // wrapped through uint64_t into an astronomically high minimum.
+    auto pick = [&src](const char* key, uint64_t base) -> uint64_t {
+      const std::string path = std::string("startup_probe.") + key;
+      if (!cfg::Has(src, path)) return base;
+      const int v = cfg::GetInt(src, path);
+      if (v < 0) {
+        throw std::runtime_error("config error: '" + path +
+                                 "' must be >= 0 (got " + std::to_string(v) +
+                                 ")");
       }
       return static_cast<uint64_t>(v);
     };
-    auto read_ms = [&p](const char* key, int64_t fallback) -> int64_t {
-      if (!p.contains(key)) return fallback;
-      const double v = SafeNumber(p, key, -1.0);
-      if (!(v >= 0.0) || !std::isfinite(v)) {
-        throw std::runtime_error(
-            "config error: startup_probe." + std::string(key) +
-            " must be a finite number >= 0 (milliseconds)");
-      }
-      return static_cast<int64_t>(v);
-    };
+    conf.probe.min_trades_per_min =
+        pick("min_trades_per_min", conf.probe.min_trades_per_min);
+    conf.probe.min_l2_frames_per_min =
+        pick("min_l2_frames_per_min", conf.probe.min_l2_frames_per_min);
+    conf.probe.min_duration_ms = static_cast<int64_t>(pick(
+        "min_duration_ms", static_cast<uint64_t>(conf.probe.min_duration_ms)));
+    conf.probe.timeout_ms = static_cast<int64_t>(
+        pick("timeout_ms", static_cast<uint64_t>(conf.probe.timeout_ms)));
+    conf.probe.max_reconnects = static_cast<uint32_t>(
+        pick("max_reconnects", conf.probe.max_reconnects));
+    conf.probe.min_l2_depth = pick("min_l2_depth", conf.probe.min_l2_depth);
 
-    // explicit keys win over the preset: soak for a minute, but lower the frame
-    // counts for a thin instrument.
-    cfg.probe.min_trades_per_min = read_count(
-        "min_trades_per_min", cfg.probe.min_trades_per_min);
-    cfg.probe.min_l2_frames_per_min = read_count(
-        "min_l2_frames_per_min", cfg.probe.min_l2_frames_per_min);
-    cfg.probe.min_duration_ms =
-        read_ms("min_duration_ms", cfg.probe.min_duration_ms);
-    cfg.probe.timeout_ms = read_ms("timeout_ms", cfg.probe.timeout_ms);
-    cfg.probe.max_reconnects = static_cast<uint32_t>(
-        read_count("max_reconnects", cfg.probe.max_reconnects));
-    cfg.probe.min_l2_depth =
-        read_count("min_l2_depth", cfg.probe.min_l2_depth);
-
-    const std::string on_failure = SafeString(p, "on_failure", "");
-    if (on_failure == "abort") {
-      cfg.probe_abort_on_failure = true;
-    } else if (on_failure == "warn") {
-      cfg.probe_abort_on_failure = false;
-    } else if (!on_failure.empty()) {
-      throw std::runtime_error(
-          "config error: startup_probe.on_failure must be 'abort' or 'warn' "
-          "(got '" + on_failure + "')");
+    // absent leaves AppConfig's own default in place, as before.
+    if (cfg::Has(src, "startup_probe.on_failure")) {
+      conf.probe_abort_on_failure =
+          cfg::GetString(src, "startup_probe.on_failure") == "abort";
     }
   }
 
   // --- execution ---
-  ParseSection("execution", [&]() {
-    // fees and slippage change every pnl number in the report, so they are
-    // never guessed. accepted at the root or, for older configs, inside
-    // "environment".
-    const json* ex = nullptr;
-    std::string section;
-    if (src.contains("execution") && src["execution"].is_object()) {
-      ex = &src["execution"];
-      section = "execution";
-    } else if (src.contains("environment") && src["environment"].is_object()) {
-      ex = &src["environment"];
-      section = "environment";
-    }
-    if (!ex) {
-      throw std::runtime_error("config error: missing required section 'execution'");
-    }
-    cfg.taker_fee_pct = RequireNumber(*ex, "taker_fee_pct", section);
-    cfg.slippage_pct = RequireNumber(*ex, "slippage_pct", section);
-  });
+  // fees and slippage change every pnl number in the report, so they are never
+  // guessed, and never read from "environment" (config.md 10.13).
+  conf.taker_fee_pct = cfg::GetDouble(src, "execution.taker_fee_pct");
+  conf.slippage_pct = cfg::GetDouble(src, "execution.slippage_pct");
 
-  // --- triggers ---
-  ParseSection("triggers", [&]() {
-    const json* arr = nullptr;
-    if (src.contains("triggers")) {
-      arr = &src["triggers"];
-    } else if (src.contains("strategy") && src["strategy"].contains("triggers")) {
-      arr = &src["strategy"]["triggers"];
+  // --- components ---
+  // triggers, filters and risk modules are arrays of {name, ...params}. the
+  // table does not model them (config.md section 5): the loader reads the name
+  // and hands the entry over verbatim, and the factory interprets the rest.
+  auto read_components = [&src](const char* key,
+                                std::vector<ComponentConfig>& out) {
+    // `key` is a dotted path: "triggers" at the root, "risk.modules" one
+    // level down. Lookup walks it -- src.contains("risk.modules") would be
+    // false and silently load no modules.
+    const json* arr = cfg::Lookup(src, key);
+    if (arr == nullptr || !arr->is_array()) return;
+    for (const auto& item : *arr) {
+      if (!item.is_object()) continue;
+      const std::string name = item.contains("name") && item["name"].is_string()
+                                   ? item["name"].get<std::string>()
+                                   : std::string();
+      out.push_back({name, item});
     }
-    if (arr && arr->is_array()) {
-      for (const auto& item : *arr) {
-        if (!item.is_object()) continue;
-        cfg.triggers.push_back({SafeString(item, "name", ""), item});
-      }
-    }
-  });
-
-  // --- filters ---
-  ParseSection("filters", [&]() {
-    const json* arr = nullptr;
-    if (src.contains("filters")) {
-      arr = &src["filters"];
-    } else if (src.contains("strategy") && src["strategy"].contains("filters")) {
-      arr = &src["strategy"]["filters"];
-    }
-    if (arr && arr->is_array()) {
-      for (const auto& item : *arr) {
-        if (!item.is_object()) continue;
-        cfg.filters.push_back({SafeString(item, "name", ""), item});
-      }
-    }
-  });
+  };
+  read_components("triggers", conf.triggers);
+  read_components("filters", conf.filters);
 
   // --- risk ---
-  ParseSection("risk", [&]() {
-    if (!src.contains("risk") || !src["risk"].is_object()) {
-      throw std::runtime_error("config error: missing required section 'risk'");
-    }
-    {
-      const auto& risk = src["risk"];
-      // 1R is defined by sl_pct and nothing else.
-      cfg.sl_pct = RequireNumberAny(risk, {"sl_pct", "sl_price_pct"}, "risk");
-      // tp_r (a multiple of sl_pct, i.e. of 1R) wins over the legacy absolute
-      // tp_pct. a config that names neither fails to load instead of keeping
-      // a 1% guess.
-      cfg.tp_pct = mokuren::ResolveTpPct(src, cfg.sl_pct);
-      // remember the multiple the config wrote. ResolveTpPct honours tp_r only
-      // when it is a json number, so mirror that exact rule here -- reading a
-      // numeric string it ignored would let Validate report an R that never
-      // produced the value under test.
-      if (risk.contains("tp_r") && risk["tp_r"].is_number()) {
-        cfg.tp_r = risk["tp_r"].get<double>();
-      }
-      cfg.risk_per_trade_pct = RequireNumber(risk, "risk_per_trade_pct", "risk");
-      // optional by design: 0 (the default here) means "never widen the
-      // strategy's own stop", so absence has a defined, non-arbitrary meaning.
-      cfg.min_distance_dollars = SafeNumber(risk, "min_distance_dollars", 0.0);
-      // risk.max_daily_loss is no longer read. a config that still carries it
-      // loads unchanged -- the key is ignored, not an error -- because the
-      // account's daily limit is prop.max_daily_drawdown_pct now: one anchor
-      // (day-start equity), one unit (fraction of the funded balance) and one
-      // reset hour, instead of a dollar amount measured from realised pnl.
+  // sl_pct is 1R and tp_r is the target in R. ResolveRiskPcts is the single
+  // reader of that pair (config.md 15.7); everything downstream reads
+  // AppConfig.sl_pct / tp_pct, so no second resolution can disagree.
+  {
+    const mokuren::RiskPcts rp = mokuren::ResolveRiskPcts(src);
+    conf.sl_pct = rp.sl;
+    conf.tp_pct = rp.tp;
+    conf.tp_r = cfg::GetDouble(src, "risk.tp_r");
+    conf.risk_per_trade_pct = cfg::GetDouble(src, "risk.risk_per_trade_pct");
+    // 0 (the default) means "never widen the strategy's own stop".
+    conf.min_distance_dollars = cfg::GetDouble(src, "risk.min_distance_dollars");
+    // risk.max_daily_loss is a removed spelling: the account's daily limit is
+    // prop.max_daily_drawdown_pct now (one anchor, one unit, one reset hour).
+    // RejectUnknownKeys stops a profile that still carries it.
 
-      if (risk.contains("modules") && risk["modules"].is_array()) {
-        for (const auto& item : risk["modules"]) {
-          if (!item.is_object()) continue;
-          cfg.risk_modules.push_back({SafeString(item, "name", ""), item});
-        }
-      }
-    }
-  });
+    read_components("risk.modules", conf.risk_modules);
+  }
 
   // --- trade_management ---
-  ParseSection("trade_management", [&]() {
-    if (!src.contains("trade_management") || !src["trade_management"].is_object()) {
+  // four sub-blocks, four enablement policies. the table carries all four
+  // flags and defaults (config.md 5.1), so the loader does not decide them;
+  // the levels are in R and stay required whether or not a block is armed.
+  if (!src.contains("trade_management") || !src["trade_management"].is_object()) {
+    throw std::runtime_error(
+        "config error: missing required section 'trade_management'");
+  }
+  {
+    const auto& tm = src["trade_management"];
+    if (!tm.contains("break_even") || !tm["break_even"].is_object()) {
       throw std::runtime_error(
-          "config error: missing required section 'trade_management'");
+          "config error: missing required section 'trade_management.break_even'");
     }
-    {
-      const auto& tm = src["trade_management"];
-      // every level is required, in R or via the legacy absolute key. sl_pct
-      // is 1R, so one config means the same thing in every path.
-      if (!tm.contains("break_even") || !tm["break_even"].is_object()) {
-        throw std::runtime_error(
-            "config error: missing required section 'trade_management.break_even'");
-      }
-      const auto& be = tm["break_even"];
-      cfg.tm_config.be_trigger_pct = mokuren::ResolveLevelPct(
-          be, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.break_even");
-      cfg.tm_config.be_target_pct = mokuren::ResolveLevelPct(
-          be, cfg.sl_pct, "target_r", "target_pct", "trade_management.break_even");
-      // only the arming decision follows the flag; the levels above stay
-      // required so a config means the same thing whether or not the block is
-      // switched on. absent => enabled, matching ApplyRMultiplesManagement.
-      cfg.tm_config.enable_break_even = SafeBool(be, "enabled", true);
+    const auto& be = tm["break_even"];
+    conf.tm_config.be_trigger_pct = mokuren::ResolveLevelPct(
+        be, conf.sl_pct, "trigger_r", "trigger_pct",
+        "trade_management.break_even");
+    conf.tm_config.be_target_pct = mokuren::ResolveLevelPct(
+        be, conf.sl_pct, "target_r", "target_pct",
+        "trade_management.break_even");
+    conf.tm_config.enable_break_even =
+        cfg::GetBool(src, "trade_management.break_even.enabled");
 
-      if (!tm.contains("trailing") || !tm["trailing"].is_object()) {
-        throw std::runtime_error(
-            "config error: missing required section 'trade_management.trailing'");
-      }
-      const auto& tr = tm["trailing"];
-      cfg.tm_config.enable_trailing =
-          RequireBool(tr, "enabled", "trade_management.trailing");
-      cfg.tm_config.trailing_trigger_pct = mokuren::ResolveLevelPct(
-          tr, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.trailing");
-      cfg.tm_config.trailing_dist_pct = mokuren::ResolveLevelPct(
-          tr, cfg.sl_pct, "distance_r", "distance_pct", "trade_management.trailing");
-
-      if (!tm.contains("scale_out") || !tm["scale_out"].is_object()) {
-        throw std::runtime_error(
-            "config error: missing required section 'trade_management.scale_out'");
-      }
-      const auto& so = tm["scale_out"];
-      cfg.tm_config.enable_scale_out =
-          RequireBool(so, "enabled", "trade_management.scale_out");
-      cfg.tm_config.scale_out_trigger_pct = mokuren::ResolveLevelPct(
-          so, cfg.sl_pct, "trigger_r", "trigger_pct", "trade_management.scale_out");
-      cfg.tm_config.scale_out_fraction =
-          RequireNumber(so, "fraction", "trade_management.scale_out");
-
-      // Optional structural-exit block. Absent = no-op. When enabled, the
-      // resolver validates min_holdtime_ms and the rules list itself; per-rule
-      // params are stored verbatim and interpreted at build time in
-      // structural_exit.hpp. This mirrors the trigger pipeline: the loader
-      // parses opaque JSON, the factory interprets names.
-      cfg.tm_config.structural_exit =
-          mokuren::ResolveStructuralExitConfig(tm);
+    if (!tm.contains("trailing") || !tm["trailing"].is_object()) {
+      throw std::runtime_error(
+          "config error: missing required section 'trade_management.trailing'");
     }
-  });
+    const auto& tr = tm["trailing"];
+    conf.tm_config.enable_trailing =
+        cfg::GetBool(src, "trade_management.trailing.enabled");
+    conf.tm_config.trailing_trigger_pct = mokuren::ResolveLevelPct(
+        tr, conf.sl_pct, "trigger_r", "trigger_pct",
+        "trade_management.trailing");
+    conf.tm_config.trailing_dist_pct = mokuren::ResolveLevelPct(
+        tr, conf.sl_pct, "distance_r", "distance_pct",
+        "trade_management.trailing");
+
+    if (!tm.contains("scale_out") || !tm["scale_out"].is_object()) {
+      throw std::runtime_error(
+          "config error: missing required section 'trade_management.scale_out'");
+    }
+    const auto& so = tm["scale_out"];
+    conf.tm_config.enable_scale_out =
+        cfg::GetBool(src, "trade_management.scale_out.enabled");
+    conf.tm_config.scale_out_trigger_pct = mokuren::ResolveLevelPct(
+        so, conf.sl_pct, "trigger_r", "trigger_pct",
+        "trade_management.scale_out");
+    conf.tm_config.scale_out_fraction =
+        cfg::GetDouble(src, "trade_management.scale_out.fraction");
+
+    // Optional structural-exit block. Absent = no-op. When enabled, the
+    // resolver validates min_holdtime_ms and the rules list itself; kRequired
+    // cannot express "required only when enabled" (config.md 15.5). Per-rule
+    // params are stored verbatim and interpreted at build time in
+    // structural_exit.hpp, mirroring the trigger pipeline.
+    conf.tm_config.structural_exit = mokuren::ResolveStructuralExitConfig(tm);
+  }
 
   // fail fast: abort before any EngineInstance is built
-  cfg.Validate(require_venue_credentials);
+  conf.Validate(require_venue_credentials);
 
-  return cfg;
+  return conf;
 }

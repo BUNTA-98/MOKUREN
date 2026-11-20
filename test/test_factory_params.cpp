@@ -37,9 +37,20 @@ const EnsureLogger kEnsureLogger;
 // which has nothing to do with what these cases test. binance is no longer an
 // accepted venue -- its depth-1 book cannot feed the depth triggers -- so it
 // failed Validate() before any wiring assertion ran.
+//
+// initial_balance is required (config.md D7): it is the denominator of every
+// drawdown figure and the capital PaperTrader is seeded with, so there is no
+// default the loader may substitute. Every fixture that means "a runnable
+// account" has to name it.
+//
+// risk.max_daily_loss is NOT here. It is a removed spelling (config.md 10.13,
+// 15.2 item 7): the account's daily limit is prop.max_daily_drawdown_pct now,
+// and a profile still carrying the old dollar key stops the load instead of
+// loading with a second, differently-anchored ladder.
 json BaseConfig() {
   return json::parse(R"({
     "exchange": "hyperliquid",
+    "initial_balance": 25000.0,
     "environment": {
       "interval_ms": 60000,
       "macro_interval_ms": 900000,
@@ -51,8 +62,7 @@ json BaseConfig() {
     "risk": {
       "sl_pct": 0.01,
       "tp_r": 2.0,
-      "risk_per_trade_pct": 0.01,
-      "max_daily_loss": 500.0
+      "risk_per_trade_pct": 0.01
     },
     "trade_management": {
       "break_even": {"trigger_r": 1.0, "target_r": 0.2},

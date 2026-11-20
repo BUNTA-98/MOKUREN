@@ -52,9 +52,10 @@ struct ComponentConfig {
 };
 
 // trade management settings. AppConfig::Load fills these through
-// mokuren::ResolveLevelPct: the *_r key is canonical and sl_pct defines 1R,
-// the legacy absolute *_pct key is honoured only when the R key is absent.
-// A missing level is a hard error; Load never substitutes a default.
+// mokuren::ResolveLevelPct: the *_r key is the only spelling and sl_pct
+// defines 1R. The legacy absolute *_pct key is rejected by the unknown-key
+// check (config.md 10.13), so the two spellings can never disagree. A missing
+// level is a hard error; Load never substitutes a default.
 struct TradeManagementConfig {
   double be_trigger_pct = 0.005;
   double be_target_pct = 0.001;
@@ -230,7 +231,8 @@ struct AppConfig {
   // field was a second ladder anchored on realised pnl, so it neither scaled
   // with initial_balance nor matched what the firm measures -- and on the
   // venue path nothing ever consulted it. a config that still carries
-  // risk.max_daily_loss keeps loading; the key is simply ignored.
+  // risk.max_daily_loss now FAILS to load: the key is rejected as unknown
+  // (config.md 10.13), so it cannot sit beside the prop limit tuning nothing.
 
   // starting capital of the paper account, on every path. the factory hands
   // this to PaperTrader for --paper, scan, wfa and replay alike, so risk per

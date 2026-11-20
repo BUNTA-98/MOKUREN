@@ -12,6 +12,7 @@
 #include <cstring>
 #include <vector>
 
+#include "dataset_resolver.hpp"
 #include "ui_theme.hpp"
 #include "ui_pages.hpp"
 #include "ui_menu.hpp"
@@ -101,6 +102,20 @@ private:
 
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, pg_bar_y + 1, 3, hline.c_str());
+
+        // page-owned status, on the row under the nav bar (config.md 16.2).
+        // The config page puts the profile path, its [modified] marker and the
+        // unknown-key count here: "which file am I editing and does it load" is
+        // state the operator wants while looking at ANY page, so it does not
+        // belong in the config page's own footer. Row 8 is free -- the header
+        // ends at 7 and pages start at 11.
+        if (current_page) {
+            const std::string status = current_page->StatusLine();
+            if (!status.empty()) {
+                UITheme::StyleTextMuted(stdplane);
+                ncplane_putstr_yx(stdplane, pg_bar_y + 2, 3, status.c_str());
+            }
+        }
             
         int footer_x = dimx > 40 ? dimx - 35 : 5;
         ncplane_putstr_yx(stdplane, dimy - 1, footer_x, "[Q] DISCONNECT   [TAB] NEXT VIEW");
@@ -339,12 +354,14 @@ private:
                     // as the legacy alias). the old recursive last-wins scan
                     // could pick up a "dataset" key from anywhere in the tree
                     // and silently replay the wrong file.
-                    std::string data_path;
-                    if (winning_run.full_config.contains("environment") &&
-                        winning_run.full_config["environment"].is_object()) {
-                        const auto& env = winning_run.full_config["environment"];
-                        data_path = env.value("dataset", env.value("filepath", std::string{}));
-                    }
+                    // Same owner as every driver: DatasetFromJson applies
+                    // environment.dataset's table default. Reading the raw key
+                    // here threw "winning run has no environment.dataset" for
+                    // any profile the editor saved -- a diff omits a key left
+                    // at its default -- while the scan that produced this very
+                    // result had just resolved "data/" for the same file.
+                    const std::string data_path =
+                        mokuren::DatasetFromJson(winning_run.full_config);
                     if (data_path.empty()) {
                         throw std::runtime_error("winning run has no environment.dataset in its config");
                     }

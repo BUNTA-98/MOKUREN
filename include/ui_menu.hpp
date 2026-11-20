@@ -1,7 +1,12 @@
 #pragma once
+#include "component_schema.hpp"
 #include "config_parser.hpp"
+#include "config_schema.hpp"
 #include "ui_pages.hpp"
 #include "ui_theme.hpp"
+#include <cstdint>
+#include <cstdio>
+#include <limits>
 #include <vector>
 #include <string>
 #include <fstream>
@@ -20,20 +25,41 @@ enum class MenuState {
     PARAMETERS,     
     INLINE_EDIT,    
     SUBMENU_NAV,    
-    SUBMENU_EDIT    
+    SUBMENU_EDIT,
+    PROFILE_PICKER, // modal profile picker (17.3). The row that used to switch
+                    // profiles was backtest.config_profile, which D6 deletes.
 };
 
+// One row in the parameter panel.
+//
+// `def` is the table entry the row renders; it is null for a component-array
+// row and for a file-driven row, whose shape still comes from the json value
+// because the table deliberately does not model those (config.md section 5).
+//
+// The four type bools are gone. Each was computed once at flatten time from a
+// value that can change under the row (a grid node edited back to a scalar),
+// and each now has exactly one owner: `def->kind` for a schema row, the json
+// itself for the other two.
 struct MenuRow {
-    std::string display_path;
+    const mokuren::cfg::Field* def = nullptr;
     json::json_pointer ptr;
-    bool is_bool = false;
-    bool is_number = false;
-    bool is_string = false;
-    bool is_range = false; 
+    std::string display_path;
+    bool is_selector = false;
+    std::vector<std::string> options;
+    int current_idx = 0;
 
-    bool is_file_selector = false;
-    std::vector<std::string> file_options;
-    int current_file_idx = 0;
+    // Component rows are addressed by NAME, not by index. `ptr` above would be
+    // /risk/modules/3/cooldown_ms, and it is only correct for as long as the
+    // array keeps that exact order in both the buffer and the skeleton. Nothing
+    // enforces that: a merge, an insertion, a reordered file, and the row
+    // points at a slot that holds something else (or nothing) for the rest of
+    // the session -- which is exactly how every module row came to render "??".
+    //
+    // The loader itself resolves components by `name` (StrategyFactory::Build,
+    // BuildExitPlan), so the menu resolves them the same way and the index
+    // stops being load-bearing.
+    std::string component_path;  // dotted array path; empty for schema rows
+    std::string component_name;  // the entry's `name`
 };
 
 struct ParamConfigState {
@@ -64,50 +90,23 @@ private:
     
     ParamConfigState sub_state;
 
-    static constexpr const char* kDefaultsPath = "configs/_defaults.json";
+    // The json as it was read, for the footer's [modified] marker: a
+    // comparison, not a dirty flag that can drift away from the file.
+    json loaded_data;
 
-    // The template is the schema: seed a fresh profile from it, and refuse to
-    // continue if it does not load. A silently-invented template is exactly the
-    // class of bug this file replaces -- the old raw-string template had no
-    // exchange and no venue, so every profile the TUI created failed at
-    // AppConfig::Load's first required key. Validating here turns that into a
-    // startup abort naming the file, not a run abort mid-scan.
-    json LoadDefaults() {
-        std::ifstream f(kDefaultsPath);
-        if (!f.is_open()) {
-            throw std::runtime_error(
-                std::string("fatal: cannot open the config template '") +
-                kDefaultsPath + "'. New profiles are seeded from this file; "
-                "without it a fresh profile would not load (it needs exchange "
-                "and venue, which only the template supplies).");
-        }
+    // Profile picker state (17.3).
+    std::vector<std::string> profile_options;
+    int profile_cursor = 0;
 
-        json tpl;
-        try {
-            tpl = json::parse(f);
-        } catch (const json::exception& e) {
-            throw std::runtime_error(
-                std::string("fatal: config template '") + kDefaultsPath +
-                "' is not valid json: " + e.what());
-        }
+    // Footer status. Both advisory -- AppConfig::Load stays the only gate.
+    size_t unknown_keys = 0;
+    std::string config_error;
 
-        // Grid nodes are what the menu and GridScanner see. Load is what a run
-        // sees, and it only accepts scalars -- so flatten a copy and prove the
-        // seed would arm. require_venue_credentials=false because the template
-        // is a shape, not an account: a fresh profile is seeded before the
-        // operator has pasted a key.
-        json flat = tpl;
-        FlattenGrids(flat);
-        try {
-            (void)AppConfig::Load(flat, /*require_venue_credentials=*/false);
-        } catch (const std::exception& e) {
-            throw std::runtime_error(
-                std::string("fatal: config template '") + kDefaultsPath +
-                "' does not load once its grid nodes are flattened: " + e.what());
-        }
-
-        return tpl;
-    }
+    // The complete shape lives in the skeleton (component_schema.hpp): every
+    // table field at its default and every catalogue component present with
+    // enabled:false. `config_data` is ALWAYS that shape with the file laid over
+    // it, which is what lets BuildMenu ignore the file entirely.
+    json skeleton_data = mokuren::cfg::Skeleton();
 
     std::string DoubleToStr(double d) {
         char buf[64]; snprintf(buf, sizeof(buf), "%g", d);
@@ -118,17 +117,302 @@ private:
         try { return std::stod(str); } catch (...) { return 0.0; }
     }
 
+    // --- table-driven helpers (P2) -----------------------------------------
+
+    // The component arrays, taken from the catalogue rather than typed again --
+    // one list of what the factory can build, not two that drift.
+    static std::vector<std::string> ComponentArrayPaths() {
+        std::vector<std::string> out;
+        for (const mokuren::cfg::ComponentDef& d : mokuren::cfg::Catalogue()) {
+            if (std::find(out.begin(), out.end(), d.array_path) == out.end()) {
+                out.push_back(d.array_path);
+            }
+        }
+        return out;
+    }
+
+    // Whole subtrees shown in the menu but not in the schema: `backtest` is
+    // read by the WFA runner, not by AppConfig::Load (section 5), so it stays
+    // out of v1 while its settings must not vanish from the UI.
+    static constexpr const char* kFileDrivenSubtrees[] = {
+        "backtest",
+    };
+
+    // A retired config key a profile may still carry. D6 deleted
+    // backtest.config_profile: "which file am I editing" is UI state now, and
+    // a row for it would write a key nothing reads.
+    static bool IsRetiredKey(const std::string& dotted) {
+        return dotted == "backtest.config_profile";
+    }
+
+    // Drop the retired keys from the buffer, so the next save writes a profile
+    // that does not reference itself. Filtering the menu alone left the key in
+    // the file forever: it is exempt from the unknown-key check (the `backtest`
+    // subtree is allowed), so nothing else would ever remove it.
+    static void DropRetiredKeys(json& j) {
+        if (j.contains("backtest") && j["backtest"].is_object()) {
+            j["backtest"].erase("config_profile");
+        }
+    }
+
+    static std::string CategoryForComponent(const std::string& path) {
+        if (path == "triggers") return "Triggers";
+        if (path == "filters") return "Filters";
+        if (path == "risk.modules") return "Risk";
+        if (path == "trade_management.structural_exit.rules")
+            return "Trade Management";
+        if (path == "backtest") return "Backtest";
+        return path;
+    }
+
+    // Category order = the smallest Field.order the category declares. A
+    // category owning no schema field has no number to sort by, so it takes a
+    // slot after the last schema section: components first, then file-driven
+    // data. Not a second list of categories -- the only names here are the
+    // three the schema cannot carry.
+    static int CategoryOrder(const std::string& cat) {
+        int best = std::numeric_limits<int>::max();
+        for (const mokuren::cfg::Field& f : mokuren::cfg::Schema()) {
+            if (cat == f.category && f.order < best) best = f.order;
+        }
+        if (best != std::numeric_limits<int>::max()) return best;
+        if (cat == "Triggers") return 900;
+        if (cat == "Filters") return 910;
+        return std::numeric_limits<int>::max();
+    }
+
+    static int SubcategoryOrder(const std::string& cat, const std::string& sub) {
+        int best = std::numeric_limits<int>::max();
+        for (const mokuren::cfg::Field& f : mokuren::cfg::Schema()) {
+            if (cat == f.category && sub == f.subcategory && f.order < best)
+                best = f.order;
+        }
+        return best;
+    }
+
+    // A schema path is dotted ("risk.sl_pct"); a json pointer is not
+    // ("/risk/sl_pct"). One owner for the mapping.
+    static json::json_pointer SchemaPointer(const char* path) {
+        std::string p(path);
+        std::replace(p.begin(), p.end(), '.', '/');
+        return json::json_pointer("/" + p);
+    }
+
+    // Point the picker at the current value, inserting it when the scan does
+    // not list it: a hand-written path, or the "data/" default, is a value the
+    // picker must show rather than silently replace on the next ENTER.
+    static int SeedSelection(MenuRow& row, const std::string& current) {
+        auto it = std::find(row.options.begin(), row.options.end(), current);
+        if (it != row.options.end())
+            return static_cast<int>(std::distance(row.options.begin(), it));
+        if (current.empty()) return 0;
+        row.options.insert(row.options.begin(), current);
+        return 0;
+    }
+
+    // A row is "inherited" when its value equals the skeleton default, which is
+    // exactly the condition under which Diff() omits it from the file. Same
+    // predicate for a schema row and a component param, so the dimming means
+    // one thing: this key is not in the profile.
+    //
+    // Display-only resolution: an inherited key shows its default and is drawn
+    // dimmed. Nothing here writes (D4, config.md 10.2).
+    json EffectiveValue(const MenuRow& row) {
+        if (row.component_path.empty()) {
+            const json* v = mokuren::cfg::Lookup(config_data, row.def->path);
+            return v == nullptr ? row.def->default_value : *v;
+        }
+
+        // Component row: find the entry BY NAME in the array it names, then
+        // read the param out of it. An index is not consulted, so a merge that
+        // reorders or inserts cannot strand the row. If the entry is missing
+        // (a profile that never had that component, or an array that arrived
+        // after the menu was built), the catalogue default is the honest
+        // answer -- the row shows what enabling it WOULD mean.
+        const std::string param = row.ptr.back();
+        const json* arr = mokuren::cfg::Lookup(config_data, row.component_path);
+        if (arr != nullptr && arr->is_array()) {
+            for (const json& e : *arr) {
+                if (!e.is_object()) continue;
+                if (e.value("name", std::string()) != row.component_name) continue;
+                if (e.contains(param)) return e.at(param);
+                break;
+            }
+        }
+        if (const mokuren::cfg::ComponentDef* d =
+                mokuren::cfg::FindComponent(row.component_path,
+                                            row.component_name)) {
+            if (d->params.contains(param)) return d->params.at(param);
+        }
+        return json();
+    }
+
+    bool IsAbsent(const MenuRow& row) const {
+        // A component param is part of the entry, not a table default that can
+        // be inherited -- the entry carries its value by construction. What is
+        // dimmed for a component is the whole subcategory's enabled flag, which
+        // the second panel already does.
+        if (!row.component_path.empty()) return false;
+        try {
+            if (!skeleton_data.contains(row.ptr)) return false;
+            return config_data.at(row.ptr) == skeleton_data.at(row.ptr);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    // Role of each row, derived at draw time rather than stored: the value can
+    // change kind under a row without the row being rebuilt.
+    bool RowIsBool(const MenuRow& row) {
+        if (row.def != nullptr) return row.def->kind == mokuren::cfg::Kind::Bool;
+        return EffectiveValue(row).is_boolean();
+    }
+
+    bool RowIsNumeric(const MenuRow& row) {
+        if (row.def != nullptr) {
+            return row.def->kind == mokuren::cfg::Kind::Int ||
+                   row.def->kind == mokuren::cfg::Kind::Double;
+        }
+        const json v = EffectiveValue(row);
+        return v.is_number() || mokuren::cfg::IsGridNode(v);
+    }
+
+    bool RowIsText(const MenuRow& row) {
+        if (row.def != nullptr) return row.def->kind == mokuren::cfg::Kind::String;
+        return EffectiveValue(row).is_string();
+    }
+
+    // One sweep predicate, the table's (section 9). Shape only, so a component
+    // param is a grid here exactly like a schema scalar.
+    bool RowIsGrid(const MenuRow& row) {
+        return mokuren::cfg::IsGridNode(EffectiveValue(row));
+    }
+
+    std::string SelectedOption(const MenuRow& row) const {
+        if (row.options.empty()) return "< nothing to pick >";
+        const int idx = std::min(std::max(row.current_idx, 0),
+                                 static_cast<int>(row.options.size()) - 1);
+        return "< " + row.options[idx] + " >";
+    }
+
+    std::string FormatValue(const MenuRow& row) {
+        const json v = EffectiveValue(row);
+        if (RowIsBool(row)) {
+            return (v.is_boolean() && v.get<bool>()) ? "[X] TRUE" : "[ ] FALSE";
+        }
+        if (RowIsGrid(row)) {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "[%g->%g*%g=%g]",
+                          v.value("min", 0.0), v.value("max", 0.0),
+                          v.value("step", 0.0), v.value("val", 0.0));
+            return std::string(buf);
+        }
+        if (row.is_selector) return SelectedOption(row);
+        if (v.is_number()) return DoubleToStr(v.get<double>());
+        if (v.is_string()) return "\"" + v.get<std::string>() + "\"";
+        // "UNSUPPORTED" used to stand for four different things: a nested
+        // object, an array, a null, and a pointer that does not resolve. The
+        // first two are real values and are shown; the last two are a lookup
+        // problem, and saying so is the difference between "this row is odd"
+        // and "this row points at nothing".
+        if (v.is_object() || v.is_array()) {
+            std::string dumped = v.dump();
+            if (dumped.size() > 40) dumped = dumped.substr(0, 37) + "...";
+            return dumped;
+        }
+        // Nothing resolved at this pointer in either the buffer or the
+        // skeleton. Show WHERE it points: "(unset)" alone cannot tell a row
+        // missing from the buffer apart from a row pointing at a path that was
+        // never built, and the two have different fixes.
+        return "?? " + row.ptr.to_string();
+    }
+
+    // 10.3: `!config_data[row.ptr].get<bool>()` threw on an absent key, because
+    // the non-const operator[] of a const json raises. An absent schema row
+    // takes the table default first and then flips -- which is what makes a
+    // dimmed row editable without hand-editing a file (8.4).
+    // The one write path for a row, mirroring EffectiveValue's resolution. A
+    // schema row writes through its pointer; a component row writes the param
+    // of the entry with that name, appending the entry when it is missing.
+    // Writing through `config_data[row.ptr]` instead would create a SECOND
+    // entry at whatever index the pointer names -- the drift this whole change
+    // exists to remove.
+    void WriteRow(const MenuRow& row, json value) {
+        if (row.component_path.empty()) {
+            config_data[row.ptr] = std::move(value);
+            return;
+        }
+
+        const std::string param = row.ptr.back();
+        json& arr = config_data[mokuren::cfg::PointerFor(row.component_path)];
+        if (!arr.is_array()) arr = json::array();
+        for (json& e : arr) {
+            if (!e.is_object()) continue;
+            if (e.value("name", std::string()) != row.component_name) continue;
+            e[param] = std::move(value);
+            return;
+        }
+
+        json entry = json::object();
+        entry["name"] = row.component_name;
+        entry["enabled"] = true;
+        entry[param] = std::move(value);
+        arr.push_back(std::move(entry));
+    }
+
+    void ToggleRowBool(const MenuRow& row) {
+        const json v = EffectiveValue(row);
+        const bool current = v.is_boolean() ? v.get<bool>() : false;
+        WriteRow(row, !current);
+    }
+
+    // The one place cursors are made valid. Render used to do it inline, which
+    // let the draw path move state and two panels disagree mid-frame (8.4).
+    void ClampCursors() {
+        if (categories.empty()) {
+            category_cursor = 0;
+            subcat_cursor = 0;
+            param_cursor = 0;
+            return;
+        }
+        category_cursor = std::min(std::max(category_cursor, 0),
+                                   static_cast<int>(categories.size()) - 1);
+
+        auto& subs = subcategories[categories[category_cursor]];
+        if (subs.empty()) {
+            subcat_cursor = 0;
+            param_cursor = 0;
+            return;
+        }
+        subcat_cursor = std::min(std::max(subcat_cursor, 0),
+                                 static_cast<int>(subs.size()) - 1);
+
+        auto& rows =
+            grouped_rows[categories[category_cursor]][subs[subcat_cursor]];
+        if (rows.empty()) {
+            param_cursor = 0;
+            return;
+        }
+        param_cursor = std::min(std::max(param_cursor, 0),
+                                static_cast<int>(rows.size()) - 1);
+    }
+
     // `only_dirs` lists datasets: the directory layout (a folder holding
     // trades.csv / L2.csv) and .mkn recordings. Recordings were missing from
     // this list because only directories were collected, so a .mkn could never
     // be picked even though DataManager::LoadAll has accepted one since the mdf
     // reader landed -- from the UI, "not listed" and "rejected by the loader"
     // look identical.
+    // Lists the entries a picker may write. NO sentinel is appended (10.7):
+    // the old list pushed NO_DATASETS_FOUND as a selectable option, so a
+    // missing folder could be written into a config as if it were a path. An
+    // empty result means the picker refuses to write.
     std::vector<std::string> ScanDirectory(const std::string& folder, bool only_dirs = false) {
         std::vector<std::string> options;
-        options.push_back(folder);
+        std::error_code ec;
+        if (folder.empty() || !fs::exists(folder, ec)) return options;
         try {
-            if (fs::exists(folder)) {
+            if (true) {
                 for (const auto& entry : fs::recursive_directory_iterator(folder)) {
                     if (only_dirs) {
                         // a .mkn recording is a dataset in its own right: one
@@ -143,10 +427,6 @@ private:
                     } else {
                         if (entry.is_regular_file() &&
                            (entry.path().extension() == ".csv" || entry.path().extension() == ".json")) {
-                            // _defaults.json is the template the TUI seeds from, not a
-                            // selectable profile: picking it would rewrite the template on
-                            // every save and short-circuit the whole refactor.
-                            if (entry.path().filename() == "_defaults.json") continue;
                             options.push_back(entry.path().string());
                         }
                     }
@@ -154,160 +434,284 @@ private:
             }
         } catch (...) {}
         
-        // options always holds `folder` itself, so the old empty() check could
-        // never fire: a missing data directory looked like a valid, empty list.
-        if (options.size() <= 1) options.push_back(only_dirs ? "NO_DATASETS_FOUND" : "NO_FILES_FOUND");
+        std::sort(options.begin(), options.end());
         return options;
     }
 
-    void FlattenJson(const json& j, const std::string& current_path, int level, 
-                     const std::string& current_category, const std::string& current_subcategory) {
+    void FlattenSubtree(const json& j, const std::string& path,
+                        const std::string& category,
+                        const std::string& sub = "General",
+                        const std::string& comp_path = std::string(),
+                        const std::string& comp_name = std::string()) {
         if (j.is_object()) {
-            if ((j.contains("mode") && j["mode"] == "range") || 
-                (j.contains("min") && j.contains("max") && j.contains("step"))) {
-                MenuRow row;
-                std::string key = current_path.substr(current_path.find_last_of('/') + 1);
-                row.display_path = key;
-                row.ptr = json::json_pointer(current_path);
-                row.is_number = true;
-                row.is_range = true;
-                grouped_rows[current_category][current_subcategory].push_back(row);
-            } else {
-                for (auto& [key, val] : j.items()) {
-                    std::string next_cat = current_category;
-                    std::string next_sub = current_subcategory;
-                    
-                    if (level == 0) {
-                        next_cat = key;
-                        next_sub = "General"; 
-                    } else if (level == 1 && val.is_object() && !val.contains("mode") && !val.contains("min")) {
-                        next_sub = key; 
-                    }
-                    
-                    FlattenJson(val, current_path + "/" + key, level + 1, next_cat, next_sub);
-                }
+            if (mokuren::cfg::IsGridNode(j)) {
+                PushLeaf(path, category, sub, comp_path, comp_name);
+                return;
+            }
+            for (auto& [key, val] : j.items()) {
+                const std::string next_sub =
+                    (sub == "General" && val.is_object()) ? key : sub;
+                FlattenSubtree(val, path + "/" + key, category, next_sub,
+                               comp_path, comp_name);
             }
         } else if (j.is_array()) {
             for (size_t i = 0; i < j.size(); ++i) {
-                if (j[i].is_object() && j[i].contains("name")) {
-                    std::string sub = j[i]["name"].get<std::string>();
-                    FlattenJson(j[i], current_path + "/" + std::to_string(i), level + 1, current_category, sub);
+                const std::string child = path + "/" + std::to_string(i);
+                if (j[i].is_object() && j[i].contains("name") &&
+                    j[i]["name"].is_string()) {
+                    const std::string entry_name =
+                        j[i]["name"].get<std::string>();
+                    FlattenSubtree(j[i], child, category, entry_name, comp_path,
+                                   entry_name);
                 } else {
-                    FlattenJson(j[i], current_path + "/" + std::to_string(i), level + 1, current_category, current_subcategory);
+                    FlattenSubtree(j[i], child, category, sub, comp_path,
+                                   comp_name);
                 }
             }
         } else {
-            std::string key = current_path.substr(current_path.find_last_of('/') + 1);
-            if (key == "name" && current_subcategory != "General") return; 
-
-            MenuRow row;
-            row.display_path = key;
-            row.ptr = json::json_pointer(current_path);
-            row.is_bool = j.is_boolean();
-            row.is_number = j.is_number();
-            
-            if (j.is_string()) {
-                row.is_string = true;
-                
-                // --- NEU: Dataset Ordner einlesen ---
-                if (current_path.find("dataset") != std::string::npos) {
-                    row.is_file_selector = true;
-                    // Scannt nur nach Unterordnern im "data"-Verzeichnis
-                    row.file_options = ScanDirectory("data", true); 
-                    
-                    std::string current_val = j.get<std::string>();
-                    auto it = std::find(row.file_options.begin(), row.file_options.end(), current_val);
-                    if (it != row.file_options.end()) row.current_file_idx = std::distance(row.file_options.begin(), it);
-                }
-                // Config Profile JSONs einlesen
-                else if (current_path.find("config_profile") != std::string::npos) {
-                    row.is_file_selector = true;
-                    row.file_options = ScanDirectory("configs", false);
-                    
-                    std::string current_val = j.get<std::string>();
-                    auto it = std::find(row.file_options.begin(), row.file_options.end(), current_val);
-                    if (it != row.file_options.end()) row.current_file_idx = std::distance(row.file_options.begin(), it);
-                }
-            }
-            grouped_rows[current_category][current_subcategory].push_back(row);
+            PushLeaf(path, category, sub, comp_path, comp_name);
         }
     }
 
-    void LoadConfigSmart(bool keep_cursors = false) {
-        bool needs_save = false;
-        
-        std::ifstream file(config_path);
-        if (file.is_open()) {
-            try { 
-                config_data = json::parse(file); 
-                if (config_data.contains("error")) throw std::runtime_error("corrupt json");
-            } 
-            catch (...) { 
-                config_data = LoadDefaults(); 
-                needs_save = true;
-            }
-            file.close();
-        } else {
-            config_data = LoadDefaults();
-            needs_save = true;
-        }
+    void PushLeaf(const std::string& path, const std::string& category,
+                  const std::string& sub, const std::string& comp_path,
+                  const std::string& comp_name) {
+        const std::string key = path.substr(path.find_last_of('/') + 1);
+        // a component's `name` is its subcategory, not a row.
+        if (key == "name" && sub != "General") return;
 
-        // write the profile pointer unconditionally. the old guard only
-        // updated an existing "backtest" block, so a profile without one
-        // (hyro_split.json, bybit_depth_test.json) lost the config_profile
-        // picker row on the next LoadConfigSmart -- the menu could no longer
-        // switch away from a file it had just opened. creating the block here
-        // keeps the picker present on every profile, and the value is the
-        // path the menu is actually editing.
-        config_data["backtest"]["config_profile"] = config_path;
+        // `path` is a json pointer ("/backtest/config_profile"); IsRetiredKey
+        // compares dotted paths. Without this translation the two never agreed
+        // and the retired row rendered -- the separator, not the list, was the
+        // bug.
+        std::string dotted = path;
+        if (!dotted.empty() && dotted.front() == '/') dotted.erase(0, 1);
+        std::replace(dotted.begin(), dotted.end(), '/', '.');
+        if (IsRetiredKey(dotted)) return;
 
-        if (needs_save) {
-            std::ofstream out(config_path);
-            if (out.is_open()) out << config_data.dump(2);
-        }
-        
+        MenuRow row;
+        row.display_path = key;
+        row.ptr = json::json_pointer(path);
+        // the dotted array path and the entry's name are what a component row
+        // is actually addressed by; `ptr` above is kept only for the diagnostic
+        // string and for schema rows, where an index is not involved.
+        row.component_path = comp_path;
+        row.component_name = comp_name;
+        grouped_rows[category][sub].push_back(std::move(row));
+    }
+
+    // The three sources of config.md 8.1, in one place. Everything the schema
+    // does not name and these two lists do not cover is simply absent here --
+    // which is the point: a typo like `risk.slipage_pct` must not become a row
+    // that tunes nothing.
+    void BuildMenu() {
         categories.clear();
         subcategories.clear();
         grouped_rows.clear();
-        FlattenJson(config_data, "", 0, "", "");
 
-        for (auto& [cat, sub_map] : grouped_rows) {
+        // (1) schema rows: one per table entry, filed under the table's own
+        // category names. The invariant (section 2) made mechanical -- a field
+        // added to the table appears here with its default, no file edited.
+        for (const mokuren::cfg::Field& f : mokuren::cfg::Schema()) {
+            MenuRow row;
+            row.def = &f;
+            row.display_path = f.label;
+            row.ptr = SchemaPointer(f.path);
+            if (f.kind == mokuren::cfg::Kind::DirPath ||
+                f.kind == mokuren::cfg::Kind::FilePath) {
+                row.is_selector = true;
+                row.options = ScanDirectory(
+                    f.selector_root == nullptr ? std::string()
+                                               : std::string(f.selector_root),
+                    f.kind == mokuren::cfg::Kind::DirPath);
+                const json* cur = mokuren::cfg::Lookup(config_data, f.path);
+                const std::string current =
+                    (cur != nullptr && cur->is_string())
+                        ? cur->get<std::string>()
+                        : (f.default_value.is_string()
+                               ? f.default_value.get<std::string>()
+                               : std::string());
+                row.current_idx = SeedSelection(row, current);
+            }
+            grouped_rows[f.category][f.subcategory].push_back(std::move(row));
+        }
+
+        // (2) component arrays. Always present in config_data -- the skeleton
+        // supplies every catalogue entry, the file only overrides values -- so
+        // the category shows on a profile that configures nothing.
+        for (const std::string& path : ComponentArrayPaths()) {
+            const json* node = mokuren::cfg::Lookup(config_data, path);
+            if (node == nullptr || !node->is_array()) continue;
+            FlattenSubtree(*node, std::string("/") + path,
+                           CategoryForComponent(path), "General", path);
+        }
+
+        // (3) file-driven subtrees
+        for (const char* path : kFileDrivenSubtrees) {
+            const json* node = mokuren::cfg::Lookup(config_data, path);
+            if (node == nullptr || !node->is_object()) continue;
+            FlattenSubtree(*node, std::string("/") + path,
+                           CategoryForComponent(path));
+        }
+
+        // (4) rows within a bucket: schema rows by table order, then the
+        // discovered ones in array/file order.
+        for (auto& [cat, subs] : grouped_rows) {
+            for (auto& [sub, rows] : subs) {
+                (void)sub;
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [](const MenuRow& a, const MenuRow& b) {
+                    if (a.def != nullptr && b.def != nullptr)
+                        return a.def->order < b.def->order;
+                    if (a.def != nullptr) return true;
+                    if (b.def != nullptr) return false;
+                    return false;
+                });
+            }
+        }
+
+        // (5) category then subcategory order
+        for (auto& [cat, subs] : grouped_rows) {
             categories.push_back(cat);
-            for (auto& [sub, rows] : sub_map) {
+            for (auto& [sub, rows] : subs) {
+                (void)rows;
                 subcategories[cat].push_back(sub);
             }
-            auto& subs = subcategories[cat];
-            auto it = std::find(subs.begin(), subs.end(), "General");
-            if (it != subs.end() && it != subs.begin()) std::rotate(subs.begin(), it, it + 1);
         }
-        
+        std::stable_sort(categories.begin(), categories.end(),
+                         [](const std::string& a, const std::string& b) {
+            const int oa = CategoryOrder(a), ob = CategoryOrder(b);
+            if (oa != ob) return oa < ob;
+            return a < b;
+        });
+        for (auto& [cat, subs] : subcategories) {
+            std::stable_sort(subs.begin(), subs.end(),
+                             [&cat](const std::string& a, const std::string& b) {
+                if (a == "General") return b != "General";
+                if (b == "General") return false;
+                const int oa = SubcategoryOrder(cat, a);
+                const int ob = SubcategoryOrder(cat, b);
+                if (oa != ob) return oa < ob;
+                return false;
+            });
+        }
+
+        ClampCursors();
+    }
+
+    void OpenProfilePicker() {
+        profile_options = ScanDirectory("configs", false);
+        profile_cursor = 0;
+        auto it = std::find(profile_options.begin(), profile_options.end(),
+                            config_path);
+        if (it != profile_options.end())
+            profile_cursor =
+                static_cast<int>(std::distance(profile_options.begin(), it));
+        menu_state = MenuState::PROFILE_PICKER;
+    }
+
+    void HandleProfilePickerKey(uint32_t key) {
+        if (key == NCKEY_ESC || key == 'p' || key == 'P') {
+            menu_state = MenuState::PARAMETERS;
+            return;
+        }
+        if (profile_options.empty()) return;
+        if (key == NCKEY_UP && profile_cursor > 0) { --profile_cursor; return; }
+        if (key == NCKEY_DOWN &&
+            profile_cursor + 1 < static_cast<int>(profile_options.size())) {
+            ++profile_cursor;
+            return;
+        }
+        if (key == NCKEY_ENTER) {
+            config_path = profile_options[profile_cursor];
+            LoadConfigSmart(false);
+        }
+    }
+
+    // Read-only. The old version wrote the file back when it was missing or
+    // unparseable, and rewrote backtest.config_profile on every load (10.4),
+    // so opening a profile changed it. Nothing is written here now: a broken
+    // file shows up as a footer line and waits for a keystroke.
+    void LoadConfigSmart(bool keep_cursors = false) {
+        unknown_keys = 0;
+        config_error.clear();
+
+        // the file is a diff; the skeleton is the shape. Overlay merges the
+        // two, component arrays by name, so the menu always sees every field
+        // and every component the engine supports.
+        config_data = skeleton_data;
+        std::ifstream file(config_path);
+        if (file.is_open()) {
+            try {
+                const json disk = json::parse(file);
+                if (!disk.is_object()) {
+                    throw std::runtime_error("root is not an object");
+                }
+                mokuren::cfg::Overlay(config_data, disk);
+            } catch (const std::exception& e) {
+                config_data = skeleton_data;
+                config_error = std::string("unreadable: ") + e.what();
+            }
+        } else {
+            // no file is a normal state: the skeleton IS the profile until the
+            // first save writes the diff. It reports "no trigger armed" through
+            // RefreshStatus, which is the only thing a new profile owes you.
+            config_error.clear();
+        }
+
+        DropRetiredKeys(config_data);
+        loaded_data = config_data;
+
+        BuildMenu();
+        RefreshStatus();
+
         if (!keep_cursors) {
             category_cursor = 0;
             subcat_cursor = 0;
             param_cursor = 0;
             menu_state = MenuState::CATEGORIES;
-        } else {
-            if (category_cursor >= categories.size()) category_cursor = 0;
-            if (!categories.empty()) {
-                auto& subs = subcategories[categories[category_cursor]];
-                if (subcat_cursor >= subs.size()) subcat_cursor = 0;
-                if (!subs.empty()) {
-                    auto& rows = grouped_rows[categories[category_cursor]][subs[subcat_cursor]];
-                    if (param_cursor >= rows.size()) param_cursor = 0;
-                }
-            }
+        }
+        ClampCursors();
+    }
+
+    // What a run would say about this file, right now. The editor's most useful
+    // output is "this profile does not load, and here is why" -- said before the
+    // operator starts a scan and gets it as a mid-run abort instead.
+    void RefreshStatus() {
+        unknown_keys = mokuren::cfg::CountUnknownKeys(config_data);
+        if (!config_error.empty()) return;  // a read error outranks the checker
+
+        json flat = config_data;
+        try {
+            FlattenGrids(flat);
+            (void)AppConfig::Load(flat, /*require_venue_credentials=*/false);
+        } catch (const std::exception& e) {
+            config_error = e.what();
         }
     }
 
+    // The only write path. No re-read afterwards: the menu is rebuilt from the
+    // in-memory json, so a toggle does not read back the file it just wrote
+    // (section 11) and cannot race an external edit into the cursor state.
     void SaveAndReload() {
         {
+            // only deviations reach the disk (component_schema.hpp Diff). A
+            // key set back to its default leaves the file, so the profile stays
+            // a diff and later table-default changes still apply to it.
+            json sparse = mokuren::cfg::Diff(config_data, skeleton_data);
+            if (sparse.is_null()) sparse = json::object();
             std::ofstream file(config_path);
             if (file.is_open()) {
-                file << config_data.dump(2);
-                file.close(); 
+                file << sparse.dump(2);
+                loaded_data = config_data;
+                config_error.clear();
+            } else {
+                config_error = "cannot write " + config_path;
             }
         }
-        LoadConfigSmart(true); 
+        BuildMenu();
+        RefreshStatus();
+        ClampCursors();
     }
 
 public:
@@ -316,10 +720,12 @@ public:
     // restore a previously selected config profile. must be called before
     // OnEnter()/Render() so the flattened menu reflects the right file.
     void SetActiveConfigPath(const std::string& path) {
-        if (path.empty()) return;
-        // always reload: even if the path string matches, the on-disk file may
-        // have changed (e.g. the user edited it in another profile), and we
-        // want the menu to reflect the persisted state on re-entry.
+        if (path.empty() || path == config_path) return;
+        // reloading when the path MATCHES would throw away the profile the
+        // picker just selected: UIManager re-supplies the path it captured on
+        // the way out, which is only equal to config_path when nothing
+        // changed. Every edit is saved as it is made, so in-memory already
+        // equals on-disk here.
         config_path = path;
         LoadConfigSmart(false);
     }
@@ -331,7 +737,24 @@ public:
     }
     
     bool BlocksGlobalHotkeys() const override {
-        return menu_state == MenuState::INLINE_EDIT || menu_state == MenuState::SUBMENU_EDIT;
+        return menu_state == MenuState::INLINE_EDIT ||
+               menu_state == MenuState::SUBMENU_EDIT ||
+               menu_state == MenuState::PROFILE_PICKER;
+    }
+
+    // What the global header shows for this page (config.md 16.2). State, not
+    // chrome: the profile in play, whether the buffer differs from the file,
+    // and how many keys the loader would reject. Advisory only -- the footer
+    // keeps the authoritative error text, because that one can be long.
+    std::string StatusLine() const override {
+        std::string s = config_path;
+        if (config_data != loaded_data) s += "  [modified] *";
+        if (unknown_keys > 0) {
+            s += "  (" + std::to_string(unknown_keys) +
+                 (unknown_keys == 1 ? " unknown key)" : " unknown keys)");
+        }
+        if (!config_error.empty()) s += "  [!] not loadable";
+        return s;
     }
 
     void OnEnter() override { 
@@ -339,9 +762,70 @@ public:
         // reloading here would reset cursors and re-read from disk unnecessarily.
     }
 
+    // A modal list over `configs/*.json`. The row that used to do this was
+    // backtest.config_profile; D6 deleted the key, so the picker gets a binding
+    // and a header line of its own (17.3).
+    void DrawProfilePicker(struct ncplane* p, unsigned int dimy, unsigned int dimx) {
+        if (dimy < 12) return;
+
+        const int w = std::min<int>(static_cast<int>(dimx) - 6, 90);
+        const int h = std::min<int>(static_cast<int>(dimy) - 6,
+                                    static_cast<int>(profile_options.size()) + 5);
+        const int x0 = (static_cast<int>(dimx) - w) / 2;
+        const int y0 = (static_cast<int>(dimy) - h) / 2;
+
+        UITheme::StyleBackground(p);
+        for (int i = 0; i < h; ++i)
+            ncplane_putstr_yx(p, y0 + i, x0, std::string(w, ' ').c_str());
+
+        UITheme::StyleDataValue(p);
+        ncplane_putstr_yx(p, y0, x0, std::string(w, '=').c_str());
+        ncplane_putstr_yx(p, y0 + h - 1, x0, std::string(w, '=').c_str());
+
+        UITheme::StyleTextDefault(p);
+        ncplane_putstr_yx(p, y0 + 1, x0 + 2, "[ PROFILE ]");
+
+        UITheme::StyleTextMuted(p);
+        ncplane_putstr_yx(p, y0 + h - 2, x0 + 2,
+                          "[UP/DN] PICK   [ENTER] OPEN   [ESC] CANCEL");
+
+        if (profile_options.empty()) {
+            UITheme::StyleAlert(p);
+            ncplane_putstr_yx(p, y0 + 3, x0 + 2,
+                              "no profile found under configs/");
+            return;
+        }
+
+        const int body = h - 5;
+        const int first = std::max(
+            0, std::min(profile_cursor - body / 2,
+                        static_cast<int>(profile_options.size()) - body));
+        for (int i = 0; i < body &&
+                        first + i < static_cast<int>(profile_options.size());
+             ++i) {
+            const int idx = first + i;
+            const bool active = (idx == profile_cursor);
+            if (active) UITheme::StyleCursorActive(p);
+            else UITheme::StyleTextMuted(p);
+            ncplane_putstr_yx(p, y0 + 3 + i, x0 + 2, active ? ">" : " ");
+
+            if (active || profile_options[idx] == config_path)
+                UITheme::StyleDataValue(p);
+            else
+                UITheme::StyleTextDefault(p);
+            ncplane_putstr_yx(p, y0 + 3 + i, x0 + 4,
+                              profile_options[idx].c_str());
+        }
+    }
+
     void Render(struct ncplane* stdplane) override {
         unsigned int dimy, dimx;
         ncplane_dim_yx(stdplane, &dimy, &dimx);
+
+        if (menu_state == MenuState::PROFILE_PICKER) {
+            DrawProfilePicker(stdplane, dimy, dimx);
+            return;
+        }
 
         int start_y = 11; 
 
@@ -353,8 +837,9 @@ public:
 
         int visible_rows = std::max(5, (int)dimy - start_y - 4);
 
-        if (category_cursor >= categories.size()) category_cursor = 0;
-        
+        // no cursor clamping here (8.4): Render is a function of state, and a
+        // draw that silently moves the cursor is how two panels end up
+        // disagreeing mid-frame. ClampCursors() runs on every state change.
         for (size_t i = 0; i < categories.size() && (int)i < visible_rows; ++i) {
             int y = start_y + i;
             bool is_active_cat = (static_cast<int>(i) == category_cursor);
@@ -380,8 +865,6 @@ public:
 
         std::string current_cat = categories[category_cursor];
         auto& subcats = subcategories[current_cat];
-        
-        if (subcat_cursor >= subcats.size()) subcat_cursor = 0; 
         
         int sub_max_scroll = std::max(0, static_cast<int>(subcats.size()) - visible_rows);
         int sub_start_idx = std::max(0, std::min(subcat_cursor - visible_rows / 2, sub_max_scroll));
@@ -431,8 +914,6 @@ public:
             std::string current_sub = subcats[subcat_cursor];
             auto& rows = grouped_rows[current_cat][current_sub];
             
-            if (param_cursor >= rows.size()) param_cursor = 0; 
-            
             if (menu_state <= MenuState::INLINE_EDIT) {
                 int max_scroll = std::max(0, static_cast<int>(rows.size()) - visible_rows);
                 int start_idx = std::max(0, std::min(param_cursor - visible_rows / 2, max_scroll));
@@ -455,36 +936,25 @@ public:
                     
                     std::string val_str;
                     if (is_active_param && menu_state == MenuState::INLINE_EDIT) {
-                        if (row.is_file_selector) {
-                            val_str = "< " + row.file_options[row.current_file_idx] + " >";
-                            UITheme::StyleDataValue(stdplane); UITheme::StyleEditBackground(stdplane);
+                        UITheme::StyleDataValue(stdplane);
+                        if (row.is_selector) {
+                            val_str = SelectedOption(row);
                         } else {
                             val_str = "[" + edit_buffer + "_]";
-                            UITheme::StyleTextDefault(stdplane); UITheme::StyleEditBackground(stdplane);
+                            // cyan on the edit background, not red-on-red
+                            // (10.11): an editable buffer must read as text.
+                            UITheme::StyleEditBackground(stdplane);
                         }
                     } else {
-                        if (row.is_bool) val_str = config_data[row.ptr].get<bool>() ? "[X] TRUE" : "[ ] FALSE";
-                        else if (row.is_number) { 
-                            if (row.is_range) {
-                                double r_min = config_data[row.ptr].value("min", 0.0);
-                                double r_max = config_data[row.ptr].value("max", 0.0);
-                                double r_step = config_data[row.ptr].value("step", 0.0);
-                                char buf[128]; snprintf(buf, sizeof(buf), "[GRID] %g : %g : %g", r_min, r_max, r_step);
-                                val_str = buf;
-                            } else {
-                                val_str = DoubleToStr(config_data[row.ptr].get<double>());
-                            }
-                        }
-                        else if (row.is_string) {
-                            if (row.is_file_selector) val_str = "< " + row.file_options[row.current_file_idx] + " >";
-                            else val_str = "\"" + config_data[row.ptr].get<std::string>() + "\"";
-                        }
-                        else val_str = "UNSUPPORTED";
-                        
-                        if (is_active_param && (menu_state == MenuState::PARAMETERS || menu_state == MenuState::INLINE_EDIT)) UITheme::StyleDataValue(stdplane);
+                        val_str = FormatValue(row);
+                        // a value the file does not carry is a table default.
+                        // Dimming it is D4 made visible (16.2): at a glance,
+                        // what the profile says versus what it inherits.
+                        if (IsAbsent(row)) UITheme::StyleTextMuted(stdplane);
+                        else if (is_active_param) UITheme::StyleDataValue(stdplane);
                         else UITheme::StyleTextDefault(stdplane);
                     }
-                    
+
                     ncplane_putstr_yx(stdplane, y, 75, val_str.c_str());
                     UITheme::StyleBackground(stdplane);
                 }
@@ -536,16 +1006,46 @@ public:
         std::string hline = std::string(dimx > 6 ? dimx - 6 : 10, '=');
         UITheme::StyleTextMuted(stdplane);
         ncplane_putstr_yx(stdplane, dimy - 3, 3, hline.c_str());
-        
-        UITheme::StyleTextDefault(stdplane);
-        ncplane_putstr_yx(stdplane, dimy - 2, 3, "[ARROWS] NAVIGATE PANELS");
-        ncplane_putstr_yx(stdplane, dimy - 2, 35, "[ENTER] EDIT/TOGGLE");
+
+        // an invalid profile replaces the key hints with the reason (16.2).
+        // A count and a message, not a review screen -- section 14 rejected
+        // the screen.
+        if (!config_error.empty()) {
+            UITheme::StyleAlert(stdplane);
+            std::string msg = config_error;
+            const int room = static_cast<int>(dimx) - 6;
+            if (room > 4 && static_cast<int>(msg.size()) > room) {
+                msg = msg.substr(0, room - 3) + "...";
+            }
+            ncplane_putstr_yx(stdplane, dimy - 2, 3, msg.c_str());
+        } else {
+            // only the keys live here now. The profile path, [modified] and the
+            // unknown-key count moved to the global header's status row (16.2),
+            // so they stay visible on the scanner and the trade log too.
+            UITheme::StyleTextMuted(stdplane);
+            ncplane_putstr_yx(stdplane, dimy - 2, 3,
+                              "[ENTER] EDIT   [</>] STEP   [P] PROFILE   [ESC] BACK");
+        }
     }
 
     void HandleInput(uint32_t key) override {
+        if (menu_state == MenuState::PROFILE_PICKER) {
+            HandleProfilePickerKey(key);
+            return;
+        }
+
+        // P opens the profile picker (17.3). It is not a menu row any more: D6
+        // deleted backtest.config_profile, so "which file am I editing" is UI
+        // state and needs a home of its own.
+        if ((key == 'p' || key == 'P') && menu_state != MenuState::INLINE_EDIT &&
+            menu_state != MenuState::SUBMENU_EDIT) {
+            OpenProfilePicker();
+            return;
+        }
+
         if (categories.empty()) return;
-        
-        if (category_cursor >= categories.size()) category_cursor = 0;
+
+        ClampCursors();
         std::string current_cat = categories[category_cursor];
         auto& subcats = subcategories[current_cat];
         
@@ -596,55 +1096,56 @@ public:
             else if (key == NCKEY_DOWN && param_cursor < static_cast<int>(rows.size()) - 1) param_cursor++;
             else if (key == NCKEY_LEFT) menu_state = MenuState::SUBCATEGORIES;
             else if (key == NCKEY_ENTER) {
-                if (row.is_bool) {
-                    config_data[row.ptr] = !config_data[row.ptr].get<bool>();
-                    SaveAndReload(); 
-                } else if (row.is_number) {
+                if (RowIsBool(row)) {
+                    ToggleRowBool(row);
+                    SaveAndReload();
+                } else if (RowIsNumeric(row)) {
                     menu_state = MenuState::SUBMENU_NAV;
                     sub_state.cursor_y = 0;
-                    if (row.is_range) {
+                    const json v = EffectiveValue(row);
+                    if (RowIsGrid(row)) {
                         sub_state.is_range = true;
-                        sub_state.min_str = DoubleToStr(config_data[row.ptr].value("min", 0.0));
-                        sub_state.max_str = DoubleToStr(config_data[row.ptr].value("max", 0.0));
-                        sub_state.step_str = DoubleToStr(config_data[row.ptr].value("step", 0.0));
-                        sub_state.val_str = sub_state.min_str;
+                        sub_state.min_str = DoubleToStr(v.value("min", 0.0));
+                        sub_state.max_str = DoubleToStr(v.value("max", 0.0));
+                        sub_state.step_str = DoubleToStr(v.value("step", 0.0));
+                        sub_state.val_str = DoubleToStr(v.value("val", 0.0));
                     } else {
                         sub_state.is_range = false;
-                        sub_state.val_str = DoubleToStr(config_data[row.ptr].get<double>());
-                        sub_state.min_str = sub_state.val_str; 
+                        sub_state.val_str =
+                            v.is_number() ? DoubleToStr(v.get<double>()) : "0";
+                        sub_state.min_str = sub_state.val_str;
                         sub_state.max_str = sub_state.val_str;
                         sub_state.step_str = "1.0";
                     }
                 } else {
                     menu_state = MenuState::INLINE_EDIT;
-                    if (!row.is_file_selector) edit_buffer = config_data[row.ptr].get<std::string>();
+                    if (!row.is_selector) {
+                        const json v = EffectiveValue(row);
+                        edit_buffer = v.is_string() ? v.get<std::string>()
+                                                    : std::string();
+                    }
                 }
             }
         }
         else if (menu_state == MenuState::INLINE_EDIT) {
             auto& row = rows[param_cursor];
-            if (row.is_file_selector) {
-                if (key == NCKEY_LEFT && row.current_file_idx > 0) row.current_file_idx--;
-                else if (key == NCKEY_RIGHT && row.current_file_idx < static_cast<int>(row.file_options.size()) - 1) row.current_file_idx++;
-                else if (key == NCKEY_ENTER) {
-                    std::string selected_file = row.file_options[row.current_file_idx];
-                    config_data[row.ptr] = selected_file;
-                    
-                    if (row.display_path == "config_profile") {
-                        {
-                            std::ofstream out(config_path);
-                            if (out.is_open()) out << config_data.dump(2);
-                        }
-                        config_path = selected_file;
-                        LoadConfigSmart(false);
-                    } else {
-                        SaveAndReload();
-                        menu_state = MenuState::PARAMETERS;
-                    }
+            if (row.is_selector) {
+                // nothing to pick means nothing to write: the sentinel option
+                // is gone (10.7), so an empty list is an empty list.
+                if (row.options.empty()) return;
+                if (key == NCKEY_LEFT && row.current_idx > 0) row.current_idx--;
+                else if (key == NCKEY_RIGHT &&
+                         row.current_idx + 1 <
+                             static_cast<int>(row.options.size())) {
+                    row.current_idx++;
+                } else if (key == NCKEY_ENTER) {
+                    WriteRow(row, row.options[row.current_idx]);
+                    SaveAndReload();
+                    menu_state = MenuState::PARAMETERS;
                 }
             } else {
                 if (key == NCKEY_ENTER) {
-                    config_data[row.ptr] = edit_buffer;
+                    WriteRow(row, edit_buffer);
                     SaveAndReload();
                     menu_state = MenuState::PARAMETERS;
                 }
@@ -674,15 +1175,30 @@ public:
                 else if ((sub_state.is_range && sub_state.cursor_y == 4) || (!sub_state.is_range && sub_state.cursor_y == 2)) {
                     auto& row = rows[param_cursor];
                     if (sub_state.is_range) {
+                        // no "mode" key: it was the old shape detector's
+                        // marker and IsGridNode wants min/max/step/val. Writing
+                        // it kept a dead key alive in every grid saved here.
+                        const double lo = ParseDouble(sub_state.min_str);
+                        const double hi = ParseDouble(sub_state.max_str);
+                        // keep the value the grid already resolved to, clamped
+                        // into the new bounds. Resetting it to `min` threw away
+                        // the point the sweep was anchored on, so every trip
+                        // through this dialog silently moved it.
+                        const json prev = EffectiveValue(row);
+                        double keep = (prev.is_object() && prev.contains("val") &&
+                                       prev["val"].is_number())
+                                          ? prev["val"].get<double>()
+                                          : lo;
+                        if (keep < lo) keep = lo;
+                        if (keep > hi) keep = hi;
                         json r_obj;
-                        r_obj["mode"] = "range";
-                        r_obj["min"] = ParseDouble(sub_state.min_str);
-                        r_obj["max"] = ParseDouble(sub_state.max_str);
+                        r_obj["min"] = lo;
+                        r_obj["max"] = hi;
                         r_obj["step"] = ParseDouble(sub_state.step_str);
-                        r_obj["val"] = r_obj["min"];
-                        config_data[row.ptr] = r_obj;
+                        r_obj["val"] = keep;
+                        WriteRow(row, r_obj);
                     } else {
-                        config_data[row.ptr] = ParseDouble(sub_state.val_str);
+                        WriteRow(row, ParseDouble(sub_state.val_str));
                     }
                     SaveAndReload();
                     menu_state = MenuState::PARAMETERS;
@@ -706,5 +1222,7 @@ public:
             else if (key == NCKEY_BACKSPACE && !edit_buffer.empty()) edit_buffer.pop_back();
             else if (key >= 32 && key <= 126) edit_buffer += static_cast<char>(key);
         }
+
+        ClampCursors();
     }
 };

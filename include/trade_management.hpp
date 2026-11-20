@@ -17,8 +17,8 @@ struct RiskPcts {
 
 // Single resolution point for the risk block. R-multiples everywhere: sl_pct
 // is 1R, tp_r is the target in R, and every trade-management trigger is
-// already expressed in R. A config that only carries an absolute tp_pct is
-// converted to R here, once, so no downstream code ever sees two dialects.
+// already expressed in R. One reader (config.md 15.7): every path that needs
+// sl/tp comes here, so two of them can never resolve the pair differently.
 inline RiskPcts ResolveRiskPcts(const nlohmann::json& root) {
   if (!root.contains("risk") || !root["risk"].is_object()) {
     throw std::runtime_error("config error: missing required section 'risk'");
@@ -26,17 +26,13 @@ inline RiskPcts ResolveRiskPcts(const nlohmann::json& root) {
   const auto& risk = root["risk"];
 
   RiskPcts out;
-  // sl_pct is 1R and is canonical; sl_price_pct is the legacy spelling and is
-  // consulted only when sl_pct is absent. this used to check the legacy key
-  // first, while AppConfig::Load reads the same pair with sl_pct first -- so a
-  // config carrying both resolved to one 1R in the loader and a different one
-  // in every path that overwrites cfg.sl_pct from here, and the placed-stop
-  // ladder was measured against whichever won.
+  // sl_pct is 1R and is the only spelling. the legacy sl_price_pct is rejected
+  // by the unknown-key check before a run reaches here (config.md 10.13), so
+  // there is no second key to consult and no chance of the two disagreeing.
   //
-  // numeric strings are accepted because RequireNumberAny accepts them: this
-  // runs after AppConfig::Load has already approved the config, and rejecting a
-  // spelling the loader took turned a valid run into a "key is required" abort.
-  auto read_sl = [&risk](const char* key, double& out) {
+  // numeric strings are accepted: hand-written profiles carry "0.004", and
+  // rejecting a spelling the loader took turned a valid run into an abort.
+  auto read_num = [&risk](const char* key, double& out) {
     if (!risk.contains(key)) return false;
     const auto& v = risk[key];
     if (v.is_number()) {
@@ -58,72 +54,51 @@ inline RiskPcts ResolveRiskPcts(const nlohmann::json& root) {
     }
     return false;
   };
-  if (!read_sl("sl_pct", out.sl) && !read_sl("sl_price_pct", out.sl)) {
+  if (!read_num("sl_pct", out.sl)) {
     throw std::runtime_error(
-        "config error: 'risk.sl_pct' (or legacy 'risk.sl_price_pct') is "
-        "required and defines 1R");
+        "config error: 'risk.sl_pct' is required and defines 1R");
   }
-  // sl is the divisor that turns an absolute tp_pct into R. Load's bounds
-  // check runs after this on every real path, but a direct caller (tests,
-  // tooling) reached the division below with sl == 0 and got NaN, not an
-  // error.
+  // sl is the divisor that turns a target into R. Load's bounds check runs
+  // after this on every real path, but a direct caller (tests, tooling)
+  // reached the division below with sl == 0 and got NaN, not an error.
   if (!(out.sl > 0.0)) {
     throw std::runtime_error(
         "config error: 'risk.sl_pct' must be > 0; it defines 1R");
   }
 
   double tp_r = 0.0;
-  if (risk.contains("tp_r") && risk["tp_r"].is_number()) {
-    tp_r = risk["tp_r"].get<double>();
-  } else if (risk.contains("tp_pct") && risk["tp_pct"].is_number()) {
-    // legacy key: an absolute take-profit percent. normalise to R on read.
-    tp_r = risk["tp_pct"].get<double>() / out.sl;
-  } else {
-    throw std::runtime_error(
-        "config error: 'risk.tp_r' (or legacy 'risk.tp_pct') is required");
+  if (!read_num("tp_r", tp_r)) {
+    throw std::runtime_error("config error: 'risk.tp_r' is required");
   }
   out.tp = out.sl * tp_r;
   return out;
 }
 
-// Live/paper take-profit as a percent of entry. tp_r is canonical (a multiple
-// of sl_pct, i.e. of 1R); tp_pct is the legacy absolute key and is consulted
-// only when tp_r is absent. A config that names neither is rejected rather
-// than silently inheriting a default.
-inline double ResolveTpPct(const nlohmann::json& root, double sl_pct) {
-  if (!root.contains("risk") || !root["risk"].is_object()) {
-    throw std::runtime_error("config error: missing required section 'risk'");
-  }
-  const auto& risk = root["risk"];
-  if (risk.contains("tp_r") && risk["tp_r"].is_number()) {
-    return risk["tp_r"].get<double>() * sl_pct;
-  }
-  if (risk.contains("tp_pct") && risk["tp_pct"].is_number()) {
-    return risk["tp_pct"].get<double>();
-  }
-  throw std::runtime_error(
-      "config error: 'risk.tp_r' (or legacy 'risk.tp_pct') is required");
+// Live/paper take-profit as a percent of entry. Delegates to ResolveRiskPcts:
+// the caller's sl_pct is the same 1R that resolver reads from the file, so
+// recomputing the target here is exactly how the two used to disagree
+// (config.md 15.7).
+inline double ResolveTpPct(const nlohmann::json& root, double /*sl_pct*/) {
+  return ResolveRiskPcts(root).tp;
 }
 
 // One trade-management level as a percent of entry, the unit PaperTrader and
-// the venue brokers already compare against. The R key is canonical; the
-// legacy absolute key is read only when the R key is absent. Because sl_pct
-// is 1R, the same config now means the same thing in scan, WFA, replay and
-// live -- previously the scanner read trigger_r while live read trigger_pct
-// from the same file and quietly used its default instead. a block that names
-// neither key is rejected.
+// the venue brokers already compare against. The R key is the only spelling:
+// because sl_pct is 1R, the same config means the same thing in scan, WFA,
+// replay and live. A block that does not name it is rejected rather than
+// defaulted.
 inline double ResolveLevelPct(const nlohmann::json& block, double sl_pct,
                               const char* r_key, const char* pct_key,
                               const char* section) {
+  // pct_key stays in the signature so every call site keeps compiling in the
+  // same change. The legacy absolute spelling is rejected by the unknown-key
+  // check before this runs (config.md 10.13), so there is nothing to read.
+  (void)pct_key;
   if (block.contains(r_key) && block[r_key].is_number()) {
     return block[r_key].get<double>() * sl_pct;
   }
-  if (block.contains(pct_key) && block[pct_key].is_number()) {
-    return block[pct_key].get<double>();
-  }
   throw std::runtime_error(std::string("config error: '") + section +
-                           "' requires '" + r_key + "' (or legacy '" +
-                           pct_key + "'); nothing is defaulted");
+                           "' requires '" + r_key + "'; nothing is defaulted");
 }
 
 // --- structural exits -----------------------------------------------------

@@ -1,5 +1,6 @@
 #pragma once
 #include "data_manager.hpp"
+#include "dataset_resolver.hpp"
 #include "factory.hpp"
 #include "l2_feed.hpp"
 #include "logger.hpp"
@@ -47,14 +48,13 @@ public:
     static ReplayResult Run(const std::vector<TradeEvent>& all_trades,
                             const nlohmann::json& winning_config,
                             const std::string& dataset_path = "") {
-        // No silent "data" fallback. A config pointing at the wrong path used
-        // to read ./data and report a quiet market; an empty path is a bad
-        // config, and the status line is where that belongs.
+        // an explicit path wins: it is the one the operator selected. The
+        // fallback goes through the same owner every driver uses, so a profile
+        // the editor saved (a diff, so a key at its default is omitted)
+        // resolves to the table default here exactly as AppConfig::Load would.
         const std::string dataset =
-            !dataset_path.empty()
-                ? dataset_path
-                : winning_config.value("environment", nlohmann::json::object())
-                      .value("dataset", std::string{});
+            !dataset_path.empty() ? dataset_path
+                                  : mokuren::DatasetFromJson(winning_config);
         if (dataset.empty()) {
             throw std::runtime_error(
                 "replay: no dataset path and no environment.dataset in the "

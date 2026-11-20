@@ -131,6 +131,14 @@ list(APPEND ENGINE_SOURCES ${MARKET_DATA_SOURCES})
 target_sources(engine_tests PRIVATE ${ENGINE_SOURCES} ${HEADERS})
 target_include_directories(engine_tests PRIVATE src include ${ixwebsocket_SOURCE_DIR})
 
+# the profile sweep in test/test_profiles.cpp reads configs/ from the source
+# tree. a define beats a "../.." walk from the build dir: that walk breaks for
+# any out-of-tree build directory, and it fails as "no profiles found", which
+# reads like the test is broken rather than the path.
+target_compile_definitions(engine_tests PRIVATE
+  MOKUREN_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
 # link test libs
 target_link_libraries(engine_tests PRIVATE 
   Catch2::Catch2WithMain

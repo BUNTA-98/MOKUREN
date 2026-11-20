@@ -1,5 +1,6 @@
 #pragma once
 #include <notcurses/notcurses.h>
+#include <string>
 
 // Abstrakte Basisklasse für alle UI-Seiten
 class UIPage {
@@ -17,4 +18,9 @@ public:
 
   // NEU: Teilt dem Manager mit, ob globale Hotkeys blockiert werden sollen
     virtual bool BlocksGlobalHotkeys() const { return false; }
+
+    // One line of page-owned state for the global header (config.md 16.2).
+    // The manager draws it, the page decides what is worth saying, and the
+    // default is empty so a page with nothing to report adds no clutter.
+    virtual std::string StatusLine() const { return std::string(); }
 };
